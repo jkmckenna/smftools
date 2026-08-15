@@ -151,6 +151,13 @@ def test_preprocess_generation_publishes_valid_current_and_canonical_spine(tmp_p
     assert outputs["spine"] == output_dir / "spine.h5ad"
     assert Path(outputs["spine"]).is_file()
     assert not any((output_dir / ".staging").iterdir())
+    pointer = json.loads(Path(outputs["current"]).read_text())
+    assert set(pointer) == {
+        "schema_version",
+        "generation_id",
+        "generation_path",
+        "manifest_sha256",
+    }
 
 
 def test_real_partitioned_executor_publishes_generation_scoped_outputs(tmp_path):

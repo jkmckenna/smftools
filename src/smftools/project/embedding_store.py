@@ -18,23 +18,29 @@ import json
 import os
 import pickle
 import platform
-import shutil
 from datetime import datetime, timezone
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
-from uuid import uuid4
 
 import numpy as np
 
+from ..informatics.generation import (
+    CURRENT_FILENAME,
+    GENERATION_MANIFEST,
+    GENERATIONS_SUBDIR,
+    STAGING_SUBDIR,
+    GenerationError,
+    resolve_current_generation,
+    staged_generation,
+)
 from ..readwrite import atomic_write_json
 from .catalog import project_adata
 from .set_store import resolve_set_members, set_label, sets_root
 
 EMBEDDINGS_DIRNAME = "embeddings"
-GENERATIONS_DIRNAME = "generations"
-STAGING_DIRNAME = ".staging"
-CURRENT_FILENAME = "current.json"
-GENERATION_MANIFEST_FILENAME = "generation_manifest.json"
+GENERATIONS_DIRNAME = GENERATIONS_SUBDIR
+STAGING_DIRNAME = STAGING_SUBDIR
+GENERATION_MANIFEST_FILENAME = GENERATION_MANIFEST
 PCA_MODEL_FILENAME = "pca_model.pkl"
 UMAP_MODEL_FILENAME = "umap_model.pkl"
 PCA_SPACE_FILENAME = "pca_space.npy"
@@ -447,25 +453,21 @@ def _resolve_current(root: Path, definition: dict[str, object]) -> tuple[Path, d
                 "legacy in-place project embedding requires force_recompute=True migration"
             )
         return None
-    with pointer_path.open(encoding="utf-8") as handle:
-        pointer = json.load(handle)
-    if int(pointer.get("schema_version", -1)) != 1:
-        raise EmbeddingCompatibilityError("embedding current-pointer schema is incompatible")
-    relative = Path(str(pointer.get("generation_path", "")))
-    generation = (root / relative).resolve()
-    if relative.is_absolute() or not generation.is_relative_to(root.resolve()):
-        raise EmbeddingCompatibilityError("embedding current pointer is not portable")
-    manifest_path = generation / GENERATION_MANIFEST_FILENAME
-    if (
-        pointer.get("manifest_sha256") != _file_sha256(manifest_path)
-        if manifest_path.is_file()
-        else True
-    ):
-        raise EmbeddingCompatibilityError("embedding current manifest checksum does not match")
+    try:
+        selected = resolve_current_generation(
+            root,
+            manifest_checksum=_file_sha256,
+            require_generation_id=True,
+        )
+    except GenerationError as exc:
+        raise EmbeddingCompatibilityError(str(exc)) from exc
+    if selected is None:
+        return None
+    generation, pointer_manifest = selected
     manifest = _validate_generation(
         generation,
         definition=definition,
-        expected_generation_id=str(pointer.get("generation_id")),
+        expected_generation_id=str(pointer_manifest.get("generation_id")),
     )
     return generation, manifest
 
@@ -582,57 +584,51 @@ def _publish_generation(
     prior_generation_id: str | None,
     prior_fit_at: str | None,
 ) -> tuple[Path, dict]:
-    generation_id = uuid4().hex
-    staging = root / STAGING_DIRNAME / generation_id
-    final = root / GENERATIONS_DIRNAME / generation_id
-    staging.mkdir(parents=True)
-    final.parent.mkdir(parents=True, exist_ok=True)
-    moved_to_final = False
-    try:
-        _write_generation_artifacts(staging, result, row_digests)
-        timestamp = _now()
-        manifest = {
-            "schema_version": GENERATION_SCHEMA_VERSION,
-            "status": "complete",
-            "generation_id": generation_id,
-            "definition_hash": _definition_hash(definition),
-            "definition": definition,
-            "source": source,
-            "dependencies": _dependencies(),
-            "fit_kind": fit_kind,
-            "fit_at": prior_fit_at or timestamp,
-            "extended_at": timestamp if fit_kind == "extended" else None,
-            "refit_at": timestamp if fit_kind == "full" and prior_generation_id else None,
-            "prior_generation_id": prior_generation_id,
-            "n_reads": len(result["obs_names"]),
-            "n_new_reads": (
-                len(result["obs_names"]) - int(result.get("prior_n_reads", 0))
-                if fit_kind == "extended"
-                else 0
-            ),
-            "explained_variance_ratio": result.get("explained_variance_ratio"),
-            "artifacts": _artifact_checksums(staging),
-        }
-        atomic_write_json(staging / GENERATION_MANIFEST_FILENAME, manifest)
-        _validate_generation(staging, definition=definition, expected_generation_id=generation_id)
-        os.replace(staging, final)
-        moved_to_final = True
-        manifest_path = final / GENERATION_MANIFEST_FILENAME
-        atomic_write_json(
-            root / CURRENT_FILENAME,
-            {
-                "schema_version": 1,
-                "generation_id": generation_id,
-                "generation_path": final.relative_to(root).as_posix(),
-                "manifest_sha256": _file_sha256(manifest_path),
-            },
+    def validate(staging: Path, _final: Path, _run_root: Path) -> None:
+        _validate_generation(
+            staging,
+            definition=definition,
+            expected_generation_id=staged.generation_id,
         )
-        return final, manifest
-    except Exception:
-        shutil.rmtree(staging, ignore_errors=True)
-        if moved_to_final:
-            shutil.rmtree(final, ignore_errors=True)
-        raise
+
+    try:
+        with staged_generation(
+            root,
+            validate=validate,
+            manifest_checksum=_file_sha256,
+            write_json=atomic_write_json,
+        ) as staged:
+            generation_id = staged.generation_id
+            staging = staged.staging_dir
+            final = staged.final_dir
+            _write_generation_artifacts(staging, result, row_digests)
+            timestamp = _now()
+            manifest = {
+                "schema_version": GENERATION_SCHEMA_VERSION,
+                "status": "complete",
+                "generation_id": generation_id,
+                "definition_hash": _definition_hash(definition),
+                "definition": definition,
+                "source": source,
+                "dependencies": _dependencies(),
+                "fit_kind": fit_kind,
+                "fit_at": prior_fit_at or timestamp,
+                "extended_at": timestamp if fit_kind == "extended" else None,
+                "refit_at": timestamp if fit_kind == "full" and prior_generation_id else None,
+                "prior_generation_id": prior_generation_id,
+                "n_reads": len(result["obs_names"]),
+                "n_new_reads": (
+                    len(result["obs_names"]) - int(result.get("prior_n_reads", 0))
+                    if fit_kind == "extended"
+                    else 0
+                ),
+                "explained_variance_ratio": result.get("explained_variance_ratio"),
+                "artifacts": _artifact_checksums(staging),
+            }
+            staged.record_manifest(manifest)
+    except GenerationError as exc:
+        raise EmbeddingCompatibilityError(str(exc)) from exc
+    return final, manifest
 
 
 def fit_or_extend_embedding(

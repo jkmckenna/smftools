@@ -15,6 +15,16 @@ from ..informatics.experiment_manifest import (
     artifact_record,
     read_experiment_manifest,
 )
+from ..informatics.generation import (
+    CURRENT_FILENAME,
+    CURRENT_SCHEMA_VERSION,
+    GENERATION_MANIFEST,
+    GENERATIONS_SUBDIR,
+    STAGING_SUBDIR,
+    GenerationError,
+    resolve_current_generation,
+    staged_generation,
+)
 from ..informatics.partition_read import load_spine, relative_uns_path
 from ..informatics.sidecar_manifest import resolve_sidecar, sidecar_manifest_path
 from ..pipeline import PlanState
@@ -30,12 +40,12 @@ from .partitioned_executor import (
 )
 from .variant_reporting import VARIANT_REPORTING_SUBDIR
 
-PREPROCESS_GENERATIONS_SUBDIR = "generations"
-PREPROCESS_STAGING_SUBDIR = ".staging"
-PREPROCESS_CURRENT_FILENAME = "current.json"
-PREPROCESS_GENERATION_MANIFEST = "generation_manifest.json"
+PREPROCESS_GENERATIONS_SUBDIR = GENERATIONS_SUBDIR
+PREPROCESS_STAGING_SUBDIR = STAGING_SUBDIR
+PREPROCESS_CURRENT_FILENAME = CURRENT_FILENAME
+PREPROCESS_GENERATION_MANIFEST = GENERATION_MANIFEST
 PREPROCESS_GENERATION_SCHEMA_VERSION = 1
-PREPROCESS_CURRENT_SCHEMA_VERSION = 1
+PREPROCESS_CURRENT_SCHEMA_VERSION = CURRENT_SCHEMA_VERSION
 PREPROCESS_TASK_CATALOG_SCHEMA_VERSION = 1
 PREPROCESS_OUTPUT_SCHEMA_VERSION = 2
 PREPROCESS_READ_INDEX_SCHEMA_VERSION = 1
@@ -461,30 +471,20 @@ def resolve_current_preprocess_generation(
 ) -> tuple[Path, dict[str, Any]] | None:
     """Resolve and validate the generation selected by preprocess ``current.json``."""
     output_dir = Path(output_dir)
-    pointer_path = output_dir / PREPROCESS_CURRENT_FILENAME
-    if not pointer_path.exists():
-        return None
     try:
-        with pointer_path.open(encoding="utf-8") as handle:
-            pointer = json.load(handle)
-    except (OSError, json.JSONDecodeError) as exc:
-        raise PreprocessGenerationError("preprocess current pointer is unreadable") from exc
-    if int(pointer.get("schema_version", -1)) != PREPROCESS_CURRENT_SCHEMA_VERSION:
-        raise PreprocessGenerationError("preprocess current-pointer schema is incompatible")
-    relative = Path(str(pointer.get("generation_path", "")))
-    generation = (output_dir / relative).resolve()
-    if (
-        not str(relative)
-        or relative.is_absolute()
-        or not generation.is_relative_to(output_dir.resolve())
-    ):
-        raise PreprocessGenerationError("preprocess current pointer is not portable")
-    manifest_path = generation / PREPROCESS_GENERATION_MANIFEST
-    if not manifest_path.is_file() or pointer.get("manifest_sha256") != _checksum(manifest_path):
-        raise PreprocessGenerationError("preprocess current manifest checksum does not match")
+        selected = resolve_current_generation(
+            output_dir,
+            manifest_checksum=_checksum,
+            require_generation_id=True,
+        )
+    except GenerationError as exc:
+        raise PreprocessGenerationError(str(exc)) from exc
+    if selected is None:
+        return None
+    generation, pointer_manifest = selected
     manifest = validate_preprocess_generation(
         generation,
-        expected_generation_id=str(pointer.get("generation_id", "")),
+        expected_generation_id=str(pointer_manifest.get("generation_id", "")),
         final_dir=generation,
         run_root=output_dir.parent,
     )
@@ -515,14 +515,7 @@ def publish_preprocess_generation(
     spine_path = Path(spine_path)
     output_dir = Path(output_dir)
     run_root = output_dir.parent
-    generation_id = uuid4().hex
-    staging_dir = output_dir / PREPROCESS_STAGING_SUBDIR / generation_id
-    final_dir = output_dir / PREPROCESS_GENERATIONS_SUBDIR / generation_id
-    current_path = output_dir / PREPROCESS_CURRENT_FILENAME
     canonical_spine = output_dir / PREPROCESS_SPINE_FILENAME
-    previous_current = (
-        json.loads(current_path.read_text(encoding="utf-8")) if current_path.is_file() else None
-    )
     current_generation = resolve_current_preprocess_generation(output_dir)
     upgrade_plan = plan_preprocess_upgrade(
         spine_path,
@@ -540,132 +533,121 @@ def publish_preprocess_generation(
     previous_generation_id = (
         str(current_generation[1]["generation_id"]) if current_generation is not None else None
     )
-    staging_dir.mkdir(parents=True)
-    final_dir.parent.mkdir(parents=True, exist_ok=True)
-    moved_to_final = False
-    current_advanced = False
+
+    def validate(staging: Path, final: Path, root: Path) -> None:
+        validate_preprocess_generation(
+            staging,
+            expected_generation_id=staged.generation_id,
+            final_dir=final,
+            run_root=root,
+        )
+
+    def publish_spine(_staging: Path, final: Path, _root: Path) -> None:
+        _atomic_publish_spine(final / PREPROCESS_SPINE_FILENAME, canonical_spine)
 
     try:
-        compute_nodes = {PREPROCESS_TASKS_NODE, PREPROCESS_REDUCERS_NODE}
-        if current_generation is not None and compute_nodes.issubset(reusable):
-            shutil.copytree(current_generation[0], staging_dir, dirs_exist_ok=True)
-            (staging_dir / PREPROCESS_GENERATION_MANIFEST).unlink(missing_ok=True)
-            if (
-                str(getattr(cfg, "variant_analysis_mode", "off")).lower() in {"report", "filter"}
-                and PREPROCESS_VARIANT_METRICS_NODE not in reusable
-            ):
-                _regenerate_variant_metrics(
+        with staged_generation(
+            output_dir,
+            run_root=run_root,
+            validate=validate,
+            manifest_checksum=_checksum,
+            write_json=atomic_write_json,
+            after_current=publish_spine,
+        ) as staged:
+            generation_id = staged.generation_id
+            staging_dir = staged.staging_dir
+            final_dir = staged.final_dir
+            compute_nodes = {PREPROCESS_TASKS_NODE, PREPROCESS_REDUCERS_NODE}
+            if current_generation is not None and compute_nodes.issubset(reusable):
+                shutil.copytree(current_generation[0], staging_dir, dirs_exist_ok=True)
+                (staging_dir / PREPROCESS_GENERATION_MANIFEST).unlink(missing_ok=True)
+                if (
+                    str(getattr(cfg, "variant_analysis_mode", "off")).lower()
+                    in {"report", "filter"}
+                    and PREPROCESS_VARIANT_METRICS_NODE not in reusable
+                ):
+                    _regenerate_variant_metrics(
+                        staging_dir,
+                        source_generation_id=generation_id,
+                    )
+                if PREPROCESS_PLOTS_NODE not in reusable:
+                    _regenerate_preprocess_plots(staging_dir, spine_path, cfg)
+                staged_spine = staging_dir / PREPROCESS_SPINE_FILENAME
+            else:
+                execute = executor or execute_partitioned_preprocessing
+                execute_kwargs: dict[str, Any] = {
+                    "publication_dir": final_dir,
+                    "run_root": run_root,
+                    "refresh_experiment_spine": False,
+                }
+                if executor is None:
+                    execute_kwargs["analysis_generation_id"] = generation_id
+                if (
+                    current_generation is not None
+                    and PREPROCESS_TASKS_NODE in reusable
+                    and executor is None
+                ):
+                    execute_kwargs["reuse_task_artifacts_from"] = current_generation[0]
+                staged_outputs = execute(
+                    spine_path,
+                    cfg,
                     staging_dir,
-                    source_generation_id=generation_id,
+                    **execute_kwargs,
                 )
-            if PREPROCESS_PLOTS_NODE not in reusable:
-                _regenerate_preprocess_plots(staging_dir, spine_path, cfg)
-            staged_spine = staging_dir / PREPROCESS_SPINE_FILENAME
-        else:
-            execute = executor or execute_partitioned_preprocessing
-            execute_kwargs: dict[str, Any] = {
-                "publication_dir": final_dir,
-                "run_root": run_root,
-                "refresh_experiment_spine": False,
-            }
-            if executor is None:
-                execute_kwargs["analysis_generation_id"] = generation_id
-            if (
-                current_generation is not None
-                and PREPROCESS_TASKS_NODE in reusable
-                and executor is None
+                staged_spine = Path(staged_outputs["spine"])
+            _bind_generation_spine(
+                staged_spine,
+                generation_id=generation_id,
+                publication_dir=final_dir,
+                run_root=run_root,
+            )
+
+            artifact_paths = dict(_GENERATION_ARTIFACTS)
+            if (staging_dir / VARIANT_REPORTING_SUBDIR).is_dir():
+                artifact_paths.update(_VARIANT_GENERATION_ARTIFACTS)
+            if all(
+                (staging_dir / relative).exists() for relative in _VARIANT_METRIC_ARTIFACTS.values()
             ):
-                execute_kwargs["reuse_task_artifacts_from"] = current_generation[0]
-            staged_outputs = execute(
+                artifact_paths.update(_VARIANT_METRIC_ARTIFACTS)
+            artifacts = {
+                key: _generation_artifact_record(staging_dir / relative, staging_dir)
+                for key, relative in artifact_paths.items()
+            }
+            task_count = len(pd.read_parquet(staging_dir / PREPROCESS_TASK_CATALOG))
+            reused_nodes = (
+                reusable
+                if current_generation is not None and compute_nodes.issubset(reusable)
+                else reusable.intersection({PREPROCESS_TASKS_NODE})
+            )
+            node_results = build_preprocess_node_results(
+                staging_dir,
                 spine_path,
                 cfg,
-                staging_dir,
-                **execute_kwargs,
+                generation_id=generation_id,
+                reused_nodes=reused_nodes,
+                reused_from_generation_id=previous_generation_id,
             )
-            staged_spine = Path(staged_outputs["spine"])
-        _bind_generation_spine(
-            staged_spine,
-            generation_id=generation_id,
-            publication_dir=final_dir,
-            run_root=run_root,
-        )
-
-        artifact_paths = dict(_GENERATION_ARTIFACTS)
-        if (staging_dir / VARIANT_REPORTING_SUBDIR).is_dir():
-            artifact_paths.update(_VARIANT_GENERATION_ARTIFACTS)
-        if all(
-            (staging_dir / relative).exists() for relative in _VARIANT_METRIC_ARTIFACTS.values()
-        ):
-            artifact_paths.update(_VARIANT_METRIC_ARTIFACTS)
-        artifacts = {
-            key: _generation_artifact_record(staging_dir / relative, staging_dir)
-            for key, relative in artifact_paths.items()
-        }
-        task_count = len(pd.read_parquet(staging_dir / PREPROCESS_TASK_CATALOG))
-        reused_nodes = (
-            reusable
-            if current_generation is not None and compute_nodes.issubset(reusable)
-            else reusable.intersection({PREPROCESS_TASKS_NODE})
-        )
-        node_results = build_preprocess_node_results(
-            staging_dir,
-            spine_path,
-            cfg,
-            generation_id=generation_id,
-            reused_nodes=reused_nodes,
-            reused_from_generation_id=previous_generation_id,
-        )
-        generation_manifest = staging_dir / PREPROCESS_GENERATION_MANIFEST
-        atomic_write_json(
-            generation_manifest,
-            {
-                "schema_version": PREPROCESS_GENERATION_SCHEMA_VERSION,
-                "status": "complete",
-                "generation_id": generation_id,
-                "compute_config_hash": stage_config_hash(cfg, "preprocess"),
-                "source": _source_provenance(spine_path, run_root),
-                "output_schema_version": PREPROCESS_OUTPUT_SCHEMA_VERSION,
-                "task_catalog_schema_version": PREPROCESS_TASK_CATALOG_SCHEMA_VERSION,
-                "read_index_schema_version": PREPROCESS_READ_INDEX_SCHEMA_VERSION,
-                "task_count": task_count,
-                "upgrade_plan": upgrade_plan.to_dict(),
-                "node_results": [result.to_dict() for result in node_results],
-                "artifacts": artifacts,
-            },
-        )
-        validate_preprocess_generation(
-            staging_dir,
-            expected_generation_id=generation_id,
-            final_dir=final_dir,
-            run_root=run_root,
-        )
-
-        os.replace(staging_dir, final_dir)
-        moved_to_final = True
-        final_manifest = final_dir / PREPROCESS_GENERATION_MANIFEST
-        atomic_write_json(
-            current_path,
-            {
-                "schema_version": PREPROCESS_CURRENT_SCHEMA_VERSION,
-                "generation_id": generation_id,
-                "generation_path": final_dir.relative_to(output_dir).as_posix(),
-                "manifest_sha256": _checksum(final_manifest),
-            },
-        )
-        current_advanced = True
-        _atomic_publish_spine(final_dir / PREPROCESS_SPINE_FILENAME, canonical_spine)
-    except Exception:
-        shutil.rmtree(staging_dir, ignore_errors=True)
-        if moved_to_final:
-            if current_advanced:
-                if previous_current is None:
-                    current_path.unlink(missing_ok=True)
-                else:
-                    atomic_write_json(current_path, previous_current)
-            shutil.rmtree(final_dir, ignore_errors=True)
-        raise
+            staged.record_manifest(
+                {
+                    "schema_version": PREPROCESS_GENERATION_SCHEMA_VERSION,
+                    "status": "complete",
+                    "generation_id": generation_id,
+                    "compute_config_hash": stage_config_hash(cfg, "preprocess"),
+                    "source": _source_provenance(spine_path, run_root),
+                    "output_schema_version": PREPROCESS_OUTPUT_SCHEMA_VERSION,
+                    "task_catalog_schema_version": PREPROCESS_TASK_CATALOG_SCHEMA_VERSION,
+                    "read_index_schema_version": PREPROCESS_READ_INDEX_SCHEMA_VERSION,
+                    "task_count": task_count,
+                    "upgrade_plan": upgrade_plan.to_dict(),
+                    "node_results": [result.to_dict() for result in node_results],
+                    "artifacts": artifacts,
+                }
+            )
+    except GenerationError as exc:
+        raise PreprocessGenerationError(str(exc)) from exc
 
     write_experiment_spine(run_root)
+    current_path = output_dir / PREPROCESS_CURRENT_FILENAME
 
     outputs: dict[str, Path | str | int] = {
         key: final_dir / relative for key, relative in _GENERATION_ARTIFACTS.items()

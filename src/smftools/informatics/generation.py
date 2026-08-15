@@ -1,11 +1,7 @@
 """Shared publication vocabulary for immutable generations.
 
-Four subsystems already publish immutable generations, each with its own
-publish/resolve pair: raw (:mod:`.raw_generation`), preprocess
-(:mod:`smftools.preprocessing.preprocess_generation`), latent
-(:mod:`smftools.tools.partitioned_latent`), and project embeddings
-(:mod:`smftools.project.embedding_store`). They converged independently on one
-on-disk shape::
+Experiment stages and project embeddings publish immutable generations using
+one on-disk shape::
 
     <output_dir>/
       current.json                       # atomic pointer to the readable generation
@@ -14,10 +10,11 @@ on-disk shape::
         ...                              # kind-specific artifacts
       .staging/<generation_id>/          # build area, never read by consumers
 
-This module is that shape, factored out once, for kinds that do not have it yet.
-It deliberately does **not** rewrite the four existing implementations: they are
-working and tested, their on-disk layouts are load-bearing for published data,
-and consolidating them changes no layout, so it can follow separately.
+This module owns that shared publication and selection mechanism. Kind-specific
+modules remain responsible for building artifacts and validating their schema.
+The optional manifest checksum preserves the stronger pointer used by raw,
+preprocess, and project embeddings; latent and the post-preprocess experiment
+stages retain the checksum-free pointer they historically published.
 
 The transaction is the point. A generation becomes visible only when it is
 complete: artifacts are built under ``.staging/``, validated, moved into place
@@ -91,6 +88,9 @@ def staged_generation(
     run_root: str | Path | None = None,
     validate: Callable[[Path, Path, Path], None] | None = None,
     generation_id: str | None = None,
+    manifest_checksum: Callable[[Path], str] | None = None,
+    write_json: Callable[[str | Path, Any], None] | None = None,
+    after_current: Callable[[Path, Path, Path], None] | None = None,
 ) -> Iterator[StagedGeneration]:
     """Build and atomically publish one immutable generation.
 
@@ -103,6 +103,16 @@ def staged_generation(
             abort; the staging tree is removed and ``current.json`` never moves.
         generation_id: Override the generated id. For tests and for republishing
             a known id; normally leave unset.
+        manifest_checksum: Optional checksum function. When provided, the
+            resulting digest is recorded as ``manifest_sha256`` in
+            ``current.json``.
+        write_json: JSON writer used for the manifest, selector, and selector
+            rollback. Defaults to :func:`smftools.readwrite.atomic_write_json`.
+            Kind-specific callers may pass their imported writer to preserve
+            failure-injection seams.
+        after_current: Optional ``(staging_dir, final_dir, run_root)`` callable
+            run after the selector advances. A failure restores the previous
+            selector and removes the new generation.
 
     Yields:
         A :class:`StagedGeneration`. The caller must call
@@ -114,6 +124,7 @@ def staged_generation(
     """
     output_dir = Path(output_dir)
     run_root = Path(run_root) if run_root is not None else output_dir.parent
+    write_json = write_json or atomic_write_json
     output_dir.mkdir(parents=True, exist_ok=True)
 
     generation_id = generation_id or uuid4().hex
@@ -134,7 +145,18 @@ def staged_generation(
         run_root=run_root,
     )
 
+    pointer_path = _current_path(output_dir)
+    previous_current: dict[str, Any] | None = None
+    if pointer_path.is_file():
+        try:
+            payload = json.loads(pointer_path.read_text(encoding="utf-8"))
+            previous_current = payload if isinstance(payload, dict) else None
+        except (OSError, json.JSONDecodeError):
+            # Publishing a valid generation may repair a corrupt selector.
+            previous_current = None
+
     moved = False
+    current_advanced = False
     try:
         yield staged
         if staged._manifest is None:
@@ -142,25 +164,32 @@ def staged_generation(
                 f"generation {generation_id!r} recorded no manifest; "
                 "call record_manifest() before leaving the staged_generation block"
             )
-        atomic_write_json(staging_dir / GENERATION_MANIFEST, staged._manifest)
+        write_json(staging_dir / GENERATION_MANIFEST, staged._manifest)
         if validate is not None:
             validate(staging_dir, final_dir, run_root)
         os.replace(staging_dir, final_dir)
         moved = True
-        atomic_write_json(
-            _current_path(output_dir),
-            {
-                "schema_version": CURRENT_SCHEMA_VERSION,
-                "generation_id": generation_id,
-                "generation_path": final_dir.relative_to(output_dir).as_posix(),
-            },
-        )
+        pointer = {
+            "schema_version": CURRENT_SCHEMA_VERSION,
+            "generation_id": generation_id,
+            "generation_path": final_dir.relative_to(output_dir).as_posix(),
+        }
+        if manifest_checksum is not None:
+            pointer["manifest_sha256"] = manifest_checksum(final_dir / GENERATION_MANIFEST)
+        write_json(pointer_path, pointer)
+        current_advanced = True
+        if after_current is not None:
+            after_current(staging_dir, final_dir, run_root)
     except Exception:
         shutil.rmtree(staging_dir, ignore_errors=True)
         if moved:
-            # The move succeeded but advancing `current` did not. Remove the
-            # orphan so it cannot be mistaken for a published generation; the
-            # previously current one is still selected and untouched.
+            if current_advanced:
+                if previous_current is None:
+                    pointer_path.unlink(missing_ok=True)
+                else:
+                    write_json(pointer_path, previous_current)
+            # The move succeeded but the publication transaction did not.
+            # Remove the orphan so it cannot be mistaken for a generation.
             shutil.rmtree(final_dir, ignore_errors=True)
         raise
     logger.info("Published %s generation %s", output_dir.name, generation_id)
@@ -168,12 +197,17 @@ def staged_generation(
 
 def resolve_current_generation(
     output_dir: str | Path,
+    *,
+    manifest_checksum: Callable[[Path], str] | None = None,
+    require_generation_id: bool = False,
 ) -> tuple[Path, dict[str, Any]] | None:
     """Return ``(generation_dir, manifest)`` for the selected generation.
 
     Returns ``None`` when nothing is published yet, which is how a legacy
     in-place output directory presents. Raises rather than guessing when a
-    pointer exists but does not resolve safely.
+    pointer exists but does not resolve safely. Set ``require_generation_id``
+    for formats whose historical validator requires the selector to name the
+    generation explicitly.
     """
     output_dir = Path(output_dir)
     pointer_path = _current_path(output_dir)
@@ -203,12 +237,20 @@ def resolve_current_generation(
     manifest_path = generation / GENERATION_MANIFEST
     if not manifest_path.is_file():
         raise GenerationError(f"{output_dir.name} current generation has no manifest")
+    if manifest_checksum is not None:
+        expected_checksum = str(pointer.get("manifest_sha256", ""))
+        if not expected_checksum or manifest_checksum(manifest_path) != expected_checksum:
+            raise GenerationError(f"{output_dir.name} current manifest checksum does not match")
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise GenerationError(f"{output_dir.name} current manifest is unreadable") from exc
+    if not isinstance(manifest, dict):
+        raise GenerationError(f"{output_dir.name} current manifest is not an object")
 
     expected = str(pointer.get("generation_id", ""))
+    if require_generation_id and not expected:
+        raise GenerationError(f"{output_dir.name} current pointer names no generation")
     if expected and str(manifest.get("generation_id", "")) != expected:
         raise GenerationError(
             f"{output_dir.name} current pointer names {expected!r} but the manifest does not"

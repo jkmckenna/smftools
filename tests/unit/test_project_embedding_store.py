@@ -99,6 +99,12 @@ def test_fit_or_extend_embedding_full_fit(tmp_path):
     generation = directory / pointer["generation_path"]
     assert generation.is_dir()
     assert pointer["generation_id"] == result["meta"]["generation_id"]
+    assert set(pointer) == {
+        "schema_version",
+        "generation_id",
+        "generation_path",
+        "manifest_sha256",
+    }
     assert result["meta"]["source"]["feature_input_digest"]
     assert result["meta"]["source"]["ordered_molecule_membership_digest"]
     assert result["meta"]["dependencies"]["scikit-learn"]

@@ -7,7 +7,6 @@ import os
 import shutil
 from pathlib import Path
 from typing import Any, Mapping
-from uuid import uuid4
 
 from ..readwrite import (
     atomic_write_json,
@@ -16,15 +15,25 @@ from ..readwrite import (
     safe_write_h5ad,
 )
 from .experiment_manifest import artifact_record
+from .generation import (
+    CURRENT_FILENAME,
+    CURRENT_SCHEMA_VERSION,
+    GENERATION_MANIFEST,
+    GENERATIONS_SUBDIR,
+    STAGING_SUBDIR,
+    GenerationError,
+    resolve_current_generation,
+    staged_generation,
+)
 from .partition_read import relative_uns_path, resolve_relative_path
 from .sidecar_manifest import register_sidecar, resolve_sidecar, sidecar_manifest_path
 
-RAW_GENERATIONS_SUBDIR = "generations"
-RAW_STAGING_SUBDIR = ".staging"
-RAW_CURRENT_FILENAME = "current.json"
-RAW_GENERATION_MANIFEST = "generation_manifest.json"
+RAW_GENERATIONS_SUBDIR = GENERATIONS_SUBDIR
+RAW_STAGING_SUBDIR = STAGING_SUBDIR
+RAW_CURRENT_FILENAME = CURRENT_FILENAME
+RAW_GENERATION_MANIFEST = GENERATION_MANIFEST
 RAW_GENERATION_SCHEMA_VERSION = 2
-RAW_CURRENT_SCHEMA_VERSION = 1
+RAW_CURRENT_SCHEMA_VERSION = CURRENT_SCHEMA_VERSION
 
 RAW_GENERATION_ARTIFACT_PATHS: dict[str, str] = {
     "spine": "spine.h5ad",
@@ -340,30 +349,20 @@ def resolve_current_raw_generation(
 ) -> tuple[Path, dict[str, Any]] | None:
     """Resolve and validate the generation selected by raw ``current.json``."""
     raw_output_dir = Path(raw_output_dir)
-    pointer_path = raw_output_dir / RAW_CURRENT_FILENAME
-    if not pointer_path.exists():
-        return None
     try:
-        pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise RawGenerationError("raw current pointer is unreadable") from exc
-    if int(pointer.get("schema_version", -1)) != RAW_CURRENT_SCHEMA_VERSION:
-        raise RawGenerationError("raw current-pointer schema is incompatible")
-    relative = Path(str(pointer.get("generation_path", "")))
-    generation = (raw_output_dir / relative).resolve()
-    if (
-        not str(relative)
-        or relative.is_absolute()
-        or ".." in relative.parts
-        or not generation.is_relative_to(raw_output_dir.resolve())
-    ):
-        raise RawGenerationError("raw current pointer is not portable")
-    manifest_path = generation / RAW_GENERATION_MANIFEST
-    if not manifest_path.is_file() or pointer.get("manifest_sha256") != _checksum(manifest_path):
-        raise RawGenerationError("raw current manifest checksum does not match")
+        selected = resolve_current_generation(
+            raw_output_dir,
+            manifest_checksum=_checksum,
+            require_generation_id=True,
+        )
+    except GenerationError as exc:
+        raise RawGenerationError(str(exc)) from exc
+    if selected is None:
+        return None
+    generation, pointer_manifest = selected
     manifest = validate_raw_generation(
         generation,
-        expected_generation_id=str(pointer.get("generation_id", "")),
+        expected_generation_id=str(pointer_manifest.get("generation_id", "")),
         final_dir=generation,
         run_root=raw_output_dir.parent,
     )
@@ -385,18 +384,6 @@ def publish_raw_generation(
     """Snapshot, validate, and atomically select one immutable raw generation."""
     run_root = Path(run_root)
     raw_output_dir = run_root / "raw_outputs"
-    generation_id = generation_id or uuid4().hex
-    staging_dir = raw_output_dir / RAW_STAGING_SUBDIR / generation_id
-    final_dir = raw_output_dir / RAW_GENERATIONS_SUBDIR / generation_id
-    current_path = raw_output_dir / RAW_CURRENT_FILENAME
-    try:
-        previous_current = (
-            json.loads(current_path.read_text(encoding="utf-8")) if current_path.is_file() else None
-        )
-    except (OSError, json.JSONDecodeError):
-        # A corrupt selector must not prevent a recomputation from publishing a
-        # new valid generation. It is deliberately not restored on rollback.
-        previous_current = None
     reuse_root = Path(reuse_generation) if reuse_generation is not None else None
     reuse_manifest: dict[str, Any] | None = None
     if reuse_root is not None:
@@ -407,11 +394,6 @@ def publish_raw_generation(
         "new_files": 0,
         "new_bytes": 0,
     }
-    staging_dir.mkdir(parents=True)
-    final_dir.parent.mkdir(parents=True, exist_ok=True)
-    moved_to_final = False
-    current_advanced = False
-
     normalized_sources = {key: Path(path) for key, path in source_artifacts.items()}
     missing = sorted(
         key
@@ -420,7 +402,6 @@ def publish_raw_generation(
         and (key not in normalized_sources or not normalized_sources[key].exists())
     )
     if missing:
-        shutil.rmtree(staging_dir, ignore_errors=True)
         raise RawGenerationError(f"raw publication source artifacts are incomplete: {missing}")
 
     region_paths = {str(scope): Path(path) for scope, path in (region_artifacts or {}).items()}
@@ -434,100 +415,95 @@ def publish_raw_generation(
     if "barcode_index" in normalized_sources and normalized_sources["barcode_index"].exists():
         artifact_paths["barcode_index"] = "barcode_index.parquet"
 
+    def validate(staging: Path, final: Path, root: Path) -> None:
+        validate_raw_generation(
+            staging,
+            expected_generation_id=staged.generation_id,
+            final_dir=final,
+            run_root=root,
+        )
+
+    def validate_published(_staging: Path, final: Path, root: Path) -> None:
+        validate_raw_generation(
+            final,
+            expected_generation_id=staged.generation_id,
+            run_root=root,
+        )
+
     try:
-        for key, relative in artifact_paths.items():
-            if key == "sidecar_manifest":
-                continue
-            source = (
-                region_paths[key.removeprefix("region:")]
-                if key.startswith("region:")
-                else normalized_sources[key]
-            )
-            if reuse_root is None:
-                file_count, byte_count = _artifact_file_totals(source)
-                reuse_stats["new_files"] += file_count
-                reuse_stats["new_bytes"] += byte_count
-                _copy_artifact(source, staging_dir / relative)
-            else:
-                _copy_artifact(
-                    source,
-                    staging_dir / relative,
-                    reuse_source=reuse_root / relative,
-                    reuse_stats=reuse_stats,
-                )
-        _bind_generation_spine(
-            staging_dir / "spine.h5ad",
+        with staged_generation(
+            raw_output_dir,
+            run_root=run_root,
+            validate=validate,
             generation_id=generation_id,
-            publication_dir=final_dir,
-            run_root=run_root,
-            region_artifacts=region_relatives,
-        )
-        _write_generation_sidecar_manifest(staging_dir, artifact_paths)
-        artifacts = {
-            key: _generation_artifact_record(staging_dir / relative, staging_dir)
-            for key, relative in artifact_paths.items()
-        }
-        dependency_records = {
-            str(key): artifact_record(Path(path), run_root, checksum=True)
-            for key, path in sorted((dependencies or {}).items())
-        }
-        generation_manifest = staging_dir / RAW_GENERATION_MANIFEST
-        atomic_write_json(
-            generation_manifest,
-            {
-                "schema_version": RAW_GENERATION_SCHEMA_VERSION,
-                "status": "complete",
-                "generation_id": generation_id,
-                "config_hash": str(config_hash),
-                "input_artifact_ids": list(input_artifact_ids),
-                "region_artifacts": region_relatives,
-                "artifacts": artifacts,
-                "dependencies": dependency_records,
-                "source_transition": dict(source_transition or {}),
-                "reuse": {
-                    "generation_id": (
-                        str(reuse_manifest.get("generation_id"))
-                        if reuse_manifest is not None
-                        else None
-                    ),
-                    **reuse_stats,
-                },
-            },
-        )
-        validate_raw_generation(
-            staging_dir,
-            expected_generation_id=generation_id,
-            final_dir=final_dir,
-            run_root=run_root,
-        )
-        os.replace(staging_dir, final_dir)
-        moved_to_final = True
-        final_manifest = final_dir / RAW_GENERATION_MANIFEST
-        atomic_write_json(
-            current_path,
-            {
-                "schema_version": RAW_CURRENT_SCHEMA_VERSION,
-                "generation_id": generation_id,
-                "generation_path": final_dir.relative_to(raw_output_dir).as_posix(),
-                "manifest_sha256": _checksum(final_manifest),
-            },
-        )
-        current_advanced = True
-        validate_raw_generation(
-            final_dir,
-            expected_generation_id=generation_id,
-            run_root=run_root,
-        )
-    except Exception:
-        shutil.rmtree(staging_dir, ignore_errors=True)
-        if moved_to_final:
-            if current_advanced:
-                if previous_current is None:
-                    current_path.unlink(missing_ok=True)
+            manifest_checksum=_checksum,
+            write_json=atomic_write_json,
+            after_current=validate_published,
+        ) as staged:
+            generation_id = staged.generation_id
+            staging_dir = staged.staging_dir
+            final_dir = staged.final_dir
+            for key, relative in artifact_paths.items():
+                if key == "sidecar_manifest":
+                    continue
+                source = (
+                    region_paths[key.removeprefix("region:")]
+                    if key.startswith("region:")
+                    else normalized_sources[key]
+                )
+                if reuse_root is None:
+                    file_count, byte_count = _artifact_file_totals(source)
+                    reuse_stats["new_files"] += file_count
+                    reuse_stats["new_bytes"] += byte_count
+                    _copy_artifact(source, staging_dir / relative)
                 else:
-                    atomic_write_json(current_path, previous_current)
-            shutil.rmtree(final_dir, ignore_errors=True)
-        raise
+                    _copy_artifact(
+                        source,
+                        staging_dir / relative,
+                        reuse_source=reuse_root / relative,
+                        reuse_stats=reuse_stats,
+                    )
+            _bind_generation_spine(
+                staging_dir / "spine.h5ad",
+                generation_id=generation_id,
+                publication_dir=final_dir,
+                run_root=run_root,
+                region_artifacts=region_relatives,
+            )
+            _write_generation_sidecar_manifest(staging_dir, artifact_paths)
+            artifacts = {
+                key: _generation_artifact_record(staging_dir / relative, staging_dir)
+                for key, relative in artifact_paths.items()
+            }
+            dependency_records = {
+                str(key): artifact_record(Path(path), run_root, checksum=True)
+                for key, path in sorted((dependencies or {}).items())
+            }
+            staged.record_manifest(
+                {
+                    "schema_version": RAW_GENERATION_SCHEMA_VERSION,
+                    "status": "complete",
+                    "generation_id": generation_id,
+                    "config_hash": str(config_hash),
+                    "input_artifact_ids": list(input_artifact_ids),
+                    "region_artifacts": region_relatives,
+                    "artifacts": artifacts,
+                    "dependencies": dependency_records,
+                    "source_transition": dict(source_transition or {}),
+                    "reuse": {
+                        "generation_id": (
+                            str(reuse_manifest.get("generation_id"))
+                            if reuse_manifest is not None
+                            else None
+                        ),
+                        **reuse_stats,
+                    },
+                }
+            )
+    except GenerationError as exc:
+        raise RawGenerationError(str(exc)) from exc
+
+    current_path = raw_output_dir / RAW_CURRENT_FILENAME
 
     outputs: dict[str, Path | str] = {
         key: final_dir / relative for key, relative in artifact_paths.items()
