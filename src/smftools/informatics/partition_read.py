@@ -113,6 +113,20 @@ def _run_root_from_source_base(base: Path) -> Path:
     return base.parent
 
 
+def run_root_from_stage_dir(stage_dir: str | Path) -> Path:
+    """Recover a run's ``output_directory`` from one stage output directory.
+
+    Accepts either the canonical stage directory (``<run>/hmm_adata_outputs``) or
+    a generation/staging directory beneath it
+    (``<run>/hmm_adata_outputs/generations/<id>``). Stage executors must use this
+    rather than ``stage_dir.parent``: under a generation the stage output sits
+    three levels below the run root, so the naive form would anchor
+    run-root-relative pointers inside ``generations/``/``.staging/`` and leave
+    them dangling once the generation is published.
+    """
+    return _run_root_from_source_base(Path(stage_dir))
+
+
 def _resolve_spine(spine, base_dir):
     """Return ``(spine_adata, base_dir)`` resolving partition path resolution root.
 

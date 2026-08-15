@@ -163,7 +163,11 @@ def test_hmm_wrapper_dispatches_partitioned_spatial_spine(tmp_path, monkeypatch)
 
     assert hmm_adata("experiment.csv") == (None, paths.hmm_spine)
     assert captured["source"] == spatial_spine
-    assert captured["output_dir"] == tmp_path / "hmm_adata_outputs"
+    # The executor now runs inside a staging directory under the stage root; the
+    # tree moves to generations/<id> only once complete, so a failure never
+    # leaves a partial stage output where readers would find it.
+    staged_output = captured["output_dir"]
+    assert staged_output.parent == tmp_path / "hmm_adata_outputs" / ".staging"
     entry = read_experiment_manifest(tmp_path)["stages"]["hmm"]
     assert entry["state"] == "complete"
     assert entry["expected_tasks"] == entry["successful_tasks"] == 1

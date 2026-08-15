@@ -51,6 +51,40 @@ mpl_colors = require("matplotlib.colors", extra="plotting", purpose="HMM plottin
 # =============================================================================
 
 
+def _remap_staged_outputs(outputs: dict, staged) -> dict:
+    """Rewrite artifact paths from the staging directory to the published one.
+
+    The stage executor writes into ``staged.staging_dir``; ``os.replace`` then
+    moves that whole tree to ``staged.final_dir``. Paths inside the tree stay
+    valid relative to their own root, but the absolute paths the executor
+    returned no longer exist, so they are rebased here. Anything outside the
+    staged tree (a source spine, for instance) is passed through untouched.
+    """
+    staging = staged.staging_dir.resolve()
+    remapped = {}
+    for key, value in outputs.items():
+        if isinstance(value, Path):
+            resolved = value.resolve()
+            if resolved == staging or staging in resolved.parents:
+                remapped[key] = staged.final_dir / resolved.relative_to(staging)
+                continue
+        remapped[key] = value
+    return remapped
+
+
+def _publish_canonical_spine(generation_spine: Path, canonical_path: Path) -> None:
+    """Copy the published generation spine to the stage root, atomically."""
+    import os
+    import shutil
+
+    temporary = canonical_path.with_name(f".{canonical_path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        shutil.copy2(generation_spine, temporary)
+        os.replace(temporary, canonical_path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def _strip_hmm_layer_prefix(layer: str) -> str:
     """Strip methbase prefixes and length suffixes from an HMM layer name.
 
@@ -868,16 +902,61 @@ def hmm_adata(config_path: str):
             "preprocess_adata_outputs/spine.h5ad"
         )
     if partitioned_source is not None:
+        from ..informatics.experiment_spine import write_experiment_spine
+        from ..informatics.generation import (
+            GENERATION_MANIFEST,
+            rebind_staged_spine_pointers,
+            staged_generation,
+        )
         from ..perf_log import perf_substep
-        from ..tools.partitioned_hmm import execute_partitioned_hmm
+        from ..tools.partitioned_hmm import HMM_SPINE_FILENAME, execute_partitioned_hmm
+        from .helpers import stage_config_hash
 
+        run_root = Path(cfg.output_directory)
+        hmm_root = run_root / HMM_DIR
         with stage_lifecycle(cfg, "hmm", partitioned_source) as lifecycle:
             with perf_substep("partitioned_hmm"):
-                outputs = execute_partitioned_hmm(
-                    partitioned_source,
-                    cfg,
-                    Path(cfg.output_directory) / HMM_DIR,
-                )
+                # The stage runs entirely inside the staging directory, so any
+                # failure leaves the previously current generation selected and
+                # untouched. Artifact paths returned here therefore point into
+                # staging and are remapped after publication.
+                with staged_generation(hmm_root, run_root=run_root) as staged:
+                    outputs = execute_partitioned_hmm(
+                        partitioned_source,
+                        cfg,
+                        staged.staging_dir,
+                    )
+                    # Executors record pointers relative to the run root, so
+                    # they currently encode `.staging/<id>/...`. Repoint them at
+                    # the publication directory before the move, exactly as raw
+                    # does via _bind_generation_spine.
+                    rebound = rebind_staged_spine_pointers(
+                        outputs["spine"],
+                        staging_dir=staged.staging_dir,
+                        publication_dir=staged.final_dir,
+                        run_root=run_root,
+                    )
+                    logger.info(
+                        "Rebound %d hmm spine pointer(s) to the published generation", len(rebound)
+                    )
+                    staged.record_manifest(
+                        {
+                            "schema_version": 1,
+                            "status": "complete",
+                            "stage": "hmm",
+                            "config_hash": stage_config_hash(cfg, "hmm"),
+                            "rebound_spine_pointers": rebound,
+                        }
+                    )
+            outputs = _remap_staged_outputs(outputs, staged)
+            # Republish the canonical stage-root spine so existing readers of
+            # paths.hmm_spine keep resolving. It sits two levels below the run
+            # root, so its run-root-relative uns pointers resolve unchanged.
+            _publish_canonical_spine(outputs["spine"], hmm_root / HMM_SPINE_FILENAME)
+            outputs["generation"] = staged.final_dir
+            outputs["generation_spine"] = outputs["spine"]
+            outputs["generation_manifest"] = staged.final_dir / GENERATION_MANIFEST
+            outputs["current"] = hmm_root / "current.json"
             publish_stage_outputs(
                 lifecycle,
                 outputs,
@@ -885,6 +964,9 @@ def hmm_adata(config_path: str):
                 schema_versions={"hmm": 2, "derived_read_index": 1},
                 nonempty_directory_keys=PARTITIONED_STAGE_NONEMPTY_DIRECTORIES["hmm"],
             )
+        # After publication, never during staging: a rejected generation must not
+        # already be unioned into the superset experiment spine.
+        write_experiment_spine(run_root)
         return None, outputs["spine"]
 
     source_path, stage = resolve_adata_stage(cfg, paths)

@@ -216,6 +216,58 @@ def resolve_current_generation(
     return generation, manifest
 
 
+def rebind_staged_spine_pointers(
+    spine_path: str | Path,
+    *,
+    staging_dir: str | Path,
+    publication_dir: str | Path,
+    run_root: str | Path,
+) -> list[str]:
+    """Repoint a staged spine's ``uns`` paths at the published generation.
+
+    Stage executors record artifact pointers relative to the run root, so while
+    building they faithfully encode ``<stage>/.staging/<id>/...`` -- which
+    dangles the moment the tree is moved to ``<stage>/generations/<id>/``. Raw
+    solves this by binding its spine to a ``publication_dir``
+    (``raw_generation._bind_generation_spine``); this is the same idea, applied
+    generically so a stage cannot silently miss a pointer when its key set
+    changes.
+
+    Call while the spine is still in staging, before publication. Pointers to
+    artifacts outside the staged tree (a source spine, for instance) are left
+    alone.
+
+    Returns:
+        The ``uns`` keys that were rewritten, for logging and assertions.
+    """
+    from ..readwrite import normalize_uns_string_lists, safe_read_h5ad, safe_write_h5ad
+    from .partition_read import relative_uns_path
+
+    staging_dir = Path(staging_dir)
+    publication_dir = Path(publication_dir)
+    run_root = Path(run_root)
+
+    old_prefix = relative_uns_path(staging_dir, run_root)
+    new_prefix = relative_uns_path(publication_dir, run_root)
+    if not old_prefix or old_prefix == new_prefix:
+        return []
+
+    spine, _ = safe_read_h5ad(Path(spine_path), verbose=False)
+    rewritten: dict[str, str] = {}
+    for key, value in spine.uns.items():
+        if isinstance(value, str) and value.startswith(f"{old_prefix}/"):
+            rewritten[key] = f"{new_prefix}{value[len(old_prefix) :]}"
+    if not rewritten:
+        return []
+
+    spine.uns.update(rewritten)
+    # The spine was just read from disk, so its string-list uns entries are numpy
+    # arrays the writer's sanitizer would otherwise store as repr strings.
+    normalize_uns_string_lists(spine)
+    safe_write_h5ad(spine, Path(spine_path), backup=False, verbose=False)
+    return sorted(rewritten)
+
+
 def has_published_generations(output_dir: str | Path) -> bool:
     """True when at least one generation directory exists under ``output_dir``."""
     root = Path(output_dir) / GENERATIONS_SUBDIR
