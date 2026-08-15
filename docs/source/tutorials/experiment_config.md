@@ -25,7 +25,8 @@ smf_modality,conversion,Modality of SMF. Can either be conversion or direct.,"co
 input_data_path,/path_to_POD5_directory,Path to directory/file containing input sequencing data,,str
 fasta,/path_to_fasta.fasta,Path to initial FASTA file,,str
 output_directory,/outputs,Directory to act as root for all analysis outputs,,str
-experiment_name,,An experiment name for the final h5ad file,,str
+experiment_id,my_experiment,Canonical experiment identity,,str
+experiment_name,my_experiment,Compatibility alias; must equal experiment_id,,str
 ```
 
 ## Common fields
@@ -55,7 +56,12 @@ Below are some of the most commonly edited fields and how they affect the CLI wo
   those positions as `NaN`.
 - `plot_subsample_seed`: Non-negative seed for deterministic per-barcode plot subsampling.
 - `output_directory`: Root output folder for all generated AnnData files and plots.
-- `experiment_name`: Base name used for output AnnData files.
+- `experiment_id`: Canonical human-readable experiment identity. Set this explicitly; it is
+  persisted separately from the opaque, immutable `experiment_uid`.
+- `experiment_name`: Compatibility alias used for output filenames. Existing configs that set only
+  `experiment_name` continue to work and promote it to `experiment_id`, but when both fields are
+  present they must match. If neither is set, smftools derives the id from `output_directory` and
+  emits a warning; the former date-based `YYMMDD_SMF_experiment` default is no longer used.
 - `model_dir` / `model`: Dorado basecalling model configuration (nanopore runs).
 - `demux_backend`: Demultiplexing backend (`dorado` or `smftools`).
 - `barcode_kit`: Barcode kit name. Required for `dorado`; for `smftools`, use either a known alias or

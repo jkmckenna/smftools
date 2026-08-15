@@ -105,6 +105,31 @@ def test_project_cli_end_to_end(tmp_path):
     assert set(combined.obs["experiment"]) == {"expA", "expB"}
 
 
+def test_project_add_cli_reports_modern_identity_mismatch(tmp_path):
+    uid = reference_uid(SEQUENCE, 12)
+    _make_raw_experiment(tmp_path / "expA", reference_strand="geneA_top", uid=uid, n=2)
+    project = tmp_path / "project"
+    runner = CliRunner()
+    assert runner.invoke(cli_entry.cli, ["project", "init", str(project)]).exit_code == 0
+
+    result = runner.invoke(
+        cli_entry.cli,
+        [
+            "project",
+            "add",
+            str(project),
+            str(tmp_path / "expA"),
+            "--id",
+            "different-id",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "experiment identity mismatch" in result.output
+    assert "--id='different-id'" in result.output
+    assert "run directory='expA'" in result.output
+
+
 def test_project_workflow_contract_end_to_end(tmp_path):
     uid = reference_uid(SEQUENCE, 12)
     _make_raw_experiment(tmp_path / "expA", reference_strand="geneA_top", uid=uid, n=4)

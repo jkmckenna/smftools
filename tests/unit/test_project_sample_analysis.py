@@ -39,7 +39,12 @@ def _modern_periodic_spine(run_dir, *, reference_strand="ref0_top", sample="bc00
     )
     a = ad.AnnData(X=mat, obs=obs)
     a.var_names = [str(int(p)) for p in positions]
-    paths = write_experiment_store(a, run_dir, experiment="e", modality="conversion")
+    paths = write_experiment_store(
+        a,
+        run_dir,
+        experiment=run_dir.name,
+        modality="conversion",
+    )
     spine, _ = safe_read_h5ad(paths["spine"], verbose=False)
     spine.uns["reference_uids"] = {reference_strand: reference_uid("A" * 4000)}
     safe_write_h5ad(spine, paths["spine"], backup=False, verbose=False)
@@ -70,7 +75,7 @@ def _legacy_periodic_spine(path, *, reference_strand="ref0_top", sample="bc00", 
 
 def test_compute_periodicity_modern_experiment_returns_and_caches_result(tmp_path):
     project_dir = tmp_path / "project"
-    spine_path = _modern_periodic_spine(tmp_path / "run")
+    spine_path = _modern_periodic_spine(tmp_path / "expA")
     backfill_per_sample_store(project_dir, "expA", spine_path)
     _register_modern(project_dir, "expA", spine_path)
 
@@ -91,7 +96,7 @@ def test_compute_periodicity_modern_experiment_returns_and_caches_result(tmp_pat
 
 def test_compute_periodicity_second_call_hits_cache(tmp_path):
     project_dir = tmp_path / "project"
-    spine_path = _modern_periodic_spine(tmp_path / "run")
+    spine_path = _modern_periodic_spine(tmp_path / "expA")
     backfill_per_sample_store(project_dir, "expA", spine_path)
     _register_modern(project_dir, "expA", spine_path)
 
@@ -122,7 +127,7 @@ def test_compute_periodicity_second_call_hits_cache(tmp_path):
 
 def test_compute_periodicity_force_recompute_bypasses_cache(tmp_path):
     project_dir = tmp_path / "project"
-    spine_path = _modern_periodic_spine(tmp_path / "run")
+    spine_path = _modern_periodic_spine(tmp_path / "expA")
     backfill_per_sample_store(project_dir, "expA", spine_path)
     _register_modern(project_dir, "expA", spine_path)
     compute_periodicity(project_dir, "expA", "ref0_top", "bc00")
@@ -149,7 +154,7 @@ def test_compute_periodicity_force_recompute_bypasses_cache(tmp_path):
 
 def test_compute_periodicity_different_definitions_do_not_collide(tmp_path):
     project_dir = tmp_path / "project"
-    spine_path = _modern_periodic_spine(tmp_path / "run")
+    spine_path = _modern_periodic_spine(tmp_path / "expA")
     backfill_per_sample_store(project_dir, "expA", spine_path)
     _register_modern(project_dir, "expA", spine_path)
 
@@ -198,7 +203,7 @@ def test_partition_with_no_analyzable_read_yields_an_empty_result(tmp_path):
     reporting that this partition contributed no rows.
     """
     project_dir = tmp_path / "project"
-    spine_path = _modern_periodic_spine(tmp_path / "run")
+    spine_path = _modern_periodic_spine(tmp_path / "expA")
     backfill_per_sample_store(project_dir, "expA", spine_path)
     _register_modern(project_dir, "expA", spine_path)
 
@@ -219,7 +224,7 @@ def test_compute_periodicity_missing_partition_raises(tmp_path):
 
 def test_join_periodicity_attaches_to_reordered_project_adata_by_molecule_uid(tmp_path):
     project_dir = tmp_path / "project"
-    spine_path = _modern_periodic_spine(tmp_path / "run")
+    spine_path = _modern_periodic_spine(tmp_path / "expA")
     backfill_per_sample_store(project_dir, "expA", spine_path)
     _register_modern(project_dir, "expA", spine_path)
     computed = compute_periodicity(project_dir, "expA", "ref0_top", "bc00")
@@ -258,7 +263,7 @@ def test_join_periodicity_returns_unchanged_when_nothing_cached(tmp_path):
 
 def test_legacy_cache_is_migrated_when_registered_owner_is_unambiguous(tmp_path):
     project_dir = tmp_path / "project"
-    spine_path = _modern_periodic_spine(tmp_path / "run")
+    spine_path = _modern_periodic_spine(tmp_path / "expA")
     backfill_per_sample_store(project_dir, "expA", spine_path)
     _register_modern(project_dir, "expA", spine_path)
     computed = compute_periodicity(project_dir, "expA", "ref0_top", "bc00")
@@ -326,7 +331,7 @@ def test_join_periodicity_keeps_duplicate_bare_read_ids_separate_across_experime
 
 def test_join_periodicity_rejects_cached_join_without_explicit_identity(tmp_path):
     project_dir = tmp_path / "project"
-    spine_path = _modern_periodic_spine(tmp_path / "run")
+    spine_path = _modern_periodic_spine(tmp_path / "expA")
     backfill_per_sample_store(project_dir, "expA", spine_path)
     _register_modern(project_dir, "expA", spine_path)
     compute_periodicity(project_dir, "expA", "ref0_top", "bc00")

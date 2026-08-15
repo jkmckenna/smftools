@@ -16,7 +16,7 @@ lab_root/
 │                                     # instrument. Read-only, never modified.
 └── analyses/
     ├── runs/
-    │   └── <run_name>/               # One smftools experiment per sequencing run
+    │   └── <run_name>/               # One sequencing run; one or more experiments
     └── projects/
         └── <project_name>/           # Cross-experiment registries + comparisons
 ```
@@ -30,38 +30,40 @@ move when you share or migrate a project.
 
 ### `analyses/runs/<run_name>/`
 
-One directory per sequencing run, holding the experiment config and everything
-`smftools experiment` produces for it:
+One directory per sequencing run, with one canonical directory per experiment.
+A run may produce more than one experiment (for example, separate modalities):
 
 ```text
 <run_name>/
-├── experiment_config.csv        # input_data_path -> ../../../data/<run_name>/...
-│                                 # fasta           -> ./<ref>.fasta
-│                                 # output_directory -> ./<date>_outputs/
-├── <ref>.fasta                  # Reference FASTA used for this run
-├── <date>_outputs/
+├── <experiment_id>/
+│   ├── experiment_config.csv      # experiment_id/name -> <experiment_id>
+│   │                               # output_directory -> this directory
+│   ├── <ref>.fasta                # Reference FASTA used for this experiment
 │   ├── full_summary.json          # Linked outcomes/logs from experiment full
-│   ├── experiment_manifest.json   # Stage lifecycle, provenance, and code identity
-│   ├── raw_outputs/             # smftools experiment raw
+│   ├── experiment_manifest.json   # Lifecycle, provenance, identity, code version
+│   ├── raw_outputs/               # smftools experiment raw
 │   ├── preprocess_adata_outputs/  # smftools experiment preprocess
 │   ├── spatial_adata_outputs/     # smftools experiment spatial
 │   ├── hmm_adata_outputs/         # smftools experiment hmm
 │   ├── load_adata_outputs/        # smftools experiment load (optional dense cache)
-│   └── ...                        # variant_adata_outputs/, latent_adata_outputs/,
-│                                   # chimeric_adata_outputs/ if those stages run
-└── README.md                     # What this run is, who ran it, what it found
+│   └── ...                        # latent_adata_outputs/, chimeric_adata_outputs/
+└── README.md                      # What this run is, who ran it, what it found
 ```
 
 Each of the four standard stage directories contains a `logs/` directory with a human log and a
 JSONL performance log for every invocation, including explicit skipped and failed outcomes. The
-top-level `full_summary.json` uses paths relative to `<date>_outputs/`, so those links remain valid
+top-level `full_summary.json` uses paths relative to `<experiment_id>/`, so those links remain valid
 when a completed experiment tree is moved.
 
-Every stage directory under `<date>_outputs/` is a sibling of the others — that's
+Every stage directory under `<experiment_id>/` is a sibling of the others — that's
 not just cosmetic, it's what lets a later stage's spine find an earlier stage's
 data by relative path (see [Portability](#portability) below). Run folder names
 are typically `YYMMDD_<short_description>` (sequencing date, not analysis date),
 matching the `data/<run_name>/` folder it reads from.
+The experiment directory, config `experiment_id`, compatibility
+`experiment_name`, manifest identity, and `project add --id` must all agree.
+This prevents the same run from acquiring different labels depending on which
+fallback a command happened to use.
 
 ### Immutable generations and retention
 
@@ -90,12 +92,12 @@ invalidating a published manifest or its checksum.
 Inventory and pin generations through the experiment CLI:
 
 ```shell
-smftools experiment generations <date>_outputs --size
-smftools experiment generations <date>_outputs pin raw <generation_id> \
+smftools experiment generations <experiment_id> --size
+smftools experiment generations <experiment_id> pin raw <generation_id> \
   --reason "paper figure 3"
 ```
 
-`smftools experiment generations <date>_outputs prune --keep-last 2` is
+`smftools experiment generations <experiment_id> prune --keep-last 2` is
 currently a dry-run planner only. It protects current, pinned, unreadable,
 recent, and newest generations. Even older policy matches remain blocked until
 their byte-level reproducibility from retained inputs is represented
@@ -138,7 +140,7 @@ already exists, so it's safe to re-run):
 ├── registry.json          # Which experiments belong to this project, and where
 ├── sets/                  # Named experiment subsets
 ├── runs/                  # Symlinks only -- no data
-│   └── <run_name> -> ../../../runs/<run_name>/<date>_outputs
+│   └── <experiment_id> -> ../../../runs/<run_name>/<experiment_id>
 ├── project_scripts/       # Project-specific drivers/constants (importable package)
 ├── project_outputs/       # Materialized/derived outputs (project materialize -o, figures)
 ├── project.yaml           # Human-curated run/reference manifest (not read by smftools)
@@ -153,7 +155,7 @@ reads back — `project_scripts/`, `project_outputs/`, `project.yaml`, and the
 README/AGENTS/CLAUDE/PLAN docs are starting points for you (or a coding agent)
 to fill in as the project develops.
 
-The symlink points at the run's `<date>_outputs/` directory — registration
+The symlink points at the canonical `<experiment_id>/` directory — registration
 discovers *every* pipeline stage under it (`raw_outputs/`, `preprocess_adata_outputs/`,
 `spatial_adata_outputs/`, `hmm_adata_outputs/`, ...), not just one, so a project
 query can pull from whichever stage it needs per experiment (see
@@ -165,7 +167,7 @@ elsewhere:
 
 ```shell
 cd analyses/projects/<project_name>/runs
-ln -s ../../../runs/<run_name>/<date>_outputs <run_name>
+ln -s ../../../runs/<run_name>/<experiment_id> <experiment_id>
 ```
 
 ## Typical workflow
@@ -173,16 +175,16 @@ ln -s ../../../runs/<run_name>/<date>_outputs <run_name>
 1. **Run the pipeline for one experiment.** Either stage by stage:
 
    ```shell
-   smftools experiment raw analyses/runs/<run_name>/experiment_config.csv
-   smftools experiment preprocess analyses/runs/<run_name>/experiment_config.csv
-   smftools experiment spatial analyses/runs/<run_name>/experiment_config.csv
-   smftools experiment hmm analyses/runs/<run_name>/experiment_config.csv
+   smftools experiment raw analyses/runs/<run_name>/<experiment_id>/experiment_config.csv
+   smftools experiment preprocess analyses/runs/<run_name>/<experiment_id>/experiment_config.csv
+   smftools experiment spatial analyses/runs/<run_name>/<experiment_id>/experiment_config.csv
+   smftools experiment hmm analyses/runs/<run_name>/<experiment_id>/experiment_config.csv
    ```
 
    or as one wrapped call that respects each stage's normal skip/restart behavior:
 
    ```shell
-   smftools experiment full analyses/runs/<run_name>/experiment_config.csv
+   smftools experiment full analyses/runs/<run_name>/<experiment_id>/experiment_config.csv
    ```
 
    Processing many runs the same way is one `batch` call instead of a shell loop:
@@ -199,7 +201,7 @@ ln -s ../../../runs/<run_name>/<date>_outputs <run_name>
    ```shell
    smftools project init analyses/projects/<project_name>
    smftools project add analyses/projects/<project_name> \
-       analyses/runs/<run_name>/<date>_outputs
+       analyses/runs/<run_name>/<experiment_id> --id <experiment_id>
    ```
 
 3. **Query and combine across the project.** `project list` shows registered
