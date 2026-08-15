@@ -4,6 +4,7 @@
 :maxdepth: 1
 
 directory_organization
+managing_analyses_across_versions
 cli_usage
 experiment_config
 semantic_variant_workflows
@@ -16,6 +17,7 @@ ml_migration
 ## Basic workflows
 
 - Directory organization: data vs. experiment vs. project, portability, and sharing.
+- Upgrade-impact planning, stale-cache inventory, and preservation across smftools versions.
 - Command-line walkthroughs and batch processing examples.
 - Experiment configuration CSV layout and field descriptions.
 - Semantic planning, immutable preprocess generations, and integrated variant analysis.

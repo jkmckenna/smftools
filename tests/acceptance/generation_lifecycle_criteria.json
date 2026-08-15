@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "source": "dev/in-progress/generation_lifecycle_and_naming_implementation_plan.md#egl-08--documentation-and-acceptance",
+  "criteria": [
+    {"id": "generation.post_preprocess_rerun_preserves_history", "title": "A post-preprocess stage rerun publishes a second generation while the first remains resolvable", "status": "automated", "evidence": ["tests/unit/test_spatial_partitioned_cli.py::test_spatial_cli_reruns_when_semantic_config_changes"]},
+    {"id": "retention.prune_protects_pinned", "title": "A generation prune dry-run refuses a pinned generation", "status": "automated", "evidence": ["tests/unit/informatics/test_generation_pruning.py::test_plan_protects_current_pinned_and_keep_last_then_blocks_candidates", "tests/unit/test_generations_cli.py::test_cli_prune_is_dry_run_and_never_deletes"]},
+    {"id": "identity.project_add_rejects_mismatch", "title": "Project registration rejects an experiment naming mismatch before mutation", "status": "automated", "evidence": ["tests/unit/test_project_registry.py::test_modern_registration_rejects_identity_mismatches", "tests/unit/test_project_cli.py::test_project_add_cli_reports_modern_identity_mismatch"]},
+    {"id": "analysis.algorithm_bump_is_scoped", "title": "An analysis algorithm-version bump invalidates exactly that analysis kind", "status": "automated", "evidence": ["tests/unit/test_project_analysis_code_identity.py::test_periodicity_algorithm_bump_invalidates_only_periodicity", "tests/unit/test_project_analysis_code_identity.py::test_embedding_algorithm_bump_invalidates_only_embedding"]},
+    {"id": "planning.upgrade_impact_is_read_only", "title": "Upgrade-impact reporting groups existing plan decisions and does not mutate experiment state", "status": "automated", "evidence": ["tests/unit/pipeline/test_upgrade_impact.py::test_upgrade_impact_groups_states_triggers_and_partial_historical_cost", "tests/unit/pipeline/test_experiment_graph.py::test_experiment_upgrade_impact_uses_prior_stage_elapsed_time"]}
+  ]
+}
