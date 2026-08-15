@@ -27,6 +27,7 @@ from .semantic_graph import (
     SemanticNodeSpec,
     SemanticPlan,
 )
+from .upgrade_impact import UpgradeImpactReport, build_upgrade_impact
 
 EXPERIMENT_STAGES = ("raw", "preprocess", "spatial", "hmm", "latent")
 LEGACY_EXPERIMENT_LEAVES = ("chimeric",)
@@ -311,6 +312,48 @@ def plan_experiment(config_path: str | Path, target: str = "full") -> SemanticPl
 
     cfg = load_experiment_config(str(config_path))
     return build_experiment_plan(cfg, target)
+
+
+def build_experiment_upgrade_impact(
+    cfg: Any,
+    target: str = "full",
+    *,
+    paths: Any | None = None,
+) -> UpgradeImpactReport:
+    """Build upgrade impact with prior stage timings where they are available."""
+    plan = build_experiment_plan(cfg, target, paths=paths)
+    manifest = read_experiment_manifest(Path(cfg.output_directory))
+    stages = manifest.get("stages", {})
+    historical_seconds: dict[str, float] = {}
+    if isinstance(stages, Mapping):
+        for stage, analysis_id in EXPERIMENT_NODE_IDS.items():
+            entry = stages.get(stage, {})
+            if not isinstance(entry, Mapping):
+                continue
+            timing_entry = entry
+            if entry.get("state") != "complete" and isinstance(
+                entry.get("previous_complete"), Mapping
+            ):
+                timing_entry = entry["previous_complete"]
+            timings = timing_entry.get("timings", {})
+            elapsed = timings.get("elapsed_seconds") if isinstance(timings, Mapping) else None
+            if elapsed is not None:
+                historical_seconds[analysis_id] = elapsed
+    return build_upgrade_impact(
+        plan,
+        scope="experiment",
+        historical_seconds=historical_seconds,
+    )
+
+
+def plan_experiment_upgrade_impact(
+    config_path: str | Path, target: str = "full"
+) -> UpgradeImpactReport:
+    """Load an experiment config and return installed-code upgrade impact."""
+    from ..cli.helpers import load_experiment_config
+
+    cfg = load_experiment_config(str(config_path))
+    return build_experiment_upgrade_impact(cfg, target)
 
 
 def execute_experiment_target(

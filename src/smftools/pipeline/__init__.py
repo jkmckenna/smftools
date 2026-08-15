@@ -8,11 +8,13 @@ from .experiment_graph import (
     EXPERIMENT_TARGETS,
     ExperimentExecutionResult,
     build_experiment_plan,
+    build_experiment_upgrade_impact,
     execute_experiment_target,
     experiment_node_specs,
     experiment_stage_result_metadata,
     format_experiment_plan,
     plan_experiment,
+    plan_experiment_upgrade_impact,
     resolve_experiment_target,
 )
 from .project_graph import (
@@ -48,6 +50,12 @@ from .semantic_graph import (
     SemanticNodeSpec,
     SemanticPlan,
 )
+from .upgrade_impact import (
+    UPGRADE_IMPACT_SCHEMA_VERSION,
+    UpgradeImpactReport,
+    build_upgrade_impact,
+    format_upgrade_impact,
+)
 
 __all__ = [
     "AnalysisRegistry",
@@ -80,17 +88,23 @@ __all__ = [
     "SemanticNodeSpec",
     "SemanticPlan",
     "SemanticPlanner",
+    "UPGRADE_IMPACT_SCHEMA_VERSION",
+    "UpgradeImpactReport",
     "build_experiment_plan",
+    "build_experiment_upgrade_impact",
     "build_project_plan",
     "build_project_source_snapshot",
+    "build_upgrade_impact",
     "compatibility_fingerprint",
     "execute_experiment_target",
     "experiment_node_specs",
     "experiment_stage_result_metadata",
     "format_experiment_plan",
     "format_project_plan",
+    "format_upgrade_impact",
     "node_result_from_inputs",
     "plan_experiment",
+    "plan_experiment_upgrade_impact",
     "project_node_inputs",
     "project_node_specs",
     "project_source_member_record",

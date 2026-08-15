@@ -200,6 +200,41 @@ def project_plan(
     return build_project_plan(project_dir, target, request)
 
 
+def project_upgrade_impact(
+    project_dir: str | Path,
+    target: str,
+    canonical_reference: str,
+    *,
+    set_name: str | None = None,
+    modality: str | None = None,
+    experiments=None,
+    stage: str | None = None,
+    start: int | None = None,
+    end: int | None = None,
+    layers: list[str] | None = None,
+    read_metrics: bool = False,
+    partitioned: bool = False,
+):
+    """Build grouped installed-code impact without adding compatibility rules."""
+    from ..pipeline.upgrade_impact import build_upgrade_impact
+
+    plan = project_plan(
+        project_dir,
+        target,
+        canonical_reference,
+        set_name=set_name,
+        modality=modality,
+        experiments=experiments,
+        stage=stage,
+        start=start,
+        end=end,
+        layers=layers,
+        read_metrics=read_metrics,
+        partitioned=partitioned,
+    )
+    return build_upgrade_impact(plan, scope="project")
+
+
 def project_materialize(
     project_dir: str | Path,
     canonical_reference: str,
