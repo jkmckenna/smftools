@@ -39,6 +39,7 @@ from ..constants import (
     SPATIAL_DIR,
     VARIANT_DIR,
 )
+from .generation_retention import read_generation_retention_lenient
 
 GENERATIONS_SUBDIR = "generations"
 CURRENT_FILENAME = "current.json"
@@ -98,10 +99,13 @@ class GenerationRecord:
 
     artifact_count: int | None
     size_bytes: int | None
+    pinned: bool
+    retention_reasons: tuple[str, ...]
     issues: tuple[str, ...]
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
+        payload["retention_reasons"] = list(self.retention_reasons)
         payload["issues"] = list(self.issues)
         return payload
 
@@ -182,6 +186,7 @@ def _records_for_container(
 
     container_rel = container.relative_to(root).as_posix()
     current_id, pointer_issue = _current_generation_id(container)
+    retention, retention_issue = read_generation_retention_lenient(container)
 
     records: list[GenerationRecord] = []
     seen: set[str] = set()
@@ -194,8 +199,17 @@ def _records_for_container(
         issues: list[str] = []
         if pointer_issue:
             issues.append(pointer_issue)
+        if retention_issue:
+            issues.append(retention_issue)
         if manifest_issue:
             issues.append(manifest_issue)
+        retention_entry = retention.get(generation_dir.name)
+        pinned = retention_entry is not None and retention_entry.pinned
+        retention_reasons = (
+            tuple(reason.reason for reason in retention_entry.reasons)
+            if retention_entry is not None
+            else ()
+        )
 
         if manifest is None:
             records.append(
@@ -214,6 +228,8 @@ def _records_for_container(
                     modified_at=_iso_mtime(generation_dir),
                     artifact_count=None,
                     size_bytes=_directory_size(generation_dir) if include_size else None,
+                    pinned=pinned,
+                    retention_reasons=retention_reasons,
                     issues=tuple(issues),
                 )
             )
@@ -243,21 +259,34 @@ def _records_for_container(
                 modified_at=_iso_mtime(generation_dir),
                 artifact_count=_artifact_count(manifest),
                 size_bytes=_directory_size(generation_dir) if include_size else None,
+                pinned=pinned,
+                retention_reasons=retention_reasons,
                 issues=tuple(issues),
             )
         )
 
+    missing_ids = set(retention).difference(seen)
     if current_id and current_id not in seen:
+        missing_ids.add(current_id)
+    for missing_id in sorted(missing_ids):
         # A dangling pointer is the most dangerous state here: readers resolve
         # `current` and fail, while the inventory would otherwise look empty.
+        retention_entry = retention.get(missing_id)
+        issues = []
+        if missing_id == current_id:
+            issues.append("current.json points at a generation directory that does not exist")
+        if retention_entry is not None:
+            issues.append("retention.json pins a generation directory that does not exist")
+        if retention_issue:
+            issues.append(retention_issue)
         records.append(
             GenerationRecord(
                 scope=scope,
                 kind=kind,
                 container=container_rel,
-                generation_id=current_id,
+                generation_id=missing_id,
                 path="",
-                is_current=True,
+                is_current=missing_id == current_id,
                 state=STATE_MISSING,
                 status=None,
                 config_hash=None,
@@ -266,7 +295,13 @@ def _records_for_container(
                 modified_at="",
                 artifact_count=None,
                 size_bytes=None,
-                issues=("current.json points at a generation directory that does not exist",),
+                pinned=retention_entry is not None,
+                retention_reasons=(
+                    tuple(reason.reason for reason in retention_entry.reasons)
+                    if retention_entry is not None
+                    else ()
+                ),
+                issues=tuple(issues),
             )
         )
 

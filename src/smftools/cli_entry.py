@@ -326,7 +326,35 @@ def experiment_validate(output_root, result_json, as_json):
         raise click.exceptions.Exit(1)
 
 
-@experiment_group.command("generations")
+_GENERATION_STAGES = ("raw", "preprocess", "variant", "spatial", "hmm", "latent", "chimeric")
+
+
+class _GenerationGroup(click.Group):
+    """Preserve listing flags after OUTPUT_ROOT while supporting subcommands."""
+
+    _LISTING_FLAGS = frozenset({"--json", "--size"})
+
+    def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
+        # Click groups stop parsing parent options at the first argument so
+        # their subcommand can own the remaining options. Before this command
+        # became a group, both ``ROOT --json`` and ``ROOT --size`` were public
+        # syntax. Normalize only invocations with no subcommand; subcommand
+        # arguments and options retain Click's ordinary parsing behavior.
+        if not any(argument in self.commands for argument in args):
+            listing_flags = [argument for argument in args if argument in self._LISTING_FLAGS]
+            if listing_flags:
+                args = [
+                    *listing_flags,
+                    *(argument for argument in args if argument not in self._LISTING_FLAGS),
+                ]
+        return super().parse_args(ctx, args)
+
+
+@experiment_group.group(
+    "generations",
+    invoke_without_command=True,
+    cls=_GenerationGroup,
+)
 @click.argument("output_root", type=click.Path(exists=True, file_okay=False, path_type=Path))
 @click.option(
     "--size",
@@ -335,12 +363,111 @@ def experiment_validate(output_root, result_json, as_json):
     help="Total each generation's bytes on disk (slower on large stores).",
 )
 @click.option("--json", "as_json", is_flag=True, help="Emit the stable machine-readable schema.")
-def experiment_generations_cmd(output_root, include_size, as_json):
-    """List published immutable generations for one experiment, without writing."""
+@click.pass_context
+def experiment_generations_cmd(ctx, output_root, include_size, as_json):
+    """List and manage retention metadata for immutable generations."""
     from .cli.generations import experiment_generations, render_json, render_table
 
-    records = experiment_generations(output_root, include_size=include_size)
-    click.echo(render_json(records) if as_json else render_table(records))
+    ctx.obj = {"output_root": output_root}
+    if ctx.invoked_subcommand is None:
+        records = experiment_generations(output_root, include_size=include_size)
+        click.echo(render_json(records) if as_json else render_table(records))
+
+
+@experiment_generations_cmd.command("pin")
+@click.argument("stage", type=click.Choice(_GENERATION_STAGES, case_sensitive=False))
+@click.argument("generation_id")
+@click.option("--reason", required=True, help="Durable reason this generation must survive.")
+@click.pass_context
+def experiment_generations_pin_cmd(ctx, stage, generation_id, reason):
+    """Add a retention reason without modifying the generation manifest."""
+    from .cli.generations import pin_experiment_generation
+    from .informatics.generation_retention import GenerationRetentionError
+
+    try:
+        entry = pin_experiment_generation(
+            ctx.obj["output_root"],
+            stage,
+            generation_id,
+            reason=reason,
+        )
+    except GenerationRetentionError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"Pinned {stage}/{generation_id} with {len(entry.reasons)} retention reason(s).")
+
+
+@experiment_generations_cmd.command("unpin")
+@click.argument("stage", type=click.Choice(_GENERATION_STAGES, case_sensitive=False))
+@click.argument("generation_id")
+@click.option("--reason", default=None, help="Remove one exact retention reason.")
+@click.option(
+    "--all-reasons",
+    is_flag=True,
+    help="Remove every retention reason for this generation.",
+)
+@click.pass_context
+def experiment_generations_unpin_cmd(ctx, stage, generation_id, reason, all_reasons):
+    """Remove an explicit retention reason or all reasons."""
+    from .cli.generations import unpin_experiment_generation
+    from .informatics.generation_retention import GenerationRetentionError
+
+    if (reason is None) == (not all_reasons):
+        raise click.UsageError("choose exactly one of --reason or --all-reasons")
+    try:
+        remaining = unpin_experiment_generation(
+            ctx.obj["output_root"],
+            stage,
+            generation_id,
+            reason=None if all_reasons else reason,
+        )
+    except GenerationRetentionError as exc:
+        raise click.ClickException(str(exc)) from exc
+    if remaining is None:
+        click.echo(f"Unpinned {stage}/{generation_id}.")
+    else:
+        click.echo(
+            f"Removed one reason from {stage}/{generation_id}; "
+            f"{len(remaining.reasons)} reason(s) remain."
+        )
+
+
+@experiment_generations_cmd.command("prune")
+@click.option(
+    "--stage",
+    "stages",
+    multiple=True,
+    type=click.Choice(_GENERATION_STAGES, case_sensitive=False),
+    help="Restrict planning to a stage; repeat for multiple stages.",
+)
+@click.option(
+    "--keep-last",
+    type=click.IntRange(min=0),
+    default=None,
+    help="Protect the newest N generations of each selected stage.",
+)
+@click.option(
+    "--older-than",
+    default=None,
+    metavar="ISO_TIMESTAMP",
+    help="Consider only generations older than this ISO-8601 timestamp.",
+)
+@click.option("--json", "as_json", is_flag=True, help="Emit the versioned pruning plan.")
+@click.pass_context
+def experiment_generations_prune_cmd(ctx, stages, keep_last, older_than, as_json):
+    """Plan retention pruning without deleting anything."""
+    from .cli.generations import plan_experiment_prune, render_prune_json, render_prune_table
+    from .informatics.generation_pruning import GenerationPruneError
+
+    try:
+        plan = plan_experiment_prune(
+            ctx.obj["output_root"],
+            keep_last=keep_last,
+            older_than=older_than,
+            stages=stages,
+        )
+    except GenerationPruneError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(render_prune_json(plan) if as_json else render_prune_table(plan))
 
 
 ##########################################

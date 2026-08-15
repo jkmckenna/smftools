@@ -16,6 +16,7 @@ from smftools.informatics.generation_listing import (
     list_experiment_generations,
     list_project_generations,
 )
+from smftools.informatics.generation_retention import pin_generation
 
 pytestmark = pytest.mark.unit
 
@@ -86,6 +87,8 @@ def test_lists_generations_across_stages_and_marks_current(tmp_path: Path) -> No
     assert raw_new.container == RAW_DIR
     assert raw_new.path == f"{RAW_DIR}/{GENERATIONS_SUBDIR}/raw-new"
     assert raw_new.size_bytes is None
+    assert raw_new.pinned is False
+    assert raw_new.retention_reasons == ()
 
 
 def test_stage_without_generations_contributes_nothing(tmp_path: Path) -> None:
@@ -195,6 +198,54 @@ def test_to_dict_is_json_serializable(tmp_path: Path) -> None:
 
     assert json.loads(json.dumps(payload))["generation_id"] == "raw-1"
     assert isinstance(payload["issues"], list)
+    assert isinstance(payload["retention_reasons"], list)
+
+
+def test_retention_registry_is_included_without_changing_manifest(tmp_path: Path) -> None:
+    run_root = tmp_path / "outputs"
+    container = run_root / RAW_DIR
+    generation = _publish(container, "raw-1", current=True)
+    manifest_before = (generation / GENERATION_MANIFEST).read_bytes()
+
+    pin_generation(container, "raw-1", reason="paper figure 3")
+
+    record = list_experiment_generations(run_root)[0]
+    assert record.pinned is True
+    assert record.retention_reasons == ("paper figure 3",)
+    assert (generation / GENERATION_MANIFEST).read_bytes() == manifest_before
+
+
+def test_missing_pinned_generation_is_surfaced(tmp_path: Path) -> None:
+    run_root = tmp_path / "outputs"
+    container = run_root / RAW_DIR
+    generation = _publish(container, "raw-1", current=True)
+    pin_generation(container, "raw-1", reason="manual hold")
+    (generation / GENERATION_MANIFEST).unlink()
+    generation.rmdir()
+
+    record = list_experiment_generations(run_root)[0]
+
+    assert record.state == STATE_MISSING
+    assert record.is_current is True
+    assert record.pinned is True
+    assert record.retention_reasons == ("manual hold",)
+    assert any("retention.json pins" in issue for issue in record.issues)
+
+
+def test_corrupt_retention_registry_protects_noncurrent_generations(tmp_path: Path) -> None:
+    run_root = tmp_path / "outputs"
+    container = run_root / RAW_DIR
+    _publish(container, "raw-current", current=True)
+    _publish(container, "raw-old")
+    (container / "retention.json").write_text("{", encoding="utf-8")
+
+    records = list_experiment_generations(run_root)
+
+    assert all(record.state == STATE_OK for record in records)
+    assert all(
+        any("retention registry is unreadable" in issue for issue in record.issues)
+        for record in records
+    )
 
 
 def test_project_embedding_generations_are_listed(tmp_path: Path) -> None:
