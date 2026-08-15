@@ -12,12 +12,26 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+from ..logging_utils import get_logger
 from ..readwrite import atomic_write_json
 from .raw_intermediate_manifest import alignment_reference_bundle, artifact_checksum
+
+logger = get_logger(__name__)
 
 
 class AlignmentValidationError(ValueError):
     """Raised when an existing alignment violates the ingestion contract."""
+
+
+SEQUENCELESS_PRIMARY_FRACTION_LIMIT = 0.01
+"""Largest tolerated share of primary records emitted without SEQ/base qualities.
+
+Aligners occasionally emit a handful of such records -- observed at 43 of 289,209
+(0.015%) from dorado's minimap2, on reads carrying extreme soft-clipping. A record
+with no sequence carries no data, so it is dropped and counted rather than
+ingested. Above this fraction the file is not credibly usable, and the original
+hard failure is the right answer.
+"""
 
 
 @dataclass(frozen=True)
@@ -41,6 +55,9 @@ class AlignmentValidationSummary:
     reference_records: tuple[tuple[str, int], ...]
     program_records: tuple[dict[str, str], ...]
     external_aligner: str
+    sequenceless_primary_records: int = 0
+    """Primary records dropped because the aligner emitted them without SEQ or
+    base qualities. See :data:`SEQUENCELESS_PRIMARY_FRACTION_LIMIT`."""
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-compatible validation payload."""
@@ -274,7 +291,7 @@ def validate_existing_alignment(
                     source_index_valid = False
 
             total = primary = mapped = secondary = supplementary = paired = mm_ml = 0
-            proper_pair = singleton = discordant = 0
+            proper_pair = singleton = discordant = sequenceless = 0
             coordinate_sorted = True
             last_reference = -1
             last_start = -1
@@ -288,14 +305,13 @@ def validate_existing_alignment(
                     supplementary += 1
                     continue
                 primary += 1
-                if read.query_sequence is None:
-                    raise AlignmentValidationError(
-                        f"Primary alignment {read.query_name!r} has no query sequence."
-                    )
-                if read.query_qualities is None:
-                    raise AlignmentValidationError(
-                        f"Primary alignment {read.query_name!r} has no base qualities."
-                    )
+                if read.query_sequence is None or read.query_qualities is None:
+                    # No sequence means no data to ingest, so drop the record and
+                    # count it. The fraction is checked once at the end: aligner
+                    # noise must not abort a run, a wholesale-unusable file still
+                    # must.
+                    sequenceless += 1
+                    continue
                 if read.is_paired:
                     paired += 1
                     if read.is_read1 == read.is_read2:
@@ -375,9 +391,27 @@ def validate_existing_alignment(
 
     if total == 0 or primary == 0:
         raise AlignmentValidationError("Existing alignment contains no primary records.")
+    if sequenceless:
+        fraction = sequenceless / primary
+        if fraction > SEQUENCELESS_PRIMARY_FRACTION_LIMIT:
+            raise AlignmentValidationError(
+                f"Existing alignment has {sequenceless} of {primary} primary records "
+                f"({fraction:.2%}) without SEQ or base qualities, above the "
+                f"{SEQUENCELESS_PRIMARY_FRACTION_LIMIT:.2%} limit."
+            )
+        logger.warning(
+            "Dropping %d of %d primary alignment records (%.3f%%) that carry no SEQ or base "
+            "qualities; recorded as sequenceless_primary_records.",
+            sequenceless,
+            primary,
+            fraction * 100,
+        )
     if mapped == 0:
         raise AlignmentValidationError("Existing alignment contains no mapped primary records.")
-    if str(modality).strip().lower() == "direct" and mm_ml != primary:
+    # Compare against the records actually ingested: dropped sequenceless records
+    # never reached the MM/ML check, so counting them here would fail a direct
+    # experiment for the wrong reason.
+    if str(modality).strip().lower() == "direct" and mm_ml != primary - sequenceless:
         raise AlignmentValidationError(
             "Direct-modification existing alignment requires valid MM/ML tags on every primary read."
         )
@@ -403,6 +437,7 @@ def validate_existing_alignment(
         reference_records=observed_references,
         program_records=programs,
         external_aligner=aligner,
+        sequenceless_primary_records=sequenceless,
     )
 
 
