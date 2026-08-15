@@ -102,6 +102,13 @@ def test_publish_selects_valid_relocatable_generation(tmp_path):
     assert manifest["config_hash"] == "config-a"
     assert manifest["input_artifact_ids"] == ["input-manifest:abc"]
     assert outputs["spine"] == generation / "spine.h5ad"
+    pointer = json.loads(Path(outputs["current"]).read_text())
+    assert set(pointer) == {
+        "schema_version",
+        "generation_id",
+        "generation_path",
+        "manifest_sha256",
+    }
 
     relocated = tmp_path.parent / f"{tmp_path.name}-relocated"
     shutil.copytree(tmp_path, relocated)

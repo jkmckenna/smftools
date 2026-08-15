@@ -502,6 +502,8 @@ def test_partitioned_latent_publishes_catalog_and_thin_spine(tmp_path, monkeypat
     assert pd.read_parquet(outputs["read_index"])["stage"].tolist() == ["latent"]
     assert latent_spine.uns["latent_coordinate_scope"] == "reference_core"
     assert Path(outputs["generation"]).parent.name == "generations"
+    pointer = json.loads(Path(outputs["current"]).read_text())
+    assert set(pointer) == {"schema_version", "generation_id", "generation_path"}
 
 
 @pytest.mark.parametrize(
@@ -774,6 +776,7 @@ def test_latent_task_failure_never_publishes_partial_generation(
         ("catalog", "after catalog"),
         ("plot", "during plot"),
         ("validation", "before publication"),
+        ("current", "during selection"),
     ],
 )
 def test_latent_post_compute_failure_never_publishes_generation(
@@ -794,6 +797,15 @@ def test_latent_post_compute_failure_never_publishes_generation(
             "_plot_task",
             lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError(message)),
         )
+    elif failure_target == "current":
+        original_write = partitioned_latent.atomic_write_json
+
+        def fail_current(path, *args, **kwargs):
+            if Path(path).name == partitioned_latent.LATENT_CURRENT_FILENAME:
+                raise RuntimeError(message)
+            return original_write(path, *args, **kwargs)
+
+        monkeypatch.setattr(partitioned_latent, "atomic_write_json", fail_current)
     else:
         monkeypatch.setattr(
             partitioned_latent,

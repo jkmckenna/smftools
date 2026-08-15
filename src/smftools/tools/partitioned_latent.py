@@ -57,6 +57,13 @@ from ..informatics.derived_read_index import (
     write_latent_read_index,
 )
 from ..informatics.experiment_manifest import artifact_record, read_experiment_manifest
+from ..informatics.generation import (
+    CURRENT_FILENAME,
+    GENERATION_MANIFEST,
+    GENERATIONS_SUBDIR,
+    resolve_current_generation,
+    staged_generation,
+)
 from ..informatics.molecule_identity import (
     EXPERIMENT_UID_COLUMN,
     MOLECULE_UID_COLUMN,
@@ -87,9 +94,9 @@ logger = get_logger(__name__)
 LATENT_SPINE_FILENAME = "spine.h5ad"
 LATENT_TASK_CATALOG = "task_catalog.parquet"
 LATENT_STORE_SUBDIR = "store"
-LATENT_GENERATIONS_SUBDIR = "generations"
-LATENT_CURRENT_FILENAME = "current.json"
-LATENT_GENERATION_MANIFEST = "generation_manifest.json"
+LATENT_GENERATIONS_SUBDIR = GENERATIONS_SUBDIR
+LATENT_CURRENT_FILENAME = CURRENT_FILENAME
+LATENT_GENERATION_MANIFEST = GENERATION_MANIFEST
 LATENT_RESOURCE_PLAN = "resource_plan.json"
 LATENT_MODELS_SUBDIR = "models"
 LATENT_TASK_CATALOG_SCHEMA_VERSION = 4
@@ -1889,13 +1896,24 @@ def execute_partitioned_latent(
         logger.debug("Using non-canonical latent output directory: %s", output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     run_root = output_dir.parent
-    generation_id = uuid4().hex
-    staging_dir = output_dir / ".staging" / generation_id
-    final_dir = output_dir / LATENT_GENERATIONS_SUBDIR / generation_id
-    staging_dir.mkdir(parents=True)
-    final_dir.parent.mkdir(parents=True, exist_ok=True)
+    canonical_spine = output_dir / LATENT_SPINE_FILENAME
 
-    try:
+    def validate(staging: Path, final: Path, root: Path) -> None:
+        _validate_latent_generation(staging, final_dir=final, run_root=root)
+
+    def publish_spine(_staging: Path, _final: Path, _root: Path) -> None:
+        _atomic_publish_spine(latent_spine, canonical_spine)
+
+    with staged_generation(
+        output_dir,
+        run_root=run_root,
+        validate=validate,
+        write_json=atomic_write_json,
+        after_current=publish_spine,
+    ) as staged:
+        generation_id = staged.generation_id
+        staging_dir = staged.staging_dir
+        final_dir = staged.final_dir
         spine = load_spine(spine_path)
         source_provenance = _source_provenance(spine, spine_path, run_root)
         source_identity = {
@@ -1937,11 +1955,11 @@ def execute_partitioned_latent(
                 raise RuntimeError("partitioned latent analysis has no non-empty units")
             prior_generation = None
             prior_records: dict[str, dict[str, object]] = {}
-            current_path = output_dir / LATENT_CURRENT_FILENAME
-            if forced_fit_revision is None and current_path.is_file():
-                with current_path.open(encoding="utf-8") as handle:
-                    current_payload = json.load(handle)
-                candidate = output_dir / str(current_payload.get("generation_path", ""))
+            current_generation = (
+                resolve_current_generation(output_dir) if forced_fit_revision is None else None
+            )
+            if current_generation is not None:
+                candidate = current_generation[0]
                 candidate_catalog = candidate / LATENT_TASK_CATALOG
                 if candidate.is_dir() and candidate_catalog.is_file():
                     prior_generation = candidate
@@ -2119,9 +2137,7 @@ def execute_partitioned_latent(
         register_sidecar(manifest, "latent_resource_plan", resource_plan)
         register_sidecar(manifest, "latent_models", staging_dir / LATENT_MODELS_SUBDIR)
 
-        generation_manifest = staging_dir / LATENT_GENERATION_MANIFEST
-        atomic_write_json(
-            generation_manifest,
+        staged.record_manifest(
             {
                 "schema_version": LATENT_GENERATION_SCHEMA_VERSION,
                 "generation_id": generation_id,
@@ -2171,27 +2187,11 @@ def execute_partitioned_latent(
                 "reused_compute_generation": (
                     Path(reuse_generation).name if reuse_generation is not None else None
                 ),
-            },
+            }
         )
-        task_count = _validate_latent_generation(
-            staging_dir, final_dir=final_dir, run_root=run_root
-        )
+        task_count = len(records)
 
-        os.replace(staging_dir, final_dir)
-        canonical_spine = output_dir / LATENT_SPINE_FILENAME
-        _atomic_publish_spine(latent_spine, canonical_spine)
-        current = output_dir / LATENT_CURRENT_FILENAME
-        atomic_write_json(
-            current,
-            {
-                "schema_version": 1,
-                "generation_id": generation_id,
-                "generation_path": final_dir.relative_to(output_dir).as_posix(),
-            },
-        )
-    except Exception:
-        shutil.rmtree(staging_dir, ignore_errors=True)
-        raise
+    current = output_dir / LATENT_CURRENT_FILENAME
 
     logger.info(
         "Published partitioned latent generation %s with %d unit(s)",

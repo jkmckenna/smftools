@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -25,6 +26,10 @@ def _publish(output_dir: Path, *, payload=None, generation_id=None, body=b"x") -
         staged.artifact("store", "part-0.parquet").write_bytes(body)
         staged.record_manifest(payload or {"schema_version": 1, "status": "complete"})
     return staged.generation_id
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def test_publishes_generation_and_advances_current(tmp_path: Path) -> None:
@@ -137,6 +142,46 @@ def test_validator_failure_aborts_before_publication(tmp_path: Path) -> None:
 
     assert not (out / CURRENT_FILENAME).exists()
     assert not has_published_generations(out)
+
+
+def test_manifest_checksum_pointer_is_opt_in_and_verified(tmp_path: Path) -> None:
+    out = tmp_path / "raw_outputs"
+    with staged_generation(out, generation_id="checked", manifest_checksum=_sha256) as staged:
+        staged.artifact("artifact.bin").write_bytes(b"content")
+        staged.record_manifest({"schema_version": 1, "status": "complete"})
+
+    pointer = json.loads((out / CURRENT_FILENAME).read_text())
+    manifest_path = out / pointer["generation_path"] / GENERATION_MANIFEST
+    assert pointer == {
+        "schema_version": 1,
+        "generation_id": "checked",
+        "generation_path": "generations/checked",
+        "manifest_sha256": _sha256(manifest_path),
+    }
+
+    manifest_path.write_text("{}", encoding="utf-8")
+    with pytest.raises(GenerationError, match="checksum does not match"):
+        resolve_current_generation(out, manifest_checksum=_sha256)
+
+
+def test_after_current_failure_restores_previous_selection(tmp_path: Path) -> None:
+    out = tmp_path / "preprocess_adata_outputs"
+    first = _publish(out, generation_id="first")
+
+    def reject_after_current(_staging: Path, _final: Path, _run_root: Path) -> None:
+        raise RuntimeError("canonical publication failed")
+
+    with pytest.raises(RuntimeError, match="canonical publication failed"):
+        with staged_generation(
+            out,
+            generation_id="second",
+            after_current=reject_after_current,
+        ) as staged:
+            staged.artifact("artifact.bin").write_bytes(b"content")
+            staged.record_manifest({"schema_version": 1, "status": "complete"})
+
+    assert resolve_current_generation(out)[1]["generation_id"] == first
+    assert not (out / GENERATIONS_SUBDIR / "second").exists()
 
 
 def test_missing_manifest_is_an_error_and_publishes_nothing(tmp_path: Path) -> None:
