@@ -78,6 +78,9 @@ def spatial_adata(
                 cfg,
                 "spatial",
                 required=PARTITIONED_STAGE_REQUIRED_ARTIFACTS["spatial"],
+                # Judge completeness against the source spatial consumes, so a
+                # republished preprocess generation is not silently ignored.
+                source_path=partitioned_source_path,
             )
         ):
             logger.info(
@@ -114,16 +117,62 @@ def spatial_adata(
             raise FileNotFoundError(
                 "partitioned spatial analysis requires preprocess_adata_outputs/spine.h5ad"
             )
+        from ..informatics.experiment_spine import write_experiment_spine
+        from ..informatics.generation import (
+            GENERATION_MANIFEST,
+            publish_canonical_spine,
+            rebind_staged_spine_pointers,
+            remap_staged_paths,
+            staged_generation,
+        )
         from ..perf_log import perf_substep
-        from ..tools.partitioned_spatial import execute_partitioned_spatial
+        from ..tools.partitioned_spatial import SPATIAL_SPINE_FILENAME, execute_partitioned_spatial
+        from .helpers import stage_config_hash
 
+        run_root = Path(cfg.output_directory)
+        spatial_root = run_root / SPATIAL_DIR
         with stage_lifecycle(cfg, "spatial", partitioned_source_path) as lifecycle:
             with perf_substep("partitioned_spatial"):
-                outputs = execute_partitioned_spatial(
-                    partitioned_source_path,
-                    cfg,
-                    Path(cfg.output_directory) / SPATIAL_DIR,
-                )
+                # Built inside staging, so a failure leaves the previously
+                # current generation selected and untouched.
+                with staged_generation(spatial_root, run_root=run_root) as staged:
+                    outputs = execute_partitioned_spatial(
+                        partitioned_source_path,
+                        cfg,
+                        staged.staging_dir,
+                    )
+                    # Executor pointers are run-root-relative and therefore
+                    # encode `.staging/<id>/...`; repoint them at the publication
+                    # directory before the move.
+                    rebound = rebind_staged_spine_pointers(
+                        outputs["spine"],
+                        staging_dir=staged.staging_dir,
+                        publication_dir=staged.final_dir,
+                        run_root=run_root,
+                    )
+                    logger.info(
+                        "Rebound %d spatial spine pointer(s) to the published generation",
+                        len(rebound),
+                    )
+                    staged.record_manifest(
+                        {
+                            "schema_version": 1,
+                            "status": "complete",
+                            "stage": "spatial",
+                            "config_hash": stage_config_hash(cfg, "spatial"),
+                            "rebound_spine_pointers": rebound,
+                        }
+                    )
+            outputs = remap_staged_paths(outputs, staged)
+            canonical_spine = spatial_root / SPATIAL_SPINE_FILENAME
+            publish_canonical_spine(outputs["spine"], canonical_spine)
+            outputs["generation"] = staged.final_dir
+            outputs["generation_spine"] = outputs["spine"]
+            outputs["generation_manifest"] = staged.final_dir / GENERATION_MANIFEST
+            outputs["current"] = spatial_root / "current.json"
+            # `spine` stays the stable stage-root path readers resolve;
+            # `generation_spine` records the copy inside this generation.
+            outputs["spine"] = canonical_spine
             publish_stage_outputs(
                 lifecycle,
                 outputs,
@@ -131,6 +180,9 @@ def spatial_adata(
                 schema_versions={"spatial": 3, "derived_read_index": 1},
                 nonempty_directory_keys=PARTITIONED_STAGE_NONEMPTY_DIRECTORIES["spatial"],
             )
+        # After publication, never during staging: a rejected generation must not
+        # already be unioned into the superset experiment spine.
+        write_experiment_spine(run_root)
         return None, outputs["spine"]
 
     # Decide which AnnData to use as the *starting point* for spatial analyses

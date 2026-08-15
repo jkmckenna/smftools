@@ -216,6 +216,43 @@ def resolve_current_generation(
     return generation, manifest
 
 
+def remap_staged_paths(outputs: dict[str, Any], staged: StagedGeneration) -> dict[str, Any]:
+    """Rebase artifact paths from the staging directory to the published one.
+
+    A stage executor writes into ``staged.staging_dir``; publication moves that
+    whole tree to ``staged.final_dir``, so the absolute paths the executor
+    returned no longer exist. Values outside the staged tree (a source spine,
+    for instance) are passed through untouched.
+    """
+    staging = staged.staging_dir.resolve()
+    remapped: dict[str, Any] = {}
+    for key, value in outputs.items():
+        if isinstance(value, Path):
+            resolved = value.resolve()
+            if resolved == staging or staging in resolved.parents:
+                remapped[key] = staged.final_dir / resolved.relative_to(staging)
+                continue
+        remapped[key] = value
+    return remapped
+
+
+def publish_canonical_spine(generation_spine: str | Path, canonical_path: str | Path) -> None:
+    """Copy a published generation spine to the stage root, atomically.
+
+    Readers that predate generations resolve ``<stage>/spine.h5ad``. That copy
+    sits two levels below the run root, so the run-root-relative pointers inside
+    it resolve unchanged from either location.
+    """
+    generation_spine = Path(generation_spine)
+    canonical_path = Path(canonical_path)
+    temporary = canonical_path.with_name(f".{canonical_path.name}.{uuid4().hex}.tmp")
+    try:
+        shutil.copy2(generation_spine, temporary)
+        os.replace(temporary, canonical_path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def rebind_staged_spine_pointers(
     spine_path: str | Path,
     *,
