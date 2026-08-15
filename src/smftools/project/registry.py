@@ -15,6 +15,7 @@ harmonize references without opening matrices.
 from __future__ import annotations
 
 import json
+import warnings
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -37,6 +38,7 @@ from smftools.logging_utils import get_logger
 from smftools.readwrite import atomic_write_json
 
 from ..informatics.artifact_paths import resolve_artifact_path, serialize_artifact_path
+from ..informatics.experiment_identity import resolve_experiment_id
 
 logger = get_logger(__name__)
 
@@ -370,6 +372,7 @@ def _read_spine_metadata(spine_path: Path) -> dict:
     return {
         "modality": str(uns.get("modality", "unknown")),
         "reference_uids": _legacy_reference_uids(spine),
+        "experiment_id": uns.get("experiment_id"),
         "experiment": uns.get("experiment"),
         "experiment_uid": uns.get("experiment_uid"),
         "schema_version": int(uns.get("raw_schema_version", 0) or 0),
@@ -430,7 +433,63 @@ def add_experiment(
         else next((s for s in STAGE_PRIORITY if s in spines), next(iter(spines)))
     )
     meta = _read_spine_metadata(spines[metadata_stage])
-    exp_id = str(experiment_id or meta.get("experiment") or run_root.name)
+    if is_legacy_call:
+        # A caller-supplied id has historically been the migration mechanism
+        # for monolithic files whose embedded label is absent or obsolete. Keep
+        # that compatibility path; strict cross-source validation applies to
+        # modern run directories with a durable manifest.
+        identity_candidates = (
+            {"--id": experiment_id}
+            if experiment_id is not None
+            else {
+                "artifact experiment_id": meta.get("experiment_id"),
+                "artifact experiment": meta.get("experiment"),
+            }
+        )
+        fallback_id = run_root.name
+    else:
+        from ..informatics.experiment_manifest import read_experiment_manifest
+
+        manifest = read_experiment_manifest(run_root)
+        direct_spine = experiment_path / SPINE_FILENAME
+        directory_id = (
+            experiment_path.name
+            if direct_spine.exists() and experiment_path.name not in STAGE_DIRS.values()
+            else run_root.name
+        )
+        identity_candidates = {
+            "--id": experiment_id,
+            "manifest experiment_id": manifest.get("experiment_id"),
+            "manifest experiment": manifest.get("experiment"),
+            "run directory": directory_id,
+        }
+        if not manifest.get("experiment_id") and not manifest.get("experiment"):
+            identity_candidates.update(
+                {
+                    "artifact experiment_id": meta.get("experiment_id"),
+                    "artifact experiment": meta.get("experiment"),
+                }
+            )
+        fallback_id = directory_id
+
+    authoritative_id = resolve_experiment_id(identity_candidates)
+    declared_id = resolve_experiment_id(
+        {
+            source: value
+            for source, value in identity_candidates.items()
+            if source != "run directory"
+        }
+    )
+    if declared_id is None:
+        warnings.warn(
+            "experiment identity is absent from --id and experiment metadata; "
+            f"deriving {fallback_id!r} from the run directory. Supply --id explicitly.",
+            UserWarning,
+            stacklevel=2,
+        )
+    if authoritative_id is None:
+        authoritative_id = fallback_id
+    exp_id = authoritative_id
 
     existing = registry["experiments"].get(exp_id)
     from ..informatics.molecule_identity import new_experiment_uid, validate_experiment_uid

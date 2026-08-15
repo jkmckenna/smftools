@@ -307,7 +307,9 @@ canonical name even if experiments called it something different.
   smftools reads back, they just give the project directory a useful starting point. `--name`
   sets the name used in the scaffolded docs (default: the directory name). Safe to re-run: never
   overwrites anything that already exists.
-- `project add PROJECT_DIR EXPERIMENT_DIR` registers an experiment by pointer. `EXPERIMENT_DIR` may
+- `project add PROJECT_DIR EXPERIMENT_DIR` registers an experiment by pointer. For modern runs,
+  the manifest `experiment_id`, run-directory name, and explicit `--id` (when supplied) must match;
+  conflicting identities are rejected before the registry is changed. `EXPERIMENT_DIR` may
   be the run's top-level output directory or one stage directory inside it (e.g. `raw_outputs/`) --
   either way, every pipeline stage spine found (`raw`, `preprocess`, `spatial`, `hmm`, ...) is
   recorded, not just one. Reads the raw spine's `uns` metadata (modality, sequence-hash reference

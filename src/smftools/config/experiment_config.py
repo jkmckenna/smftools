@@ -28,6 +28,7 @@ from smftools.constants import (
     TRIM,
 )
 from smftools.informatics.alignment_adapters import adapter_names
+from smftools.informatics.experiment_identity import resolve_experiment_id
 from smftools.informatics.input_manifest import inspect_input_manifest
 
 from .discover_input_files import discover_input_files
@@ -852,6 +853,7 @@ class ExperimentConfig:
     fasta_regions_of_interest: Optional[str] = None
     sample_sheet_path: Optional[str] = None
     sample_sheet_mapping_column: Optional[str] = "Experiment_name_and_barcode"
+    experiment_id: Optional[str] = None
     experiment_name: Optional[str] = None
     input_already_demuxed: bool = False
     summary_file: Optional[Path] = None
@@ -1507,9 +1509,37 @@ class ExperimentConfig:
                 if k not in merged:
                     merged[k] = v
 
-        # experiment_name default
-        if merged.get("experiment_name") is None and date_str:
-            merged["experiment_name"] = f"{date_str}_SMF_experiment"
+        # experiment_name is retained as a compatibility alias for output
+        # filenames, but experiment_id is the canonical human-readable label.
+        # Existing configs that provide only experiment_name are promoted
+        # without changing their output names. The output-directory fallback is
+        # intentionally noisy so new configs do not silently acquire an id from
+        # whichever path happened to be supplied at execution time.
+        experiment_id = resolve_experiment_id(
+            {
+                "experiment_id": merged.get("experiment_id"),
+                "experiment_name": merged.get("experiment_name"),
+            }
+        )
+        raw_output_directory = merged.get("output_directory")
+        has_output_directory = raw_output_directory is not None and str(
+            raw_output_directory
+        ).strip().lower() not in ("", "none", "null")
+        if experiment_id is None and has_output_directory:
+            experiment_id = Path(str(raw_output_directory)).name
+            if not experiment_id:
+                raise ValueError(
+                    "experiment_id cannot be derived from output_directory "
+                    f"{raw_output_directory!r}; set experiment_id explicitly."
+                )
+            warnings.warn(
+                "experiment_id and experiment_name are unset; deriving experiment identity "
+                f"{experiment_id!r} from output_directory. Set experiment_id explicitly.",
+                UserWarning,
+                stacklevel=2,
+            )
+        merged["experiment_id"] = experiment_id
+        merged["experiment_name"] = experiment_id
 
         # Normalize public alignment vocabulary before filesystem writes or
         # external-tool checks can occur.
@@ -2086,6 +2116,7 @@ class ExperimentConfig:
             plot_subsample_seed=int(_parse_numeric(merged.get("plot_subsample_seed", 0), 0)),
             fasta_regions_of_interest=merged.get("fasta_regions_of_interest"),
             mapping_threshold=float(merged.get("mapping_threshold", 0.01)),
+            experiment_id=merged.get("experiment_id"),
             experiment_name=merged.get("experiment_name"),
             model=merged.get("model", "hac"),
             emit_moves=merged.get("emit_moves", True),
@@ -2866,6 +2897,18 @@ class ExperimentConfig:
             errors.append("output_directory is required but missing.")
         if not self.fasta:
             errors.append("fasta (reference FASTA) is required but missing.")
+        try:
+            experiment_id = resolve_experiment_id(
+                {
+                    "experiment_id": self.experiment_id,
+                    "experiment_name": self.experiment_name,
+                }
+            )
+        except ValueError as exc:
+            errors.append(str(exc))
+        else:
+            if experiment_id is None:
+                errors.append("experiment_id is required but missing.")
 
         if require_paths:
             if self.input_data_path and not Path(self.input_data_path).exists():
@@ -2935,4 +2978,4 @@ class ExperimentConfig:
         return self.to_yaml(path)
 
     def __repr__(self) -> str:
-        return f"<ExperimentConfig modality={self.smf_modality} experiment_name={self.experiment_name} source={self.config_source}>"
+        return f"<ExperimentConfig modality={self.smf_modality} experiment_id={self.experiment_id} source={self.config_source}>"

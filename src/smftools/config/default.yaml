@@ -1,4 +1,6 @@
 # General
+experiment_id: null # Canonical human-readable experiment identity; set explicitly for new runs
+experiment_name: null # Compatibility alias for output filenames; must equal experiment_id when set
 sample_sheet_path: null # path to sample_sheet to load metadata into anndata.
 sample_sheet_mapping_column: 'Experiment_name_and_barcode' # The column in the sample sheet and current anndata to use for mapping metadata.
 sample_name_col_for_plotting: 'Experiment_name_and_barcode'

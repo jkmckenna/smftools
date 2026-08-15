@@ -902,7 +902,12 @@ def project_init_cmd(project_dir: Path, name):
 @project_group.command("add")
 @click.argument("project_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
 @click.argument("experiment_dir", type=click.Path(exists=True, file_okay=True, path_type=Path))
-@click.option("--id", "experiment_id", default=None, help="Explicit experiment id.")
+@click.option(
+    "--id",
+    "experiment_id",
+    default=None,
+    help="Explicit experiment id; for modern runs it must match the manifest and directory.",
+)
 @click.option("--name", default=None, help="Friendly experiment name.")
 @click.option(
     "--stage",
@@ -924,9 +929,16 @@ def project_add_cmd(project_dir: Path, experiment_dir: Path, experiment_id, name
     """
     from .cli.project_cmd import project_add
 
-    exp_id, entry, conflicts = project_add(
-        project_dir, experiment_dir, experiment_id=experiment_id, name=name, stage=stage
-    )
+    try:
+        exp_id, entry, conflicts = project_add(
+            project_dir,
+            experiment_dir,
+            experiment_id=experiment_id,
+            name=name,
+            stage=stage,
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
     click.echo(
         f"Registered '{exp_id}' ({entry['modality']}, {entry['n_reads']} reads, "
         f"{len(entry['references'])} references)"

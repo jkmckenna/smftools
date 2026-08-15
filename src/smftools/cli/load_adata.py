@@ -2093,6 +2093,8 @@ def load_adata_core(
                 }
                 for partition_bam, source_row in alignment_partitions
             }
+        extra_uns["experiment_id"] = cfg.experiment_id
+        extra_uns["experiment"] = cfg.experiment_id
         extra_uns["reference_interval_map"] = relative_uns_path(reference_interval_map, run_root)
         extra_uns["region_catalogs"] = {
             scope: relative_uns_path(path, run_root)
@@ -2139,7 +2141,8 @@ def load_adata_core(
         resolved_config = cfg.to_dict()
         update_experiment_manifest(
             run_root,
-            experiment=extra_uns.get("experiment") or cfg.experiment_name or run_root.name,
+            experiment_id=cfg.experiment_id,
+            experiment=cfg.experiment_id,
             modality=extra_uns.get("modality"),
             input_data_path=(
                 relative_uns_path(cfg.input_data_path, run_root) if cfg.input_data_path else None

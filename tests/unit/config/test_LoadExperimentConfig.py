@@ -58,6 +58,54 @@ def test_full_run_latent_can_be_disabled():
     assert cfg.full_run_latent is False
 
 
+def test_legacy_experiment_name_is_promoted_to_canonical_id():
+    from smftools.config import ExperimentConfig
+
+    config, _ = ExperimentConfig.from_var_dict({"experiment_name": "experiment-a"}, defaults_map={})
+
+    assert config.experiment_id == "experiment-a"
+    assert config.experiment_name == "experiment-a"
+
+
+def test_experiment_id_populates_compatibility_name():
+    from smftools.config import ExperimentConfig
+
+    config, _ = ExperimentConfig.from_var_dict({"experiment_id": "experiment-a"}, defaults_map={})
+
+    assert config.experiment_id == "experiment-a"
+    assert config.experiment_name == "experiment-a"
+
+
+def test_conflicting_experiment_id_and_name_fail_during_config_loading():
+    from smftools.config import ExperimentConfig
+
+    with pytest.raises(
+        ValueError,
+        match="experiment_id='experiment-a'.*experiment_name='experiment-b'",
+    ):
+        ExperimentConfig.from_var_dict(
+            {
+                "experiment_id": "experiment-a",
+                "experiment_name": "experiment-b",
+            },
+            defaults_map={},
+        )
+
+
+def test_output_directory_fallback_warns_and_replaces_date_default(tmp_path):
+    from smftools.config import ExperimentConfig
+
+    with pytest.warns(UserWarning, match="deriving experiment identity 'experiment-a'"):
+        config, _ = ExperimentConfig.from_var_dict(
+            {"output_directory": str(tmp_path / "experiment-a")},
+            date_str="260814",
+            defaults_map={},
+        )
+
+    assert config.experiment_id == "experiment-a"
+    assert config.experiment_name == "experiment-a"
+
+
 @pytest.mark.parametrize(
     ("overrides", "message"),
     [

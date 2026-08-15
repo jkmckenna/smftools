@@ -5,7 +5,8 @@ alignment_mode,align,Alignment policy. Existing is reserved until validated alig
 fasta,/path_to_fasta.fasta,Path to initial FASTA file,,str 
 fasta_regions_of_interest,/path_to_bed.bed,Path to a bed file to subsample the fasta on.,,str 
 output_directory,/outputs,Directory to act as root for all analysis outputs,,str 
-experiment_name,,An experiment name for the final h5ad file,,str 
+experiment_id,my_experiment,Canonical experiment id; must match the run directory and project --id,,str
+experiment_name,my_experiment,Compatibility alias for output names; when set it must equal experiment_id,,str
 model_dir,/path_to_dorado_model_dir,Path,,str 
 model,None,The dorado basecalling model to use,,str 
 barcode_kit,SQK-NBD114-24,The barcoding kit used for the experiment,,str 

@@ -57,6 +57,96 @@ def test_add_is_idempotent_same_path(tmp_path):
     assert len(reg.list_experiments(proj)) == 1
 
 
+def test_modern_registration_accepts_matching_manifest_directory_and_cli_id(tmp_path):
+    from smftools.informatics.experiment_manifest import update_experiment_manifest
+
+    project = tmp_path / "project"
+    reg.init_project(project)
+    run = _make_run(
+        tmp_path / "experiment-a",
+        stages=["raw"],
+        name="experiment-a",
+        modality="direct",
+        reference_uids={"chr1_top": "uid1"},
+    )
+    update_experiment_manifest(run, experiment_id="experiment-a", experiment="experiment-a")
+
+    experiment_id, _ = reg.add_experiment(project, run, experiment_id="experiment-a")
+
+    assert experiment_id == "experiment-a"
+
+
+@pytest.mark.parametrize(
+    ("manifest_id", "cli_id", "message"),
+    [
+        ("different-manifest", "experiment-a", "manifest experiment_id='different-manifest'"),
+        ("experiment-a", "different-cli", "--id='different-cli'"),
+    ],
+)
+def test_modern_registration_rejects_identity_mismatches(tmp_path, manifest_id, cli_id, message):
+    from smftools.informatics.experiment_manifest import update_experiment_manifest
+
+    project = tmp_path / "project"
+    reg.init_project(project)
+    run = _make_run(
+        tmp_path / "experiment-a",
+        stages=["raw"],
+        name="experiment-a",
+        modality="direct",
+        reference_uids={"chr1_top": "uid1"},
+    )
+    update_experiment_manifest(run, experiment_id=manifest_id, experiment=manifest_id)
+
+    with pytest.raises(ValueError, match=message):
+        reg.add_experiment(project, run, experiment_id=cli_id)
+
+    assert reg.list_experiments(project) == []
+
+
+def test_modern_registration_rejects_conflicting_manifest_aliases(tmp_path):
+    from smftools.informatics.experiment_manifest import update_experiment_manifest
+
+    project = tmp_path / "project"
+    reg.init_project(project)
+    run = _make_run(
+        tmp_path / "experiment-a",
+        stages=["raw"],
+        name="experiment-a",
+        modality="direct",
+        reference_uids={"chr1_top": "uid1"},
+    )
+    update_experiment_manifest(
+        run,
+        experiment_id="experiment-a",
+        experiment="different-experiment",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="manifest experiment_id='experiment-a'.*manifest experiment='different-experiment'",
+    ):
+        reg.add_experiment(project, run)
+
+    assert reg.list_experiments(project) == []
+
+
+def test_modern_registration_warns_when_only_directory_supplies_identity(tmp_path):
+    project = tmp_path / "project"
+    reg.init_project(project)
+    run = tmp_path / "experiment-a"
+    run.mkdir()
+    spine = ad.AnnData(obs=pd.DataFrame(index=["read-a"]))
+    spine.uns["modality"] = "direct"
+    spine.uns["raw_schema_version"] = 2
+    spine.uns["reference_uids"] = {"chr1_top": "uid1"}
+    safe_write_h5ad(spine, run / "spine.h5ad", backup=False, verbose=False)
+
+    with pytest.warns(UserWarning, match="deriving 'experiment-a' from the run directory"):
+        experiment_id, _ = reg.add_experiment(project, run)
+
+    assert experiment_id == "experiment-a"
+
+
 def test_registry_json_stores_relative_paths_not_absolute(tmp_path):
     import json
 
@@ -646,7 +736,10 @@ def test_registering_one_run_under_two_ids_is_refused(tmp_path):
     reg.init_project(proj)
     reg.add_experiment(proj, run_root, experiment_id="expA")
 
-    with pytest.raises(ValueError, match="already registered as 'expA'"):
+    with pytest.raises(
+        ValueError,
+        match="experiment identity mismatch: --id='expA-again'.*run directory='expA'",
+    ):
         reg.add_experiment(proj, run_root, experiment_id="expA-again")
 
     assert sorted(entry["id"] for entry in reg.list_experiments(proj)) == ["expA"]

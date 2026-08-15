@@ -516,9 +516,9 @@ def test_project_adata_stage_selection(tmp_path):
     uid = reference_uid(SEQUENCE, 12)
     # This test needs sibling stage dirs under one run root; `_make_raw_experiment`
     # already writes the raw stage into <run_root>/raw_outputs.
-    run_dir = tmp_path / "expA_run"
+    run_dir = tmp_path / "expA"
     _make_raw_experiment(run_dir, reference_strand="geneA_top", uid=uid, n=4)
-    _make_raw_experiment(tmp_path / "expB_run", reference_strand="geneB_top", uid=uid, n=3)
+    _make_raw_experiment(tmp_path / "expB", reference_strand="geneB_top", uid=uid, n=3)
 
     # Give expA a "preprocess" stage too: a spine.copy() with one marker obs
     # column added and source_base_dir pointing back at the raw stage (so
@@ -546,10 +546,10 @@ def test_project_adata_stage_selection(tmp_path):
     proj = tmp_path / "project"
     reg.init_project(proj)
     exp_a_id, entry_a = reg.add_experiment(
-        proj, tmp_path / "expA_run" / "raw_outputs", experiment_id="expA"
+        proj, tmp_path / "expA" / "raw_outputs", experiment_id="expA"
     )
     exp_b_id, entry_b = reg.add_experiment(
-        proj, tmp_path / "expB_run" / "raw_outputs", experiment_id="expB"
+        proj, tmp_path / "expB" / "raw_outputs", experiment_id="expB"
     )
     assert set(entry_a["spines"]) == {"raw", "preprocess", "experiment"}
     assert set(entry_b["spines"]) == {"raw", "experiment"}
