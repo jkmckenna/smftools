@@ -42,6 +42,44 @@ set is defined, and `show-set` resolves through the same path `--set` applies,
 so what it prints is what a plan or materialize will use. See
 [](tutorials/cli_usage.md#smftools-project).
 
+## Generation inventory and retention
+
+Use `smftools experiment generations OUTPUT_ROOT` to inventory every immutable
+generation below one experiment. The current generation is marked with `*`, an
+explicitly retained generation is marked with `P`, and `--size` totals the bytes
+inside each generation. `--json` emits inventory schema version 2, which adds
+`pinned` and `retention_reasons` to each generation record.
+
+Pins are mutable policy metadata, so they live in `retention.json` beside the
+stage's `current.json`; published `generation_manifest.json` files remain
+unchanged. A generation can have several independently removable reasons:
+
+```shell
+smftools experiment generations OUTPUT_ROOT pin raw GENERATION_ID \
+  --reason "paper figure 3"
+smftools experiment generations OUTPUT_ROOT pin raw GENERATION_ID \
+  --reason "SRA:ABC123"
+smftools experiment generations OUTPUT_ROOT unpin raw GENERATION_ID \
+  --reason "paper figure 3"
+smftools experiment generations OUTPUT_ROOT unpin raw GENERATION_ID \
+  --all-reasons
+```
+
+Pruning is planning-only in EGL-03a. The command evaluates age and count policy,
+walks generation sizes, and never deletes artifacts:
+
+```shell
+smftools experiment generations OUTPUT_ROOT prune \
+  --keep-last 2 \
+  --older-than 2026-01-01T00:00:00Z
+```
+
+Current, pinned, unreadable, recent, and newest retained generations are always
+kept. Older policy matches are reported as `blocked_reproducibility`, with zero
+reclaimable bytes, until retained inputs and provenance can prove byte-level
+reproducibility. `--json` emits a versioned plan with `dry_run: true` and
+`deletion_supported: false`; there is no delete or force mode in this phase.
+
 ## External workflow contract
 
 Workflow engines should use `smftools experiment run` instead of rewriting an

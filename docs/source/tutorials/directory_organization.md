@@ -62,6 +62,44 @@ data by relative path (see [Portability](#portability) below). Run folder names
 are typically `YYMMDD_<short_description>` (sequencing date, not analysis date),
 matching the `data/<run_name>/` folder it reads from.
 
+### Immutable generations and retention
+
+Generation-aware stage directories keep published outputs immutable and select
+one default with an atomic pointer. A raw stage, for example, has this shape:
+
+```text
+raw_outputs/
+├── current.json
+├── retention.json                     # Optional mutable pin registry
+└── generations/
+    ├── <generation_id>/
+    │   ├── generation_manifest.json
+    │   └── ...                         # Generation-owned artifacts
+    └── <older_generation_id>/
+        ├── generation_manifest.json
+        └── ...
+```
+
+`current.json` identifies the default generation consumed by ordinary readers.
+`generation_manifest.json` and its generation directory are published once and
+must not be edited afterward. Retention reasons therefore live separately in
+`retention.json`, beside `current.json`, and can be added or removed without
+invalidating a published manifest or its checksum.
+
+Inventory and pin generations through the experiment CLI:
+
+```shell
+smftools experiment generations <date>_outputs --size
+smftools experiment generations <date>_outputs pin raw <generation_id> \
+  --reason "paper figure 3"
+```
+
+`smftools experiment generations <date>_outputs prune --keep-last 2` is
+currently a dry-run planner only. It protects current, pinned, unreadable,
+recent, and newest generations. Even older policy matches remain blocked until
+their byte-level reproducibility from retained inputs is represented
+authoritatively; this phase does not expose deletion or force behavior.
+
 ### `analyses/projects/<project_name>/`
 
 A project **references** runs — it never copies or merges their data.
