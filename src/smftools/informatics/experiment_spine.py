@@ -33,6 +33,7 @@ from pathlib import Path
 
 from smftools.constants import HMM_DIR, LATENT_DIR, PREPROCESS_DIR, RAW_DIR, SPATIAL_DIR
 
+from .generation import resolve_stage_generation
 from .partition_read import load_spine, relative_uns_path, resolve_relative_path
 from .stage_obs import OBS_FILENAME, read_stage_obs
 
@@ -47,10 +48,10 @@ EXPERIMENT_SPINE_FILENAME = "spine.h5ad"
 # sync with PREPROCESS_STAGE_OBS if that ever changes.
 _PREPROCESS_STAGE_OBS_FILENAME = "stage_obs.parquet"
 
-# Fixed union order: later stages win on shared uns keys. Safe because shared keys
-# (source_base_dir, reference_uids, modality, ...) already hold the same value
-# across stages by construction -- each descendant's spine.copy() carries them
-# forward unchanged from whichever stage first set them.
+# Fixed composition order. Each stage owns only its stage-prefixed keys; shared,
+# non-prefixed keys come from the earliest stage that declares them. Descendant
+# spines are copies of their source and can therefore carry stale pointers for a
+# sibling stage, so a later spine must never replace keys owned by that sibling.
 _STAGE_DIRS_IN_UNION_ORDER = (
     ("raw", RAW_DIR),
     ("preprocess", PREPROCESS_DIR),
@@ -58,6 +59,38 @@ _STAGE_DIRS_IN_UNION_ORDER = (
     ("hmm", HMM_DIR),
     ("latent", LATENT_DIR),
 )
+_STAGE_NAMES = tuple(stage for stage, _stage_dir in _STAGE_DIRS_IN_UNION_ORDER)
+
+
+def _resolved_stage_dir(stage: str, stage_dir: Path) -> Path:
+    """Return the current generation directory, or the legacy stage directory."""
+    if stage == "raw":
+        # Preserve raw's stronger artifact/checksum validation until EGL-01b's
+        # consolidation folds that validator into the shared helper.
+        from .raw_generation import resolve_current_raw_generation
+
+        resolved = resolve_current_raw_generation(stage_dir)
+    else:
+        resolved = resolve_stage_generation(stage_dir)
+    return resolved[0] if resolved is not None else stage_dir
+
+
+def _merge_stage_uns(
+    target: dict[str, object],
+    source: dict[str, object],
+    *,
+    stage: str,
+) -> None:
+    """Merge one spine's metadata according to per-stage key ownership."""
+    for key, value in source.items():
+        owner = next(
+            (candidate for candidate in _STAGE_NAMES if key.startswith(f"{candidate}_")),
+            None,
+        )
+        if owner == stage:
+            target[key] = value
+        elif owner is None and key not in target:
+            target[key] = value
 
 
 def experiment_spine_path(run_root: str | Path) -> Path:
@@ -76,17 +109,16 @@ def write_experiment_spine(run_root: str | Path) -> Path | None:
     from ..readwrite import safe_write_h5ad
 
     run_root = Path(run_root)
-    raw_dir = run_root / RAW_DIR
-    from .raw_generation import resolve_current_raw_generation
-
-    current_raw_generation = resolve_current_raw_generation(raw_dir)
-    if current_raw_generation is not None:
-        raw_dir = current_raw_generation[0]
+    stage_dirs = {
+        stage: _resolved_stage_dir(stage, run_root / stage_dir)
+        for stage, stage_dir in _STAGE_DIRS_IN_UNION_ORDER
+    }
+    raw_dir = stage_dirs["raw"]
     if not (raw_dir / OBS_FILENAME).exists():
         return None
 
     obs = read_stage_obs(raw_dir)
-    preprocess_dir = run_root / PREPROCESS_DIR
+    preprocess_dir = stage_dirs["preprocess"]
     preprocess_stage_obs = preprocess_dir / _PREPROCESS_STAGE_OBS_FILENAME
     preprocess_spine_path = preprocess_dir / "spine.h5ad"
     if preprocess_spine_path.exists():
@@ -108,13 +140,11 @@ def write_experiment_spine(run_root: str | Path) -> Path | None:
 
     uns: dict[str, object] = {}
     for stage, stage_dir in _STAGE_DIRS_IN_UNION_ORDER:
-        spine_path = run_root / stage_dir / "spine.h5ad"
-        if stage == "raw" and current_raw_generation is not None:
-            spine_path = current_raw_generation[0] / "spine.h5ad"
+        spine_path = stage_dirs[stage] / "spine.h5ad"
         if not spine_path.exists():
             continue
         stage_spine = load_spine(spine_path, verbose=False)
-        uns.update(dict(stage_spine.uns))
+        _merge_stage_uns(uns, dict(stage_spine.uns), stage=stage)
 
     uns["source_base_dir"] = relative_uns_path(raw_dir, run_root)
     uns["is_spine"] = True

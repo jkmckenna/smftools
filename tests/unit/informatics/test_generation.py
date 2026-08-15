@@ -13,6 +13,7 @@ from smftools.informatics.generation import (
     GenerationError,
     has_published_generations,
     resolve_current_generation,
+    resolve_stage_generation,
     staged_generation,
 )
 
@@ -70,6 +71,41 @@ def test_second_generation_supersedes_without_destroying_the_first(tmp_path: Pat
         out / GENERATIONS_SUBDIR / second / "store" / "part-0.parquet"
     ).read_bytes() == b"second"
     assert resolve_current_generation(out)[1]["generation_id"] == second
+
+
+def test_stage_generation_resolves_current_or_lineage_pin(tmp_path: Path) -> None:
+    out = tmp_path / "hmm_adata_outputs"
+    first = _publish(out, body=b"first")
+    second = _publish(out, body=b"second")
+
+    assert resolve_stage_generation(out)[1]["generation_id"] == second
+    pinned = resolve_stage_generation(out, lineage=first)
+    assert pinned is not None
+    assert pinned[0] == out / GENERATIONS_SUBDIR / first
+    assert pinned[1]["generation_id"] == first
+
+
+@pytest.mark.parametrize("lineage", ["", "../escape", "nested/generation", "/absolute"])
+def test_stage_generation_rejects_unsafe_lineage_pin(tmp_path: Path, lineage: str) -> None:
+    with pytest.raises(GenerationError, match="not portable"):
+        resolve_stage_generation(tmp_path / "hmm_adata_outputs", lineage=lineage)
+
+
+def test_stage_generation_rejects_missing_lineage_pin(tmp_path: Path) -> None:
+    with pytest.raises(GenerationError, match="does not exist"):
+        resolve_stage_generation(tmp_path / "hmm_adata_outputs", lineage="missing")
+
+
+def test_stage_generation_rejects_lineage_manifest_identity_mismatch(tmp_path: Path) -> None:
+    out = tmp_path / "hmm_adata_outputs"
+    generation_id = _publish(out)
+    manifest_path = out / GENERATIONS_SUBDIR / generation_id / GENERATION_MANIFEST
+    manifest = json.loads(manifest_path.read_text())
+    manifest["generation_id"] = "different"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(GenerationError, match="disagrees with its manifest"):
+        resolve_stage_generation(out, lineage=generation_id)
 
 
 def test_failure_inside_the_block_publishes_nothing(tmp_path: Path) -> None:
