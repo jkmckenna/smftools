@@ -186,10 +186,15 @@ def test_qc_plan_resolves_exact_parents_counts_selection_and_writes_nothing(tmp_
     assert plan.sources.signal_read_count == 5
     assert plan.identity.status == "resolved"
     assert plan.identity.evidence_counts == {"read_id": 1}
-    assert plan.to_dict()["execution_status"] == "not_implemented"
+    assert plan.to_dict()["execution_status"] == "basecall_only"
     assert plan.to_dict()["selection_freezing"] == {
         "status": "available_during_run_preparation",
         "accepted_plan_id": plan.plan_id,
+    }
+    assert plan.to_dict()["basecall_execution"] == {
+        "status": "available_during_run_preparation",
+        "accepted_plan_id": plan.plan_id,
+        "generation_kind": "selected_cohort",
     }
     assert plan.model.status == "resolved"
     assert plan.model.simplex_model["name"] == "chem_hac@v1.0.0"
@@ -199,8 +204,9 @@ def test_qc_plan_resolves_exact_parents_counts_selection_and_writes_nothing(tmp_
     )
     assert (
         "dorado_basecall_execution_and_validation:srb-04b"
-        in plan.to_dict()["deferred_capabilities"]
+        not in plan.to_dict()["deferred_capabilities"]
     )
+    assert "lineage_execution_and_publication:srb-05" in plan.to_dict()["deferred_capabilities"]
     assert plan.to_json() == plan.to_json()
     assert sorted(path.relative_to(tmp_path) for path in tmp_path.rglob("*")) == before
 
@@ -513,14 +519,15 @@ def test_nested_cli_emits_human_and_stable_json(tmp_path, monkeypatch):
     assert human.exit_code == 0, human.output
     assert f"Plan ID: {plan.plan_id}" in human.output
     assert "Dorado model: chem_hac@v1.0.0 (1.3.1+test" in human.output
-    assert "Execution: unavailable" in human.output
+    assert "Execution: this command writes no scientific artifacts" in human.output
     assert machine.exit_code == 0, machine.output
     payload = json.loads(machine.output)
     assert payload["schema_version"] == 1
     assert payload["selection"]["mode"] == "all-parent-molecules"
     assert payload["identity"]["status"] == "resolved"
     assert payload["requested_model"]["resolution_status"] == "resolved"
-    assert payload["execution_status"] == "not_implemented"
+    assert payload["execution_status"] == "basecall_only"
+    assert payload["basecall_execution"]["generation_kind"] == "parent_universe"
 
 
 def test_historical_split_child_resolves_from_retained_bam_pi(tmp_path, monkeypatch):
