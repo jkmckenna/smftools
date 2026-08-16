@@ -93,7 +93,8 @@ def test_write_raw_store_creates_shards_and_thin_spine(tmp_path):
     assert all("/start_bin=" in str(path) for path in spine.obs["ragged_shard"])
     assert set(spine.obs["Barcode"].astype(str)) == {"bc01", "bc02"}
     assert list(spine.obs["reference_end"]) == [4, 4, 6, 6]
-    assert spine.uns["raw_schema_version"] == 4
+    assert spine.uns["raw_schema_version"] == 5
+    assert spine.uns["identity_schema_version"] == 3
     assert spine.obs["read_id"].astype(str).tolist() == list(spine.obs_names)
     assert spine.obs["experiment_uid"].nunique() == 1
     assert spine.obs["molecule_uid"].is_unique
@@ -167,6 +168,39 @@ def test_write_raw_store_skips_barcode_artifacts_without_sample_column(tmp_path)
     assert set(molecules["read_id"]) == {"read1", "read2", "read3", "read4"}
     spine, _ = safe_read_h5ad(paths["spine"])
     assert "barcode_index" not in spine.uns
+
+
+def test_raw_store_persists_basecall_and_pod5_origin_identity_everywhere(tmp_path):
+    frame = _frame().iloc[:2].copy()
+    frame["basecall_read_id"] = ["split-a", "unsplit"]
+    frame["basecall_parent_read_id"] = ["pod5-parent", None]
+    frame["pod5_read_id"] = ["pod5-parent", "unsplit"]
+    frame["pod5_identity_status"] = "resolved"
+    frame["pod5_identity_evidence"] = ["bam_pi+pod5_index", "bam_qname+pod5_index"]
+
+    paths = write_raw_store(
+        frame,
+        tmp_path / "raw_outputs",
+        reference_lengths={"ref1_top": 4},
+    )
+
+    tables = [
+        pd.read_parquet(paths["ragged_store"][0]),
+        pd.read_parquet(paths["segments"]),
+        pd.read_parquet(paths["molecules"]),
+    ]
+    spine, _ = safe_read_h5ad(paths["spine"], verbose=False)
+    tables.append(spine.obs.reset_index(drop=True))
+    expected_columns = {
+        "basecall_read_id",
+        "basecall_parent_read_id",
+        "pod5_read_id",
+        "pod5_identity_status",
+        "pod5_identity_evidence",
+    }
+    for table in tables:
+        assert expected_columns.issubset(table.columns)
+        assert set(table["pod5_read_id"].astype(str)) == {"pod5-parent", "unsplit"}
 
 
 def test_raw_store_reuses_persisted_experiment_identity(tmp_path):

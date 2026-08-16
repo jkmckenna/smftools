@@ -86,6 +86,25 @@ def test_paired_ragged_record_uses_segment_identity_and_preserves_mate_fields():
     assert record["template_length"] == 12
 
 
+def test_ragged_record_preserves_dorado_basecall_and_split_parent_identity():
+    class SplitRead(FakeRead):
+        query_name = "split-child"
+
+        @staticmethod
+        def has_tag(tag):
+            return tag == "pi"
+
+        @staticmethod
+        def get_tag(tag):
+            assert tag == "pi"
+            return "pod5-parent"
+
+    record = alignment_to_ragged_record(SplitRead(), "AACCGGTTAACC")
+
+    assert record["basecall_read_id"] == "split-child"
+    assert record["basecall_parent_read_id"] == "pod5-parent"
+
+
 def test_ragged_parquet_round_trip(tmp_path):
     path = write_ragged_parquet(_ragged_frame(), tmp_path / "reads.parquet")
     result = read_ragged_parquet(path)

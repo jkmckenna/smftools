@@ -7,13 +7,18 @@ import hashlib
 import re
 import uuid
 
-IDENTITY_SCHEMA_VERSION = 2
+IDENTITY_SCHEMA_VERSION = 3
 EXPERIMENT_UID_COLUMN = "experiment_uid"
 MOLECULE_UID_COLUMN = "molecule_uid"
 READ_ID_COLUMN = "read_id"
 TEMPLATE_ID_COLUMN = "template_id"
 SEGMENT_ID_COLUMN = "segment_id"
 SEGMENT_UID_COLUMN = "segment_uid"
+BASECALL_READ_ID_COLUMN = "basecall_read_id"
+BASECALL_PARENT_READ_ID_COLUMN = "basecall_parent_read_id"
+POD5_READ_ID_COLUMN = "pod5_read_id"
+POD5_IDENTITY_STATUS_COLUMN = "pod5_identity_status"
+POD5_IDENTITY_EVIDENCE_COLUMN = "pod5_identity_evidence"
 _MATE_SUFFIX_RE = re.compile(r"(?:/|[._-](?:R|read)?)([12])$", re.IGNORECASE)
 
 
@@ -34,6 +39,29 @@ def namespaced_source_id(namespace: object, source_id: object) -> str:
     if not namespace:
         return source_id
     return f"ns{len(namespace)}:{namespace}:{source_id}"
+
+
+def basecall_parent_read_id(read: object) -> str | None:
+    """Return the Dorado source-signal parent recorded in the BAM ``pi`` tag.
+
+    Dorado split children retain their own query names while ``pi`` identifies
+    the single POD5 read that supplied their signal. Pysam-like records expose
+    BAM tags through ``has_tag``/``get_tag``; CLI-decoded records provide the
+    already parsed value as ``basecall_parent_read_id``.
+    """
+    value = getattr(read, BASECALL_PARENT_READ_ID_COLUMN, None)
+    has_tag = getattr(read, "has_tag", None)
+    get_tag = getattr(read, "get_tag", None)
+    if callable(has_tag) and callable(get_tag):
+        try:
+            if has_tag("pi"):
+                value = get_tag("pi")
+        except (KeyError, TypeError, ValueError):
+            value = None
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    return normalized or None
 
 
 def alignment_segment_id(read: object) -> str:

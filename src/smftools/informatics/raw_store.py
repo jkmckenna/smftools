@@ -26,6 +26,8 @@ from smftools.logging_utils import get_logger
 from ..readwrite import safe_write_h5ad
 from .experiment_spine import write_experiment_spine
 from .molecule_identity import (
+    BASECALL_PARENT_READ_ID_COLUMN,
+    BASECALL_READ_ID_COLUMN,
     EXPERIMENT_UID_COLUMN,
     IDENTITY_SCHEMA_VERSION,
     MOLECULE_UID_COLUMN,
@@ -60,7 +62,7 @@ MOLECULE_INDEX_DIRNAME = "molecule_index"
 SEGMENT_INDEX_DIRNAME = "segment_index"
 BARCODE_INDEX_FILENAME = "barcode_index.parquet"
 SPINE_FILENAME = "spine.h5ad"
-RAW_SCHEMA_VERSION = 4
+RAW_SCHEMA_VERSION = 5
 
 _OBS_COLUMN_ALIASES = {
     REFERENCE: (REFERENCE, "reference"),
@@ -81,6 +83,8 @@ _RAW_SCALAR_OBS_COLUMNS = (
     "read_group",
     "namespace",
     "source_read_id",
+    BASECALL_READ_ID_COLUMN,
+    BASECALL_PARENT_READ_ID_COLUMN,
     "identity_status",
     "identity_conflicts",
     "identity_schema_version",

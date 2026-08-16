@@ -26,7 +26,13 @@ from smftools.constants import (
     SEQUENCE_INTEGER_ENCODING,
 )
 
-from .molecule_identity import alignment_segment_id, template_read_id
+from .molecule_identity import (
+    BASECALL_PARENT_READ_ID_COLUMN,
+    BASECALL_READ_ID_COLUMN,
+    alignment_segment_id,
+    basecall_parent_read_id,
+    template_read_id,
+)
 from .physical_layout import portable_parquet_row_group_rows
 from .signal_features import SIGNAL_FEATURE_COLUMNS
 
@@ -399,6 +405,8 @@ def alignment_to_ragged_record(
     return {
         READ_ID: alignment_segment_id(read),
         TEMPLATE_ID: template_read_id(read.query_name) if paired else str(read.query_name),
+        BASECALL_READ_ID_COLUMN: str(read.query_name),
+        BASECALL_PARENT_READ_ID_COLUMN: basecall_parent_read_id(read),
         MATE: mate,
         "paired": paired,
         "proper_pair": bool(getattr(read, "is_proper_pair", False)),
