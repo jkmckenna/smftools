@@ -20,10 +20,12 @@ from .generation import (
     CURRENT_SCHEMA_VERSION,
     GENERATION_MANIFEST,
     GENERATIONS_SUBDIR,
+    LINEAGE_PROVENANCE_KEYS,
     STAGING_SUBDIR,
     GenerationError,
     resolve_current_generation,
     staged_generation,
+    validate_lineage_provenance,
 )
 from .partition_read import relative_uns_path, resolve_relative_path
 from .sidecar_manifest import register_sidecar, resolve_sidecar, sidecar_manifest_path
@@ -36,31 +38,10 @@ RAW_GENERATION_SCHEMA_VERSION = 3
 RAW_CURRENT_SCHEMA_VERSION = CURRENT_SCHEMA_VERSION
 
 # Schema 3 adds the optional ``lineage`` block marking a generation as a
-# re-basecalled descendant. Its absence is meaningful: an ordinary generation
-# has no lineage provenance, and a reader must not invent one. Per `D2`,
-# ``generation_kind`` is *derived* from the basecall generation rather than
-# independently asserted here.
-RAW_LINEAGE_PROVENANCE_KEYS = frozenset(
-    {
-        "lineage_id",
-        "origin_experiment_uid",
-        "parent_raw_generation_id",
-        "parent_preprocess_generation_id",
-        "selection_id",
-        "source_resolution_digest",
-        "basecall_id",
-        "generation_kind",
-        "identity_map",
-    }
-)
-_LINEAGE_REQUIRED_TEXT_KEYS = (
-    "lineage_id",
-    "origin_experiment_uid",
-    "parent_raw_generation_id",
-    "selection_id",
-    "basecall_id",
-    "generation_kind",
-)
+# re-basecalled descendant. The shape is shared with every other generation kind
+# that can carry one, so it lives in ``informatics/generation.py``.
+RAW_LINEAGE_PROVENANCE_KEYS = LINEAGE_PROVENANCE_KEYS
+validate_raw_lineage_provenance = validate_lineage_provenance
 
 RAW_GENERATION_ARTIFACT_PATHS: dict[str, str] = {
     "spine": "spine.h5ad",
@@ -253,30 +234,6 @@ def _write_generation_sidecar_manifest(
     return manifest_path
 
 
-def validate_raw_lineage_provenance(lineage: Any) -> dict[str, Any] | None:
-    """Validate a descendant generation's lineage block, if it carries one.
-
-    Returns ``None`` for an ordinary generation. A malformed block is an error
-    rather than a warning: a descendant that cannot state which selection and
-    basecall produced it is exactly the artifact this program exists to prevent.
-    """
-    if lineage is None:
-        return None
-    if not isinstance(lineage, dict) or set(lineage) != RAW_LINEAGE_PROVENANCE_KEYS:
-        raise RawGenerationError("raw generation lineage provenance is malformed")
-    for key in _LINEAGE_REQUIRED_TEXT_KEYS:
-        value = lineage.get(key)
-        if not isinstance(value, str) or not value.strip():
-            raise RawGenerationError(f"raw generation lineage provenance lacks {key}")
-    if lineage["generation_kind"] not in {"full_source", "parent_universe", "selected_cohort"}:
-        raise RawGenerationError("raw generation lineage generation kind is invalid")
-    for key in ("parent_preprocess_generation_id", "source_resolution_digest", "identity_map"):
-        value = lineage.get(key)
-        if value is not None and (not isinstance(value, str) or not value.strip()):
-            raise RawGenerationError(f"raw generation lineage provenance has an invalid {key}")
-    return lineage
-
-
 def validate_raw_generation(
     generation_dir: str | Path,
     *,
@@ -294,7 +251,10 @@ def validate_raw_generation(
     generation_schema = int(manifest.get("schema_version", -1))
     if generation_schema not in {1, 2, RAW_GENERATION_SCHEMA_VERSION}:
         raise RawGenerationError("raw generation schema is incompatible")
-    validate_raw_lineage_provenance(manifest.get("lineage"))
+    try:
+        validate_lineage_provenance(manifest.get("lineage"))
+    except GenerationError as exc:
+        raise RawGenerationError(f"raw {exc}") from exc
     if manifest.get("status") != "complete":
         raise RawGenerationError("raw generation is not complete")
     generation_id = str(manifest.get("generation_id", ""))
@@ -445,9 +405,12 @@ def publish_raw_generation(
     """
     run_root = Path(run_root)
     raw_output_dir = run_root / "raw_outputs"
-    lineage = validate_raw_lineage_provenance(
-        dict(lineage_provenance) if lineage_provenance is not None else None
-    )
+    try:
+        lineage = validate_lineage_provenance(
+            dict(lineage_provenance) if lineage_provenance is not None else None
+        )
+    except GenerationError as exc:
+        raise RawGenerationError(f"raw {exc}") from exc
     reuse_root = Path(reuse_generation) if reuse_generation is not None else None
     reuse_manifest: dict[str, Any] | None = None
     if reuse_root is not None:
@@ -502,7 +465,10 @@ def publish_raw_generation(
             generation_id=generation_id,
             manifest_checksum=_checksum,
             write_json=atomic_write_json,
-            after_current=validate_published,
+            # Validating the published tree describes the generation, not the
+            # selection, so a descendant that never becomes current is validated
+            # at its final location just as a selected one is.
+            after_publish=validate_published,
             select_current=select_current,
         ) as staged:
             generation_id = staged.generation_id

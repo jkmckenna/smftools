@@ -114,16 +114,25 @@ def run_lineage_raw_stage(
     accepted_plan_id: str,
     parent_config_path: str | Path,
     raw_stage_runner: Callable[..., Any] | None = None,
+    preprocess_stage_runner: Callable[..., Any] | None = None,
     identity_map: str | None = None,
 ) -> LineageRawStageResult:
-    """Publish one lineage whose descendant raw generation was actually built.
+    """Publish one lineage whose descendant generations were actually built.
 
-    The raw stage runs inside the lineage transaction, so a stage killed partway
-    leaves the parent run and every prior complete lineage untouched: the
-    descendant generation is never selected, and the lineage never appears.
+    Every stage runs inside the lineage transaction, so a stage killed partway
+    leaves the parent run and every prior complete lineage untouched: no
+    descendant generation is ever selected, and the lineage never appears.
+
+    How far this runs is the accepted request's ``downstream.target``. A target
+    of ``raw`` stops after raw; anything deeper also preprocesses, reading the
+    descendant raw generation rather than whatever the parent currently selects.
     """
     if raw_stage_runner is None:
         from ..cli.raw_adata import raw_adata as raw_stage_runner  # noqa: PLC0415
+    if preprocess_stage_runner is None:
+        from ..cli.preprocess_adata import (  # noqa: PLC0415
+            preprocess_adata as preprocess_stage_runner,
+        )
 
     rebasecall_root = Path(rebasecall_root)
     identity = build_lineage_identity(plan, selection, basecall)
@@ -150,6 +159,16 @@ def run_lineage_raw_stage(
         result = raw_stage_runner(str(descendant_config), lineage_provenance=provenance)
         generation_id = _descendant_generation_id(result)
         staged.record_stage_generation("raw", generation_id)
+        if plan.request.downstream_target != "raw":
+            preprocess_result = preprocess_stage_runner(
+                str(descendant_config),
+                lineage_generations={"raw": generation_id},
+                lineage_provenance=provenance,
+            )
+            staged.record_stage_generation(
+                "preprocess",
+                _descendant_generation_id(preprocess_result),
+            )
         final_dir = staged.final_dir
 
     lineage = read_published_rebasecall_lineage(final_dir, expected_lineage_id=staged.lineage_id)
@@ -162,17 +181,23 @@ def run_lineage_raw_stage(
 
 
 def _descendant_generation_id(result: Any) -> str:
-    """Recover the published generation id from a raw-stage result."""
+    """Recover the published generation id from one stage's result.
+
+    Stages report their published spine in different result positions, so the
+    generation is identified by the published *shape*
+    (``<stage>/generations/<id>/spine.h5ad``) rather than by a per-stage
+    convention that would silently drift.
+    """
     if isinstance(result, Mapping) and "generation_id" in result:
         return str(result["generation_id"])
-    if isinstance(result, (tuple, list)) and len(result) >= 2:
-        generation_spine = Path(str(result[1]))
-        # ``<raw_outputs>/generations/<id>/spine.h5ad``
-        if generation_spine.name == "spine.h5ad" and generation_spine.parent.parent.name == (
-            "generations"
-        ):
-            return generation_spine.parent.name
+    candidates = result if isinstance(result, (tuple, list)) else (result,)
+    for candidate in candidates:
+        if not isinstance(candidate, (str, Path)):
+            continue
+        spine = Path(str(candidate))
+        if spine.name == "spine.h5ad" and spine.parent.parent.name == "generations":
+            return spine.parent.name
     raise RebasecallLineageError(
         "lineage_raw_stage_unrecognized",
-        "the raw stage did not report a published generation",
+        "the stage did not report a published generation",
     )

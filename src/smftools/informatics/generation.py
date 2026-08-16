@@ -81,6 +81,64 @@ def _current_path(output_dir: Path) -> Path:
     return output_dir / CURRENT_FILENAME
 
 
+# One generation kind can be a re-basecalled descendant of another. The block is
+# optional and its absence is meaningful: an ordinary generation has no lineage
+# provenance and a reader must not invent one. Per `D2` in the
+# generation-lifecycle plan, ``generation_kind`` is *derived* from the basecall
+# generation rather than independently asserted by each descendant stage.
+LINEAGE_PROVENANCE_KEYS = frozenset(
+    {
+        "lineage_id",
+        "origin_experiment_uid",
+        "parent_raw_generation_id",
+        "parent_preprocess_generation_id",
+        "selection_id",
+        "source_resolution_digest",
+        "basecall_id",
+        "generation_kind",
+        "identity_map",
+    }
+)
+LINEAGE_GENERATION_KINDS = frozenset({"full_source", "parent_universe", "selected_cohort"})
+_LINEAGE_REQUIRED_TEXT_KEYS = (
+    "lineage_id",
+    "origin_experiment_uid",
+    "parent_raw_generation_id",
+    "selection_id",
+    "basecall_id",
+    "generation_kind",
+)
+_LINEAGE_OPTIONAL_TEXT_KEYS = (
+    "parent_preprocess_generation_id",
+    "source_resolution_digest",
+    "identity_map",
+)
+
+
+def validate_lineage_provenance(lineage: Any) -> dict[str, Any] | None:
+    """Validate a generation's lineage block, if it carries one.
+
+    Returns ``None`` for an ordinary generation. A malformed block is an error
+    rather than a warning: a descendant that cannot state which selection and
+    basecall produced it is exactly the artifact this program exists to prevent.
+    """
+    if lineage is None:
+        return None
+    if not isinstance(lineage, dict) or set(lineage) != LINEAGE_PROVENANCE_KEYS:
+        raise GenerationError("generation lineage provenance is malformed")
+    for key in _LINEAGE_REQUIRED_TEXT_KEYS:
+        value = lineage.get(key)
+        if not isinstance(value, str) or not value.strip():
+            raise GenerationError(f"generation lineage provenance lacks {key}")
+    if lineage["generation_kind"] not in LINEAGE_GENERATION_KINDS:
+        raise GenerationError("generation lineage generation kind is invalid")
+    for key in _LINEAGE_OPTIONAL_TEXT_KEYS:
+        value = lineage.get(key)
+        if value is not None and (not isinstance(value, str) or not value.strip()):
+            raise GenerationError(f"generation lineage provenance has an invalid {key}")
+    return lineage
+
+
 @contextmanager
 def staged_generation(
     output_dir: str | Path,
@@ -90,6 +148,7 @@ def staged_generation(
     generation_id: str | None = None,
     manifest_checksum: Callable[[Path], str] | None = None,
     write_json: Callable[[str | Path, Any], None] | None = None,
+    after_publish: Callable[[Path, Path, Path], None] | None = None,
     after_current: Callable[[Path, Path, Path], None] | None = None,
     select_current: bool = True,
 ) -> Iterator[StagedGeneration]:
@@ -111,9 +170,18 @@ def staged_generation(
             rollback. Defaults to :func:`smftools.readwrite.atomic_write_json`.
             Kind-specific callers may pass their imported writer to preserve
             failure-injection seams.
+        after_publish: Optional ``(staging_dir, final_dir, run_root)`` callable
+            run after the tree moves and *before* the selector advances, whether
+            or not it will. Use it for work that describes the generation itself,
+            such as validating it at its published location. A failure removes
+            the new generation and leaves the selector untouched.
         after_current: Optional ``(staging_dir, final_dir, run_root)`` callable
-            run after the selector advances. A failure restores the previous
-            selector and removes the new generation.
+            run only when the selector actually advances. Use it for work that
+            follows *selection* rather than publication -- publishing a canonical
+            stage-root spine, for instance, which ordinary readers resolve and
+            which a non-selected generation must therefore never overwrite. A
+            failure restores the previous selector and removes the new
+            generation.
         select_current: Whether publication also advances ``current.json``.
             Set ``False`` to publish without selecting, which is how a
             re-basecalling lineage adds a descendant generation beside the
@@ -175,6 +243,8 @@ def staged_generation(
             validate(staging_dir, final_dir, run_root)
         os.replace(staging_dir, final_dir)
         moved = True
+        if after_publish is not None:
+            after_publish(staging_dir, final_dir, run_root)
         if select_current:
             pointer = {
                 "schema_version": CURRENT_SCHEMA_VERSION,
@@ -185,8 +255,8 @@ def staged_generation(
                 pointer["manifest_sha256"] = manifest_checksum(final_dir / GENERATION_MANIFEST)
             write_json(pointer_path, pointer)
             current_advanced = True
-        if after_current is not None:
-            after_current(staging_dir, final_dir, run_root)
+            if after_current is not None:
+                after_current(staging_dir, final_dir, run_root)
     except Exception:
         shutil.rmtree(staging_dir, ignore_errors=True)
         if moved:

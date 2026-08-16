@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import gc
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Any, Mapping, Optional, Tuple
 
 import anndata as ad
 
@@ -27,9 +27,16 @@ def preprocess_adata(
     config_path: str,
     *,
     cfg=None,
+    lineage_generations: Mapping[str, str] | None = None,
+    lineage_provenance: Mapping[str, Any] | None = None,
 ) -> Tuple[Optional[Path], Optional[Path]]:
     """
     CLI-facing wrapper for preprocessing.
+
+    ``lineage_generations`` pins which generation each upstream stage resolves,
+    and ``lineage_provenance`` marks the published result as a re-basecalled
+    descendant. Together they let a lineage preprocess its own descendant raw
+    generation while ``current.json`` keeps answering for everyone else.
 
     Called by: `smftools experiment preprocess <config_path>`
 
@@ -64,8 +71,13 @@ def preprocess_adata(
     if getattr(cfg, "output_directory", None) is not None:
         setup_stage_logging(cfg, Path(cfg.output_directory) / PREPROCESS_DIR)
 
-    # 2) Compute canonical paths
-    paths = get_adata_paths(cfg)
+    # 2) Compute canonical paths. Only a lineage run passes a pin, so the
+    # ordinary call is unchanged for every other caller and test double.
+    paths = (
+        get_adata_paths(cfg, lineage_generations=lineage_generations)
+        if lineage_generations
+        else get_adata_paths(cfg)
+    )
     raw_path = paths.raw
     pp_path = paths.pp
     pp_dedup_path = paths.pp_dedup
@@ -107,9 +119,21 @@ def preprocess_adata(
         )
 
         output_dir = Path(cfg.output_directory) / PREPROCESS_DIR
+        # Only a lineage run publishes a non-selected descendant, so the
+        # ordinary call keeps its existing signature.
+        lineage_kwargs = (
+            {"lineage_provenance": lineage_provenance, "select_current": False}
+            if lineage_provenance is not None
+            else {}
+        )
         with stage_lifecycle(cfg, "preprocess", source_path) as lifecycle:
             with perf_substep("partitioned_preprocess"):
-                outputs = publish_preprocess_generation(source_path, cfg, output_dir)
+                outputs = publish_preprocess_generation(
+                    source_path,
+                    cfg,
+                    output_dir,
+                    **lineage_kwargs,
+                )
             publish_stage_outputs(
                 lifecycle,
                 outputs,

@@ -254,3 +254,35 @@ def test_unreadable_pointer_is_rejected(tmp_path: Path) -> None:
 
     with pytest.raises(GenerationError, match="unreadable"):
         resolve_current_generation(out)
+
+
+def test_publishing_without_selecting_leaves_the_pointer_and_selection_hooks_alone(
+    tmp_path: Path,
+) -> None:
+    """A descendant is addressable immediately, but answers for nobody yet."""
+    out = tmp_path / "preprocess_adata_outputs"
+    first = _publish(out)
+    after_publish: list[str] = []
+    after_current: list[str] = []
+
+    with staged_generation(
+        out,
+        generation_id="descendant",
+        after_publish=lambda _staging, final, _root: after_publish.append(final.name),
+        after_current=lambda _staging, final, _root: after_current.append(final.name),
+        select_current=False,
+    ) as staged:
+        staged.record_manifest({"status": "complete"})
+
+    generation_dir, manifest = resolve_current_generation(out)
+
+    # The descendant exists on disk and is fully published...
+    assert (out / GENERATIONS_SUBDIR / "descendant" / GENERATION_MANIFEST).is_file()
+    # ...but the previous generation is still what ordinary readers resolve.
+    assert manifest["generation_id"] == first
+    assert generation_dir.name == first
+    # Work that describes the generation runs; work that follows *selection*
+    # does not, which is what keeps a non-selected generation from overwriting a
+    # canonical stage-root spine.
+    assert after_publish == ["descendant"]
+    assert after_current == []
