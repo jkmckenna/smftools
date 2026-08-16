@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import time
 from pathlib import Path
+from typing import Any, Mapping
 
 import numpy as np
 import pandas as pd
@@ -1703,8 +1704,14 @@ def build_partitioned_ragged_records_streaming(
 
 
 @stage_logging_lifecycle
-def raw_adata(config_path: str):
-    """Run BAM preparation through section 6 and emit ragged raw artifacts."""
+def raw_adata(config_path: str, *, lineage_provenance: Mapping[str, Any] | None = None):
+    """Run BAM preparation through section 6 and emit ragged raw artifacts.
+
+    ``lineage_provenance`` marks the result as a re-basecalled descendant. Such a
+    run publishes beside the parent's generation without advancing
+    ``current.json``, and never takes the append path: a selected cohort is a
+    parallel lineage, not a later state of the parent's source universe.
+    """
     from ..logging_utils import setup_stage_logging
     from ..perf_log import perf_substep
     from ..readwrite import safe_read_h5ad
@@ -1817,6 +1824,8 @@ def raw_adata(config_path: str):
                 if append_plan is not None and append_plan.eligible
                 else None
             ),
+            lineage_provenance=lineage_provenance,
+            select_current=lineage_provenance is None,
         )
 
     def lifecycle_outputs(generation):
@@ -1838,6 +1847,11 @@ def raw_adata(config_path: str):
     except RawGenerationError as exc:
         current_generation = None
         logger.warning("Raw current generation is invalid; rebuilding: %s", exc)
+    if lineage_provenance is not None:
+        # A descendant is published beside whatever is current, never instead of
+        # it and never as an addition to it, so neither the completeness skip nor
+        # the append path applies.
+        current_generation = None
     if current_generation is not None and not cfg.force_redo_load_adata:
         generation_id = str(current_generation[1]["generation_id"])
         current_spine = current_generation[0] / "spine.h5ad"

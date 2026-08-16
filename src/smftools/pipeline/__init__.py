@@ -73,6 +73,12 @@ from .rebasecall_request import (
     parse_selection_predicate,
     rebasecall_request_from_dict,
 )
+from .rebasecall_run import (
+    DESCENDANT_CONFIG_FILENAME,
+    LineageRawStageResult,
+    derive_descendant_config,
+    run_lineage_raw_stage,
+)
 from .rebasecall_selection import (
     REBASECALL_SELECTION_SCHEMA_VERSION,
     FrozenRebasecallSelection,
@@ -125,11 +131,13 @@ __all__ = [
     "ChannelSpec",
     "CompatibilityFingerprint",
     "DependencyResultIdentity",
+    "DESCENDANT_CONFIG_FILENAME",
     "EXPERIMENT_NODE_IDS",
     "EXPERIMENT_STAGES",
     "EXPERIMENT_TARGETS",
     "ExperimentExecutionResult",
     "FrozenRebasecallSelection",
+    "LineageRawStageResult",
     "MaterializedRebasecallSignal",
     "NodeInputs",
     "NodeResult",
@@ -177,6 +185,7 @@ __all__ = [
     "build_rebasecall_plan",
     "build_upgrade_impact",
     "compatibility_fingerprint",
+    "derive_descendant_config",
     "descendant_raw_provenance",
     "execute_experiment_target",
     "execute_rebasecall_basecall",
@@ -206,6 +215,7 @@ __all__ = [
     "read_materialized_rebasecall_signal",
     "read_published_rebasecall_basecall",
     "read_published_rebasecall_lineage",
+    "run_lineage_raw_stage",
     "resolve_experiment_target",
     "staged_lineage",
     "write_lineage_validation",
