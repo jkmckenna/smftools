@@ -48,6 +48,7 @@ from ..informatics.raw_generation import (
 )
 from ..preprocessing.partitioned_executor import PREPROCESS_STAGE_OBS
 from .rebasecall_request import (
+    SELECTION_GENERATION_KINDS,
     RebasecallRequest,
     RebasecallRequestError,
     load_rebasecall_request,
@@ -55,10 +56,7 @@ from .rebasecall_request import (
 
 REBASECALL_PLAN_SCHEMA_VERSION = 1
 _GENERATION_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
-_DEFERRED_CAPABILITIES = (
-    "dorado_basecall_execution_and_validation:srb-04b",
-    "lineage_execution_and_publication:srb-05",
-)
+_DEFERRED_CAPABILITIES = ("lineage_execution_and_publication:srb-05",)
 
 
 class RebasecallPlanError(ValueError):
@@ -408,7 +406,16 @@ class RebasecallPlan:
                 ),
                 "accepted_plan_id": self.plan_id,
             },
-            "execution_status": "not_implemented",
+            "basecall_execution": {
+                "status": (
+                    "available_during_run_preparation"
+                    if self.status == "ready" and self.model.status == "resolved"
+                    else "blocked"
+                ),
+                "accepted_plan_id": self.plan_id,
+                "generation_kind": SELECTION_GENERATION_KINDS.get(self.request.selection.mode),
+            },
+            "execution_status": "basecall_only",
             "raw_parent": (
                 None if self.raw_parent is None else self.raw_parent.to_dict(self.run_root)
             ),
@@ -1236,7 +1243,10 @@ def format_rebasecall_plan(plan: RebasecallPlan) -> str:
             else f"{plan.request.basecall.model} ({plan.model.status})"
         ),
         f"Downstream target: {plan.request.downstream_target}",
-        "Execution: unavailable; this command writes no scientific artifacts.",
+        (
+            "Execution: this command writes no scientific artifacts; selective basecalling "
+            "runs only from an explicitly accepted plan."
+        ),
         "",
         "Blockers:",
     ]

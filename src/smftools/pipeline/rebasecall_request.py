@@ -19,6 +19,15 @@ SELECTION_MODES = (
     "qc",
     "ids",
 )
+# D2 in the generation-lifecycle plan: the selection determines which reads a
+# basecall contains, so the kind is a property of the selection mode and is
+# stamped on the basecall generation. A descendant raw generation derives it.
+SELECTION_GENERATION_KINDS = {
+    "all-signal": "full_source",
+    "all-parent-molecules": "parent_universe",
+    "qc": "selected_cohort",
+    "ids": "selected_cohort",
+}
 ID_KINDS = ("molecule_uid", "read_id", "pod5_read_id")
 READ_SPLITTING_POLICIES = ("preserve", "disable")
 TRIM_POLICIES = ("none", "all")
