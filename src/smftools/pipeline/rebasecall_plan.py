@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import math
 import re
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -43,7 +45,6 @@ from .rebasecall_request import (
 REBASECALL_PLAN_SCHEMA_VERSION = 1
 _GENERATION_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _DEFERRED_CAPABILITIES = (
-    "selection_freezing:srb-01b",
     "source_checksum_relocation_and_replayability:srb-03",
     "dorado_and_model_bundle_resolution:srb-04",
     "lineage_execution_and_publication:srb-05",
@@ -56,6 +57,16 @@ class RebasecallPlanError(ValueError):
     def __init__(self, code: str, message: str):
         super().__init__(message)
         self.code = str(code)
+
+
+def _sha256_payload(payload: object) -> str:
+    encoded = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -80,11 +91,17 @@ class ParentGeneration:
     manifest: Mapping[str, Any] = field(repr=False, compare=False)
     molecule_count: int | None = None
 
+    @property
+    def manifest_digest(self) -> str:
+        """Return the path-neutral digest of the validated generation manifest."""
+        return _sha256_payload(dict(self.manifest))
+
     def to_dict(self, run_root: Path) -> dict[str, Any]:
         return {
             "stage": self.stage,
             "selector": self.selector,
             "generation_id": self.generation_id,
+            "manifest_digest": self.manifest_digest,
             "path": self.generation_dir.relative_to(run_root).as_posix(),
             "molecule_count": self.molecule_count,
         }
@@ -130,6 +147,7 @@ class RebasecallSelectionPlan:
     requested_id_count: int | None = None
     matched_id_count: int | None = None
     missing_ids: tuple[str, ...] = ()
+    source_column_fingerprints: Mapping[str, str] = field(default_factory=dict)
 
     @property
     def complete(self) -> bool:
@@ -146,6 +164,7 @@ class RebasecallSelectionPlan:
             "requested_id_count": self.requested_id_count,
             "matched_id_count": self.matched_id_count,
             "missing_ids": list(self.missing_ids),
+            "source_column_fingerprints": dict(self.source_column_fingerprints),
         }
 
 
@@ -194,6 +213,12 @@ class RebasecallPlan:
     sources: RebasecallSourcePlan
     selection: RebasecallSelectionPlan
     identity: RebasecallIdentityPlan
+    _identity_resolution: Pod5IdentityResolution | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+    _pod5_index: Pod5DatasetIndex | None = field(default=None, repr=False, compare=False)
     blockers: tuple[RebasecallPlanReason, ...] = ()
     warnings: tuple[RebasecallPlanReason, ...] = ()
     schema_version: int = REBASECALL_PLAN_SCHEMA_VERSION
@@ -219,15 +244,52 @@ class RebasecallPlan:
     def status(self) -> str:
         return "blocked" if self.blockers else "ready"
 
+    @property
+    def plan_id(self) -> str:
+        """Return the stable acceptance identity for this exact read-only plan."""
+        return _sha256_payload(
+            {
+                "schema_version": self.schema_version,
+                "request_id": self.request.request_id,
+                "experiment_uid": self.experiment_uid,
+                "raw_parent": (
+                    None
+                    if self.raw_parent is None
+                    else {
+                        "generation_id": self.raw_parent.generation_id,
+                        "manifest_digest": self.raw_parent.manifest_digest,
+                    }
+                ),
+                "preprocess_parent": (
+                    None
+                    if self.preprocess_parent is None
+                    else {
+                        "generation_id": self.preprocess_parent.generation_id,
+                        "manifest_digest": self.preprocess_parent.manifest_digest,
+                    }
+                ),
+                "sources": self.sources.to_dict(),
+                "selection": self.selection.to_dict(),
+                "identity": self.identity.to_dict(),
+                "blocker_codes": [reason.code for reason in self.blockers],
+                "warning_codes": [reason.code for reason in self.warnings],
+            }
+        )
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "schema_version": self.schema_version,
+            "plan_id": self.plan_id,
             "request_id": self.request.request_id,
             "request": self.request.to_dict(),
             "experiment_id": self.experiment_id,
             "experiment_uid": self.experiment_uid,
             "status": self.status,
             "selection_status": self.selection_status,
+            "selection_freezing": {
+                "status": "available_during_run_preparation",
+                "accepted_plan_id": self.plan_id,
+            },
             "execution_status": "not_implemented",
             "raw_parent": (
                 None if self.raw_parent is None else self.raw_parent.to_dict(self.run_root)
@@ -502,6 +564,33 @@ def _source_plan(
     )
 
 
+def _fingerprint_scalar(value: object) -> object:
+    if value is None or pd.isna(value):
+        return None
+    item = value.item() if hasattr(value, "item") else value
+    if isinstance(item, float) and not math.isfinite(item):
+        return str(item)
+    if isinstance(item, (bool, int, float, str)):
+        return item
+    return str(item)
+
+
+def _column_fingerprints(
+    observations: pd.DataFrame,
+    columns: tuple[str, ...],
+) -> dict[str, str]:
+    """Digest complete selection-input columns in stable observation order."""
+    ordered = observations.sort_index(kind="stable")
+    fingerprints: dict[str, str] = {}
+    for column in sorted(columns):
+        values = [
+            [str(read_id), _fingerprint_scalar(value)]
+            for read_id, value in zip(ordered.index, ordered[column], strict=True)
+        ]
+        fingerprints[column] = _sha256_payload(values)
+    return fingerprints
+
+
 def _selection_plan(
     request: RebasecallRequest,
     raw_observations: pd.DataFrame,
@@ -546,6 +635,10 @@ def _selection_plan(
                 universe_count=len(raw_observations),
                 selected_count=len(selected_rows),
                 consumed_columns=(selection.id_kind,),
+                source_column_fingerprints=_column_fingerprints(
+                    raw_observations,
+                    (selection.id_kind,),
+                ),
                 id_kind=selection.id_kind,
                 requested_id_count=len(requested),
                 matched_id_count=len(requested) - len(missing),
@@ -574,6 +667,10 @@ def _selection_plan(
             universe_count=len(joined),
             selected_count=len(selected_rows),
             consumed_columns=selection.predicate.columns,
+            source_column_fingerprints=_column_fingerprints(
+                joined,
+                selection.predicate.columns,
+            ),
         ),
         selected_rows,
     )
@@ -692,6 +789,7 @@ def build_rebasecall_plan(
     identity = RebasecallIdentityPlan(mode="unavailable", status="unavailable")
     pod5_index = None
     selected_observations = None
+    resolution = None
 
     if experiment_uid is None:
         blockers.append(
@@ -845,6 +943,8 @@ def build_rebasecall_plan(
         sources=sources,
         selection=selection,
         identity=identity,
+        _identity_resolution=resolution,
+        _pod5_index=pod5_index,
         blockers=tuple(blockers),
         warnings=tuple(warnings),
     )
@@ -875,11 +975,13 @@ def format_rebasecall_plan(plan: RebasecallPlan) -> str:
     )
     lines = [
         f"Re-basecall request: {plan.request.name} ({plan.request.request_id})",
+        f"Plan ID: {plan.plan_id}",
         f"Experiment: {plan.experiment_id} (UID {plan.experiment_uid or 'missing'})",
         f"Plan status: {plan.status}; selection {plan.selection_status}",
         f"Raw parent: {raw_id}",
         f"Preprocess parent: {preprocess_id}",
         f"Selection: {plan.selection.mode}; {selected}/{universe} molecule(s)",
+        "Selection freezing: available during run preparation; explicit Plan ID acceptance required",
         f"POD5 identity: {plan.identity.status}; "
         f"{plan.identity.resolved_molecule_count}/{plan.identity.selected_molecule_count} molecule(s), "
         f"{plan.identity.unique_pod5_read_count} unique signal read(s)",
