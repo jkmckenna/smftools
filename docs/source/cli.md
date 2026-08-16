@@ -51,6 +51,54 @@ arguments, so project impact reports cost as unknown rather than guessing from
 artifact size or treating a cache as a generic compatible result. The JSON
 report is schema-versioned independently from the source semantic plan.
 
+## Selective re-basecall planning
+
+Use the nested re-basecall planner to inspect an immutable parent generation,
+source-signal availability, and one structured molecule selection without
+running Dorado or writing scientific artifacts:
+
+```shell
+smftools experiment rebasecall plan experiment.csv request.yaml
+smftools experiment rebasecall plan experiment.csv request.yaml --json
+```
+
+A minimal QC request is:
+
+```yaml
+schema_version: 1
+name: publication-cohort
+source:
+  raw_generation: current
+  preprocess_generation: current
+selection:
+  mode: qc
+  predicate:
+    all:
+      - {column: passes_read_qc, op: eq, value: true}
+      - {column: passes_dedup, op: eq, value: true}
+basecall:
+  model: hac@latest
+signal:
+  materialize: false
+downstream:
+  target: full
+promotion:
+  activate: false
+```
+
+Schema-1 requests support `all-signal`, `all-parent-molecules`, `qc`, and `ids`
+selection modes. QC predicates are bounded structured objects over canonical QC
+mask columns; arbitrary Python and SQL expressions are rejected. Plans report
+the exact raw and optional preprocess generation IDs, selection universe and
+count, source-manifest identity and availability, scientific-scope warnings,
+and stable blocking reason codes.
+
+This first planning contract deliberately does not freeze a selection, validate
+relocated POD5 checksums, resolve a floating Dorado model selector, execute a
+basecall, or publish/promote a lineage. Those capabilities remain explicit in
+the plan as the SRB-02 through SRB-05 delivery boundaries. A request must set
+`promotion.activate: false`; later promotion is always a separate operation.
+
 ## Named experiment sets
 
 `--set NAME` restricts a project command to a saved subset of the registered

@@ -72,6 +72,36 @@ def experiment_group():
     """Run pipeline stages for a single experiment (one config path in)."""
 
 
+@experiment_group.group("rebasecall")
+def experiment_rebasecall_group():
+    """Plan selective POD5 re-basecalling without mutating an experiment."""
+
+
+@experiment_rebasecall_group.command("plan")
+@click.argument(
+    "config_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+)
+@click.argument(
+    "request_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+)
+@click.option("--json", "as_json", is_flag=True, help="Emit stable machine-readable JSON.")
+def experiment_rebasecall_plan_cmd(
+    config_path: Path,
+    request_path: Path,
+    as_json: bool,
+):
+    """Inspect exact parents, source signal, and selection counts without writes."""
+    from .pipeline.rebasecall_plan import format_rebasecall_plan, plan_rebasecall
+
+    try:
+        plan = plan_rebasecall(config_path, request_path)
+    except Exception as error:
+        raise click.ClickException(str(error)) from error
+    click.echo(plan.to_json() if as_json else format_rebasecall_plan(plan))
+
+
 @experiment_group.command("rename-id")
 @click.argument("experiment_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
 @click.argument("new_id")
