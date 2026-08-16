@@ -20,6 +20,13 @@ from ..informatics.input_manifest import (
     ResolvedInputManifest,
     read_resolved_input_manifest,
 )
+from ..informatics.partition_read import resolve_relative_path
+from ..informatics.pod5_identity import (
+    Pod5DatasetIndex,
+    Pod5IdentityResolution,
+    build_pod5_dataset_index,
+    resolve_pod5_identities,
+)
 from ..informatics.raw_generation import (
     RAW_GENERATIONS_SUBDIR,
     RawGenerationError,
@@ -36,7 +43,7 @@ from .rebasecall_request import (
 REBASECALL_PLAN_SCHEMA_VERSION = 1
 _GENERATION_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _DEFERRED_CAPABILITIES = (
-    "selected_molecule_to_pod5_identity_resolution:srb-02",
+    "selection_freezing:srb-01b",
     "source_checksum_relocation_and_replayability:srb-03",
     "dorado_and_model_bundle_resolution:srb-04",
     "lineage_execution_and_publication:srb-05",
@@ -95,6 +102,7 @@ class RebasecallSourcePlan:
     relocation_candidates: int = 0
     signal_read_count: int | None = None
     signal_count_complete: bool = False
+    duplicate_read_id_count: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -106,6 +114,7 @@ class RebasecallSourcePlan:
             "relocation_candidates": self.relocation_candidates,
             "signal_read_count": self.signal_read_count,
             "signal_count_complete": self.signal_count_complete,
+            "duplicate_read_id_count": self.duplicate_read_id_count,
         }
 
 
@@ -141,6 +150,38 @@ class RebasecallSelectionPlan:
 
 
 @dataclass(frozen=True)
+class RebasecallIdentityPlan:
+    """Bounded summary of selected-molecule to POD5 identity resolution."""
+
+    mode: str
+    status: str
+    selected_molecule_count: int = 0
+    resolved_molecule_count: int = 0
+    unique_pod5_read_count: int = 0
+    duplicate_parent_reference_count: int = 0
+    unresolved_count: int = 0
+    ambiguous_count: int = 0
+    evidence_counts: Mapping[str, int] = field(default_factory=dict)
+    resolution_digest: str | None = None
+    failures: tuple[Mapping[str, object], ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "mode": self.mode,
+            "status": self.status,
+            "selected_molecule_count": self.selected_molecule_count,
+            "resolved_molecule_count": self.resolved_molecule_count,
+            "unique_pod5_read_count": self.unique_pod5_read_count,
+            "duplicate_parent_reference_count": self.duplicate_parent_reference_count,
+            "unresolved_count": self.unresolved_count,
+            "ambiguous_count": self.ambiguous_count,
+            "evidence_counts": dict(self.evidence_counts),
+            "resolution_digest": self.resolution_digest,
+            "failures": [dict(failure) for failure in self.failures],
+        }
+
+
+@dataclass(frozen=True)
 class RebasecallPlan:
     """Stable schema-1 read-only re-basecall plan."""
 
@@ -152,6 +193,7 @@ class RebasecallPlan:
     preprocess_parent: ParentGeneration | None
     sources: RebasecallSourcePlan
     selection: RebasecallSelectionPlan
+    identity: RebasecallIdentityPlan
     blockers: tuple[RebasecallPlanReason, ...] = ()
     warnings: tuple[RebasecallPlanReason, ...] = ()
     schema_version: int = REBASECALL_PLAN_SCHEMA_VERSION
@@ -197,6 +239,7 @@ class RebasecallPlan:
             ),
             "sources": self.sources.to_dict(),
             "selection": self.selection.to_dict(),
+            "identity": self.identity.to_dict(),
             "requested_model": {
                 "selector": self.request.basecall.model,
                 "resolution_status": "deferred",
@@ -377,31 +420,12 @@ def _preprocess_source_generation_id(
     return next(iter(identities), None)
 
 
-def _count_pod5_reads(paths: tuple[Path, ...]) -> int:
-    """Count unique POD5 UUIDs without loading signal arrays."""
-    from ..optional_imports import require
-
-    pod5 = require("pod5", extra="ont", purpose="POD5 re-basecall planning")
-    seen: set[str] = set()
-    for path in paths:
-        with pod5.Reader(path) as reader:
-            for read in reader.reads():
-                read_id = str(read.read_id)
-                if read_id in seen:
-                    raise RebasecallPlanError(
-                        "signal_inventory_unavailable",
-                        f"source POD5 manifests contain duplicate read UUID {read_id!r}",
-                    )
-                seen.add(read_id)
-    return len(seen)
-
-
 def _source_plan(
     request: RebasecallRequest,
     parent: ParentGeneration,
     *,
-    signal_counter: Callable[[tuple[Path, ...]], int],
-) -> tuple[RebasecallSourcePlan, list[RebasecallPlanReason]]:
+    pod5_indexer: Callable[[tuple[tuple[str, Path], ...]], Pod5DatasetIndex],
+) -> tuple[RebasecallSourcePlan, list[RebasecallPlanReason], Pod5DatasetIndex | None]:
     manifest = _read_input_manifest(parent)
     rows = manifest.rows
     recorded_available = sum(Path(row.path).is_file() for row in rows)
@@ -439,14 +463,14 @@ def _source_plan(
 
     signal_count = None
     count_complete = False
+    duplicate_read_id_count = 0
+    pod5_index = None
     if pod5_rows and len(pod5_rows) == len(rows) and not missing_recorded:
         try:
-            signal_count = int(signal_counter(tuple(Path(row.path) for row in pod5_rows)))
-            if signal_count < 0:
-                raise ValueError
+            pod5_index = pod5_indexer(tuple((row.source_id, Path(row.path)) for row in pod5_rows))
+            signal_count = pod5_index.unique_read_count
+            duplicate_read_id_count = pod5_index.duplicate_read_id_count
             count_complete = True
-        except RebasecallPlanError as exc:
-            blockers.append(RebasecallPlanReason(exc.code, str(exc)))
         except Exception as exc:
             blockers.append(
                 RebasecallPlanReason(
@@ -454,6 +478,13 @@ def _source_plan(
                     f"POD5 read inventory could not be counted: {type(exc).__name__}: {exc}",
                 )
             )
+    if duplicate_read_id_count:
+        blockers.append(
+            RebasecallPlanReason(
+                "signal_identity_ambiguous",
+                f"{duplicate_read_id_count} POD5 read UUID(s) occur in multiple source locations",
+            )
+        )
     return (
         RebasecallSourcePlan(
             manifest_digest=manifest.digest,
@@ -464,8 +495,10 @@ def _source_plan(
             relocation_candidates=relocation_candidates,
             signal_read_count=signal_count,
             signal_count_complete=count_complete,
+            duplicate_read_id_count=duplicate_read_id_count,
         ),
         blockers,
+        pod5_index,
     )
 
 
@@ -474,19 +507,25 @@ def _selection_plan(
     raw_observations: pd.DataFrame,
     preprocess_observations: pd.DataFrame | None,
     sources: RebasecallSourcePlan,
-) -> RebasecallSelectionPlan:
+) -> tuple[RebasecallSelectionPlan, pd.DataFrame]:
     selection = request.selection
     if selection.mode == "all-signal":
-        return RebasecallSelectionPlan(
-            mode=selection.mode,
-            universe_count=sources.signal_read_count,
-            selected_count=sources.signal_read_count,
+        return (
+            RebasecallSelectionPlan(
+                mode=selection.mode,
+                universe_count=sources.signal_read_count,
+                selected_count=sources.signal_read_count,
+            ),
+            raw_observations.iloc[0:0],
         )
     if selection.mode == "all-parent-molecules":
-        return RebasecallSelectionPlan(
-            mode=selection.mode,
-            universe_count=len(raw_observations),
-            selected_count=len(raw_observations),
+        return (
+            RebasecallSelectionPlan(
+                mode=selection.mode,
+                universe_count=len(raw_observations),
+                selected_count=len(raw_observations),
+            ),
+            raw_observations,
         )
     if selection.mode == "ids":
         assert selection.id_kind is not None
@@ -498,15 +537,21 @@ def _selection_plan(
         available = set(raw_observations[selection.id_kind].dropna().astype(str))
         requested = set(selection.ids)
         missing = tuple(sorted(requested.difference(available)))
-        return RebasecallSelectionPlan(
-            mode=selection.mode,
-            universe_count=len(raw_observations),
-            selected_count=len(requested) - len(missing),
-            consumed_columns=(selection.id_kind,),
-            id_kind=selection.id_kind,
-            requested_id_count=len(requested),
-            matched_id_count=len(requested) - len(missing),
-            missing_ids=missing,
+        selected_rows = raw_observations[
+            raw_observations[selection.id_kind].astype("string").isin(requested)
+        ]
+        return (
+            RebasecallSelectionPlan(
+                mode=selection.mode,
+                universe_count=len(raw_observations),
+                selected_count=len(selected_rows),
+                consumed_columns=(selection.id_kind,),
+                id_kind=selection.id_kind,
+                requested_id_count=len(requested),
+                matched_id_count=len(requested) - len(missing),
+                missing_ids=missing,
+            ),
+            selected_rows,
         )
 
     assert selection.predicate is not None
@@ -522,11 +567,97 @@ def _selection_plan(
         selected = selection.predicate.evaluate(joined)
     except RebasecallRequestError as exc:
         raise RebasecallPlanError("predicate_evaluation_failed", str(exc)) from exc
-    return RebasecallSelectionPlan(
-        mode=selection.mode,
-        universe_count=len(joined),
-        selected_count=int(selected.sum()),
-        consumed_columns=selection.predicate.columns,
+    selected_rows = raw_observations.loc[joined.index[selected]]
+    return (
+        RebasecallSelectionPlan(
+            mode=selection.mode,
+            universe_count=len(joined),
+            selected_count=len(selected_rows),
+            consumed_columns=selection.predicate.columns,
+        ),
+        selected_rows,
+    )
+
+
+def _read_bam_pi(path: Path) -> Mapping[str, Mapping[str, object]]:
+    """Read retained Dorado parent tags without loading alignment payloads."""
+    from ..informatics.bam_functions import extract_read_tags_from_bam
+
+    return extract_read_tags_from_bam(
+        path,
+        tag_names=["pi"],
+        include_flags=False,
+        include_cigar=False,
+        primary_only=True,
+    )
+
+
+def _normalized_row_value(row: pd.Series, column: str) -> str | None:
+    value = row.get(column)
+    if value is None or pd.isna(value):
+        return None
+    normalized = str(value).strip()
+    return normalized or None
+
+
+def _retained_bam_parents(
+    observations: pd.DataFrame,
+    run_root: Path,
+    *,
+    bam_tag_reader: Callable[[Path], Mapping[str, Mapping[str, object]]],
+) -> tuple[dict[str, object], int]:
+    """Recover historical ``pi`` values for selected rows that retain BAM paths."""
+    if "bam_path" not in observations.columns:
+        return {}, 0
+    by_path: dict[Path, list[pd.Series]] = {}
+    for _, row in observations.iterrows():
+        stored_path = _normalized_row_value(row, "bam_path")
+        path = resolve_relative_path(stored_path, run_root)
+        if path is not None and path.is_file():
+            by_path.setdefault(path, []).append(row)
+
+    recovered: dict[str, object] = {}
+    unreadable_count = 0
+    for path in sorted(by_path, key=lambda item: item.as_posix()):
+        try:
+            tags = bam_tag_reader(path)
+        except Exception:
+            unreadable_count += 1
+            continue
+        for row in by_path[path]:
+            observation_id = str(row["read_id"])
+            aliases = (
+                _normalized_row_value(row, "source_read_id"),
+                _normalized_row_value(row, "basecall_read_id"),
+                observation_id,
+            )
+            for alias in aliases:
+                if alias is None or alias not in tags:
+                    continue
+                value = tags[alias].get("pi")
+                if value is not None and str(value).strip():
+                    recovered[observation_id] = value
+                    break
+    return recovered, unreadable_count
+
+
+def _identity_plan_from_resolution(
+    resolution: Pod5IdentityResolution,
+) -> RebasecallIdentityPlan:
+    failures = tuple(row.to_dict() for row in resolution.rows if row.status != "resolved")[:10]
+    status = "blocked" if resolution.unresolved_count or resolution.ambiguous_count else "resolved"
+    return RebasecallIdentityPlan(
+        mode="molecule_resolution",
+        status=status,
+        selected_molecule_count=len(resolution.rows),
+        resolved_molecule_count=resolution.resolved_count,
+        unique_pod5_read_count=resolution.unique_pod5_read_count,
+        duplicate_parent_reference_count=resolution.duplicate_parent_reference_count,
+        unresolved_count=resolution.unresolved_count,
+        ambiguous_count=resolution.ambiguous_count,
+        evidence_counts=resolution.evidence_counts,
+        resolution_digest=resolution.digest,
+        failures=failures,
     )
 
 
@@ -534,7 +665,10 @@ def build_rebasecall_plan(
     cfg: Any,
     request: RebasecallRequest,
     *,
-    signal_counter: Callable[[tuple[Path, ...]], int] | None = None,
+    pod5_indexer: Callable[
+        [tuple[tuple[str, Path], ...]], Pod5DatasetIndex
+    ] = build_pod5_dataset_index,
+    bam_tag_reader: Callable[[Path], Mapping[str, Mapping[str, object]]] = _read_bam_pi,
 ) -> RebasecallPlan:
     """Inspect exact immutable parents and selection counts without writing artifacts."""
     run_root = Path(cfg.output_directory)
@@ -555,6 +689,9 @@ def build_rebasecall_plan(
     preprocess_observations = None
     sources = RebasecallSourcePlan()
     selection = RebasecallSelectionPlan(mode=request.selection.mode)
+    identity = RebasecallIdentityPlan(mode="unavailable", status="unavailable")
+    pod5_index = None
+    selected_observations = None
 
     if experiment_uid is None:
         blockers.append(
@@ -594,10 +731,10 @@ def build_rebasecall_plan(
 
     if raw_parent is not None:
         try:
-            sources, source_blockers = _source_plan(
+            sources, source_blockers, pod5_index = _source_plan(
                 request,
                 raw_parent,
-                signal_counter=signal_counter or _count_pod5_reads,
+                pod5_indexer=pod5_indexer,
             )
             blockers.extend(source_blockers)
         except RebasecallPlanError as exc:
@@ -605,7 +742,7 @@ def build_rebasecall_plan(
 
     if raw_observations is not None:
         try:
-            selection = _selection_plan(
+            selection, selected_observations = _selection_plan(
                 request,
                 raw_observations,
                 preprocess_observations,
@@ -620,6 +757,54 @@ def build_rebasecall_plan(
                 )
         except RebasecallPlanError as exc:
             blockers.append(RebasecallPlanReason(exc.code, str(exc)))
+
+    if request.selection.mode == "all-signal" and pod5_index is not None:
+        identity = RebasecallIdentityPlan(
+            mode="signal_inventory",
+            status="resolved" if not pod5_index.duplicate_read_id_count else "blocked",
+            unique_pod5_read_count=pod5_index.unique_read_count,
+            ambiguous_count=pod5_index.duplicate_read_id_count,
+            evidence_counts={"pod5_dataset_index": pod5_index.unique_read_count},
+        )
+    elif selected_observations is not None and pod5_index is not None:
+        initial = resolve_pod5_identities(selected_observations, pod5_index)
+        fallback_ids = {
+            row.observation_id
+            for row in initial.rows
+            if row.status == "unresolved" and row.evidence == "no_supported_identity"
+        }
+        bam_parents, unreadable_bam_count = _retained_bam_parents(
+            selected_observations[selected_observations["read_id"].astype(str).isin(fallback_ids)],
+            run_root,
+            bam_tag_reader=bam_tag_reader,
+        )
+        if unreadable_bam_count:
+            blockers.append(
+                RebasecallPlanReason(
+                    "retained_bam_identity_unavailable",
+                    f"{unreadable_bam_count} retained BAM source(s) could not be read for pi recovery",
+                )
+            )
+        resolution = resolve_pod5_identities(
+            selected_observations,
+            pod5_index,
+            bam_parent_by_observation=bam_parents,
+        )
+        identity = _identity_plan_from_resolution(resolution)
+        if resolution.unresolved_count:
+            blockers.append(
+                RebasecallPlanReason(
+                    "pod5_identity_unresolved",
+                    f"{resolution.unresolved_count} selected molecule(s) have no authoritative POD5 UUID",
+                )
+            )
+        if resolution.ambiguous_count:
+            blockers.append(
+                RebasecallPlanReason(
+                    "pod5_identity_ambiguous",
+                    f"{resolution.ambiguous_count} selected molecule(s) map to non-unique POD5 signal",
+                )
+            )
 
     if request.selection.mode == "all-signal":
         warnings.append(
@@ -659,6 +844,7 @@ def build_rebasecall_plan(
         preprocess_parent=preprocess_parent,
         sources=sources,
         selection=selection,
+        identity=identity,
         blockers=tuple(blockers),
         warnings=tuple(warnings),
     )
@@ -694,11 +880,14 @@ def format_rebasecall_plan(plan: RebasecallPlan) -> str:
         f"Raw parent: {raw_id}",
         f"Preprocess parent: {preprocess_id}",
         f"Selection: {plan.selection.mode}; {selected}/{universe} molecule(s)",
+        f"POD5 identity: {plan.identity.status}; "
+        f"{plan.identity.resolved_molecule_count}/{plan.identity.selected_molecule_count} molecule(s), "
+        f"{plan.identity.unique_pod5_read_count} unique signal read(s)",
         f"Sources: {plan.sources.pod5_source_count}/{plan.sources.source_count} POD5; "
         f"signal reads {plan.sources.signal_read_count if plan.sources.signal_read_count is not None else 'unknown'}",
         f"Requested model: {plan.request.basecall.model} (resolution deferred to SRB-04)",
         f"Downstream target: {plan.request.downstream_target}",
-        "Execution: unavailable in SRB-01a; this command writes no scientific artifacts.",
+        "Execution: unavailable; this command writes no scientific artifacts.",
         "",
         "Blockers:",
     ]

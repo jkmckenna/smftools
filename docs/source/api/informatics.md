@@ -43,6 +43,7 @@ Processes raw sequencing data to load an adata object.
    smftools.informatics.partition_store
    smftools.informatics.physical_layout
    smftools.informatics.plot_region_stitching
+   smftools.informatics.pod5_identity
    smftools.informatics.pod5_functions
    smftools.informatics.ragged_store
    smftools.informatics.raw_append
@@ -60,8 +61,9 @@ The `ragged_store`/`raw_store`/`partition_read`/`partition_store` modules implem
 partitioned storage architecture: a read-relative ragged parquet source of truth, a thin
 molecule-index `spine.h5ad`, and on-demand dense-slice materialization. `molecule_identity` and
 `derived_read_index` provide project-wide molecule keys and searchable raw-to-derived task
-lineage. `fastq_export` and `sequence_encoding` build on the ragged store to reconstruct literal
-read sequence/quality for FASTQ export.
+lineage. `pod5_identity` resolves current and historical molecule identities against authoritative
+POD5 UUID indexes. `fastq_export` and `sequence_encoding` build on the ragged store to reconstruct
+literal read sequence/quality for FASTQ export.
 `partition_query` prunes molecule and derived-task Parquet indexes before opening array stores,
 then projects Zarr rows, genomic columns, and requested layers before bounded conversion to memory.
 `artifact_paths` keeps cross-stage pointers relative to the run or project root when the platform

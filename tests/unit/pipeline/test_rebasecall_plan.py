@@ -10,11 +10,16 @@ from click.testing import CliRunner
 
 from smftools import cli_entry
 from smftools.informatics.input_manifest import InputManifestRow, ResolvedInputManifest
+from smftools.informatics.pod5_identity import Pod5DatasetIndex
 from smftools.pipeline import rebasecall_plan
-from smftools.pipeline.rebasecall_plan import ParentGeneration, RebasecallPlanError
+from smftools.pipeline.rebasecall_plan import ParentGeneration
 from smftools.pipeline.rebasecall_request import rebasecall_request_from_dict
 
 pytestmark = pytest.mark.unit
+
+
+def _pod5_index(*read_ids):
+    return Pod5DatasetIndex({read_id: ("source-a",) for read_id in read_ids})
 
 
 def _request(mode="qc", **selection_overrides):
@@ -128,7 +133,7 @@ def test_qc_plan_resolves_exact_parents_counts_selection_and_writes_nothing(tmp_
     plan = rebasecall_plan.build_rebasecall_plan(
         cfg,
         _request("qc"),
-        signal_counter=lambda paths: 5,
+        pod5_indexer=lambda sources: _pod5_index("r1", "r2", "r3", "signal-4", "signal-5"),
     )
 
     assert plan.status == "ready"
@@ -142,6 +147,8 @@ def test_qc_plan_resolves_exact_parents_counts_selection_and_writes_nothing(tmp_
     assert plan.selection.selected_count == 1
     assert plan.selection.consumed_columns == ("passes_dedup", "passes_read_qc")
     assert plan.sources.signal_read_count == 5
+    assert plan.identity.status == "resolved"
+    assert plan.identity.evidence_counts == {"read_id": 1}
     assert plan.to_dict()["execution_status"] == "not_implemented"
     assert "dorado_and_model_bundle_resolution:srb-04" in plan.to_dict()["deferred_capabilities"]
     assert plan.to_json() == plan.to_json()
@@ -154,7 +161,7 @@ def test_all_signal_keeps_signal_and_parent_universes_distinct(tmp_path, monkeyp
     plan = rebasecall_plan.build_rebasecall_plan(
         cfg,
         _request("all-signal"),
-        signal_counter=lambda paths: 5,
+        pod5_indexer=lambda sources: _pod5_index("r1", "r2", "r3", "signal-4", "signal-5"),
     )
 
     assert plan.status == "ready"
@@ -162,19 +169,21 @@ def test_all_signal_keeps_signal_and_parent_universes_distinct(tmp_path, monkeyp
     assert plan.raw_parent.molecule_count == 3
     assert plan.selection.universe_count == 5
     assert plan.selection.selected_count == 5
+    assert plan.identity.mode == "signal_inventory"
+    assert plan.identity.unique_pod5_read_count == 5
     assert [warning.code for warning in plan.warnings] == ["full_signal_scope"]
 
 
 def test_signal_inventory_failure_preserves_source_plan_and_qc_selection(tmp_path, monkeypatch):
     cfg = _install_parent_fixtures(tmp_path, monkeypatch)
 
-    def fail_inventory(_paths):
-        raise RebasecallPlanError("signal_inventory_unavailable", "duplicate POD5 UUID")
+    def fail_inventory(_sources):
+        raise ValueError("unreadable POD5")
 
     plan = rebasecall_plan.build_rebasecall_plan(
         cfg,
         _request("qc"),
-        signal_counter=fail_inventory,
+        pod5_indexer=fail_inventory,
     )
 
     assert plan.status == "blocked"
@@ -191,7 +200,7 @@ def test_missing_explicit_id_blocks_without_silently_dropping_it(tmp_path, monke
     plan = rebasecall_plan.build_rebasecall_plan(
         cfg,
         _request("ids"),
-        signal_counter=lambda paths: 5,
+        pod5_indexer=lambda sources: _pod5_index("r1", "r2", "r3", "signal-4", "signal-5"),
     )
 
     assert plan.status == "blocked"
@@ -207,7 +216,7 @@ def test_qc_plan_blocks_when_preprocess_does_not_descend_from_raw(tmp_path, monk
     plan = rebasecall_plan.build_rebasecall_plan(
         cfg,
         _request("qc"),
-        signal_counter=lambda paths: 5,
+        pod5_indexer=lambda sources: _pod5_index("r1", "r2", "r3", "signal-4", "signal-5"),
     )
 
     assert plan.status == "blocked"
@@ -229,7 +238,7 @@ def test_qc_plan_infers_preprocess_parent_from_generation_scoped_source_path(tmp
     plan = rebasecall_plan.build_rebasecall_plan(
         cfg,
         _request("qc"),
-        signal_counter=lambda paths: 5,
+        pod5_indexer=lambda sources: _pod5_index("r1", "r2", "r3", "signal-4", "signal-5"),
     )
 
     assert plan.status == "ready"
@@ -241,7 +250,7 @@ def test_nested_cli_emits_human_and_stable_json(tmp_path, monkeypatch):
     plan = rebasecall_plan.build_rebasecall_plan(
         cfg,
         _request("all-parent-molecules"),
-        signal_counter=lambda paths: 5,
+        pod5_indexer=lambda sources: _pod5_index("r1", "r2", "r3", "signal-4", "signal-5"),
     )
     config_path = tmp_path / "experiment.csv"
     request_path = tmp_path / "request.yaml"
@@ -266,9 +275,97 @@ def test_nested_cli_emits_human_and_stable_json(tmp_path, monkeypatch):
     )
 
     assert human.exit_code == 0, human.output
-    assert "Execution: unavailable in SRB-01a" in human.output
+    assert "Execution: unavailable" in human.output
     assert machine.exit_code == 0, machine.output
     payload = json.loads(machine.output)
     assert payload["schema_version"] == 1
     assert payload["selection"]["mode"] == "all-parent-molecules"
+    assert payload["identity"]["status"] == "resolved"
     assert payload["execution_status"] == "not_implemented"
+
+
+def test_historical_split_child_resolves_from_retained_bam_pi(tmp_path, monkeypatch):
+    cfg = _install_parent_fixtures(tmp_path, monkeypatch)
+    retained_bam = tmp_path / "retained.bam"
+    retained_bam.write_bytes(b"bam")
+    pd.DataFrame(
+        {
+            "read_id": ["ns6:lane-a:split-child"],
+            "source_read_id": ["split-child"],
+            "molecule_uid": ["m1"],
+            "bam_path": ["retained.bam"],
+        }
+    ).to_parquet(cfg.raw_parent.generation_dir / "obs.parquet", index=False)
+
+    plan = rebasecall_plan.build_rebasecall_plan(
+        cfg,
+        _request("all-parent-molecules"),
+        pod5_indexer=lambda sources: _pod5_index("parent"),
+        bam_tag_reader=lambda path: {"split-child": {"pi": "parent"}},
+    )
+
+    assert plan.status == "ready"
+    assert plan.identity.resolved_molecule_count == 1
+    assert plan.identity.evidence_counts == {"bam_pi": 1}
+
+
+def test_unresolved_selected_molecules_have_stable_blocker_and_bounded_evidence(
+    tmp_path, monkeypatch
+):
+    cfg = _install_parent_fixtures(tmp_path, monkeypatch)
+
+    plan = rebasecall_plan.build_rebasecall_plan(
+        cfg,
+        _request("all-parent-molecules"),
+        pod5_indexer=lambda sources: _pod5_index("r1"),
+    )
+
+    assert plan.status == "blocked"
+    assert plan.identity.unresolved_count == 2
+    assert len(plan.identity.failures) == 2
+    assert "pod5_identity_unresolved" in {reason.code for reason in plan.blockers}
+
+
+def test_parent_id_selection_retains_all_split_child_rows(tmp_path, monkeypatch):
+    cfg = _install_parent_fixtures(tmp_path, monkeypatch)
+    pd.DataFrame(
+        {
+            "read_id": ["child-1", "child-2"],
+            "molecule_uid": ["m1", "m2"],
+            "pod5_read_id": ["parent", "parent"],
+        }
+    ).to_parquet(cfg.raw_parent.generation_dir / "obs.parquet", index=False)
+
+    plan = rebasecall_plan.build_rebasecall_plan(
+        cfg,
+        _request("ids", id_kind="pod5_read_id", ids=["parent"]),
+        pod5_indexer=lambda sources: _pod5_index("parent"),
+    )
+
+    assert plan.status == "ready"
+    assert plan.selection.matched_id_count == 1
+    assert plan.selection.selected_count == 2
+    assert plan.identity.duplicate_parent_reference_count == 1
+
+
+def test_unreadable_retained_bam_becomes_stable_identity_blocker(tmp_path, monkeypatch):
+    cfg = _install_parent_fixtures(tmp_path, monkeypatch)
+    retained_bam = tmp_path / "retained.bam"
+    retained_bam.write_bytes(b"bad bam")
+    pd.DataFrame(
+        {"read_id": ["split-child"], "molecule_uid": ["m1"], "bam_path": ["retained.bam"]}
+    ).to_parquet(cfg.raw_parent.generation_dir / "obs.parquet", index=False)
+
+    def fail_bam(_path):
+        raise OSError("unreadable")
+
+    plan = rebasecall_plan.build_rebasecall_plan(
+        cfg,
+        _request("all-parent-molecules"),
+        pod5_indexer=lambda sources: _pod5_index("parent"),
+        bam_tag_reader=fail_bam,
+    )
+
+    blocker_codes = {reason.code for reason in plan.blockers}
+    assert "retained_bam_identity_unavailable" in blocker_codes
+    assert "pod5_identity_unresolved" in blocker_codes
