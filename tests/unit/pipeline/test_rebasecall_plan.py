@@ -263,8 +263,12 @@ def test_checksum_validated_relocation_is_indexed_and_plan_id_is_path_invariant(
     )
     assert (
         "filtered_signal_materialization_and_replayability:srb-03b"
-        in first.to_dict()["deferred_capabilities"]
+        not in first.to_dict()["deferred_capabilities"]
     )
+    assert first.to_dict()["signal_materialization"] == {
+        "status": "not_requested",
+        "accepted_plan_id": first.plan_id,
+    }
 
 
 def test_checksum_mismatch_blocks_before_pod5_inventory(tmp_path, monkeypatch):

@@ -50,7 +50,6 @@ from .rebasecall_request import (
 REBASECALL_PLAN_SCHEMA_VERSION = 1
 _GENERATION_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _DEFERRED_CAPABILITIES = (
-    "filtered_signal_materialization_and_replayability:srb-03b",
     "dorado_and_model_bundle_resolution:srb-04",
     "lineage_execution_and_publication:srb-05",
 )
@@ -334,6 +333,14 @@ class RebasecallPlan:
             "selection_status": self.selection_status,
             "selection_freezing": {
                 "status": "available_during_run_preparation",
+                "accepted_plan_id": self.plan_id,
+            },
+            "signal_materialization": {
+                "status": (
+                    "available_during_run_preparation"
+                    if self.request.signal.materialize
+                    else "not_requested"
+                ),
                 "accepted_plan_id": self.plan_id,
             },
             "execution_status": "not_implemented",
@@ -1106,6 +1113,12 @@ def format_rebasecall_plan(plan: RebasecallPlan) -> str:
         f"Preprocess parent: {preprocess_id}",
         f"Selection: {plan.selection.mode}; {selected}/{universe} molecule(s)",
         "Selection freezing: available during run preparation; explicit Plan ID acceptance required",
+        "Signal materialization: "
+        + (
+            "available during run preparation"
+            if plan.request.signal.materialize
+            else "not requested"
+        ),
         f"POD5 identity: {plan.identity.status}; "
         f"{plan.identity.resolved_molecule_count}/{plan.identity.selected_molecule_count} molecule(s), "
         f"{plan.identity.unique_pod5_read_count} unique signal read(s)",
