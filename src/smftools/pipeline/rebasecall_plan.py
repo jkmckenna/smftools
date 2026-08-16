@@ -29,6 +29,11 @@ from ..informatics.pod5_identity import (
     build_pod5_dataset_index,
     resolve_pod5_identities,
 )
+from ..informatics.pod5_source import (
+    Pod5SourceCandidate,
+    Pod5SourceResolution,
+    resolve_pod5_sources,
+)
 from ..informatics.raw_generation import (
     RAW_GENERATIONS_SUBDIR,
     RawGenerationError,
@@ -45,7 +50,7 @@ from .rebasecall_request import (
 REBASECALL_PLAN_SCHEMA_VERSION = 1
 _GENERATION_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _DEFERRED_CAPABILITIES = (
-    "source_checksum_relocation_and_replayability:srb-03",
+    "filtered_signal_materialization_and_replayability:srb-03b",
     "dorado_and_model_bundle_resolution:srb-04",
     "lineage_execution_and_publication:srb-05",
 )
@@ -115,8 +120,19 @@ class RebasecallSourcePlan:
     source_count: int = 0
     pod5_source_count: int = 0
     source_ids: tuple[str, ...] = ()
+    resolution_status: str = "unavailable"
+    resolved_source_count: int = 0
     recorded_paths_available: int = 0
     relocation_candidates: int = 0
+    missing_source_count: int = 0
+    checksum_mismatch_count: int = 0
+    unreadable_source_count: int = 0
+    unmatched_relocation_count: int = 0
+    rejected_candidate_count: int = 0
+    duplicate_valid_candidate_count: int = 0
+    resolution_evidence_counts: Mapping[str, int] = field(default_factory=dict)
+    resolution_digest: str | None = None
+    failures: tuple[Mapping[str, object], ...] = ()
     signal_read_count: int | None = None
     signal_count_complete: bool = False
     duplicate_read_id_count: int = 0
@@ -127,12 +143,37 @@ class RebasecallSourcePlan:
             "source_count": self.source_count,
             "pod5_source_count": self.pod5_source_count,
             "source_ids": list(self.source_ids),
+            "resolution_status": self.resolution_status,
+            "resolved_source_count": self.resolved_source_count,
             "recorded_paths_available": self.recorded_paths_available,
             "relocation_candidates": self.relocation_candidates,
+            "missing_source_count": self.missing_source_count,
+            "checksum_mismatch_count": self.checksum_mismatch_count,
+            "unreadable_source_count": self.unreadable_source_count,
+            "unmatched_relocation_count": self.unmatched_relocation_count,
+            "rejected_candidate_count": self.rejected_candidate_count,
+            "duplicate_valid_candidate_count": self.duplicate_valid_candidate_count,
+            "resolution_evidence_counts": dict(self.resolution_evidence_counts),
+            "resolution_digest": self.resolution_digest,
+            "failures": [dict(failure) for failure in self.failures],
             "signal_read_count": self.signal_read_count,
             "signal_count_complete": self.signal_count_complete,
             "duplicate_read_id_count": self.duplicate_read_id_count,
         }
+
+    def semantic_payload(self) -> dict[str, Any]:
+        """Return source state that is invariant to exact-byte relocation."""
+        payload = self.to_dict()
+        for field_name in (
+            "recorded_paths_available",
+            "relocation_candidates",
+            "rejected_candidate_count",
+            "duplicate_valid_candidate_count",
+            "resolution_evidence_counts",
+            "failures",
+        ):
+            payload.pop(field_name)
+        return payload
 
 
 @dataclass(frozen=True)
@@ -219,6 +260,11 @@ class RebasecallPlan:
         compare=False,
     )
     _pod5_index: Pod5DatasetIndex | None = field(default=None, repr=False, compare=False)
+    _source_resolution: Pod5SourceResolution | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
     blockers: tuple[RebasecallPlanReason, ...] = ()
     warnings: tuple[RebasecallPlanReason, ...] = ()
     schema_version: int = REBASECALL_PLAN_SCHEMA_VERSION
@@ -268,7 +314,7 @@ class RebasecallPlan:
                         "manifest_digest": self.preprocess_parent.manifest_digest,
                     }
                 ),
-                "sources": self.sources.to_dict(),
+                "sources": self.sources.semantic_payload(),
                 "selection": self.selection.to_dict(),
                 "identity": self.identity.to_dict(),
                 "blocker_codes": [reason.code for reason in self.blockers],
@@ -487,23 +533,31 @@ def _source_plan(
     parent: ParentGeneration,
     *,
     pod5_indexer: Callable[[tuple[tuple[str, Path], ...]], Pod5DatasetIndex],
-) -> tuple[RebasecallSourcePlan, list[RebasecallPlanReason], Pod5DatasetIndex | None]:
+) -> tuple[
+    RebasecallSourcePlan,
+    list[RebasecallPlanReason],
+    Pod5DatasetIndex | None,
+    Pod5SourceResolution | None,
+]:
     manifest = _read_input_manifest(parent)
     rows = manifest.rows
-    recorded_available = sum(Path(row.path).is_file() for row in rows)
     pod5_rows = tuple(
         row for row in rows if row.source_kind == "pod5" and row.source_role == "raw_signal"
     )
-    relocation_candidates = 0
-    for row in rows:
-        for candidate in request.signal.relocations:
-            if (
-                (candidate.source_id is None or candidate.source_id == row.source_id)
-                and (candidate.sha256 is None or candidate.sha256.lower() == row.sha256.lower())
-                and Path(candidate.path).is_file()
-            ):
-                relocation_candidates += 1
-                break
+    source_resolution = None
+    if pod5_rows:
+        source_resolution = resolve_pod5_sources(
+            pod5_rows,
+            candidates=tuple(
+                Pod5SourceCandidate(
+                    path=Path(candidate.path),
+                    evidence="explicit_relocation",
+                    source_id=candidate.source_id,
+                    sha256=candidate.sha256,
+                )
+                for candidate in request.signal.relocations
+            ),
+        )
 
     blockers: list[RebasecallPlanReason] = []
     if len(pod5_rows) != len(rows):
@@ -513,23 +567,45 @@ def _source_plan(
                 "the selected raw generation was not produced from authoritative POD5 sources",
             )
         )
-    missing_recorded = len(rows) - recorded_available
-    if missing_recorded:
-        message = f"{missing_recorded} recorded source path(s) are unavailable"
-        if relocation_candidates:
-            message += (
-                "; request-local candidates are present but checksum relocation validation "
-                "is deferred to SRB-03"
+    if source_resolution is not None:
+        if source_resolution.missing_count:
+            blockers.append(
+                RebasecallPlanReason(
+                    "source_paths_unavailable",
+                    f"{source_resolution.missing_count} POD5 source(s) have no available path",
+                )
             )
-        blockers.append(RebasecallPlanReason("source_paths_unavailable", message))
+        if source_resolution.checksum_mismatch_count:
+            blockers.append(
+                RebasecallPlanReason(
+                    "source_checksum_mismatch",
+                    f"{source_resolution.checksum_mismatch_count} POD5 source(s) have no "
+                    "candidate matching the recorded checksum",
+                )
+            )
+        if source_resolution.unreadable_count:
+            blockers.append(
+                RebasecallPlanReason(
+                    "source_paths_unreadable",
+                    f"{source_resolution.unreadable_count} POD5 source(s) could not be hashed",
+                )
+            )
+        if source_resolution.unmatched_candidate_count:
+            blockers.append(
+                RebasecallPlanReason(
+                    "source_relocation_unmatched",
+                    f"{source_resolution.unmatched_candidate_count} explicit relocation(s) do "
+                    "not identify exactly one source manifest row",
+                )
+            )
 
     signal_count = None
     count_complete = False
     duplicate_read_id_count = 0
     pod5_index = None
-    if pod5_rows and len(pod5_rows) == len(rows) and not missing_recorded:
+    if source_resolution is not None and len(pod5_rows) == len(rows) and source_resolution.complete:
         try:
-            pod5_index = pod5_indexer(tuple((row.source_id, Path(row.path)) for row in pod5_rows))
+            pod5_index = pod5_indexer(source_resolution.resolved_sources)
             signal_count = pod5_index.unique_read_count
             duplicate_read_id_count = pod5_index.duplicate_read_id_count
             count_complete = True
@@ -553,14 +629,60 @@ def _source_plan(
             source_count=len(rows),
             pod5_source_count=len(pod5_rows),
             source_ids=tuple(row.source_id for row in rows),
-            recorded_paths_available=recorded_available,
-            relocation_candidates=relocation_candidates,
+            resolution_status=(
+                "unavailable"
+                if source_resolution is None
+                else ("resolved" if source_resolution.complete else "blocked")
+            ),
+            resolved_source_count=(
+                0 if source_resolution is None else source_resolution.resolved_count
+            ),
+            recorded_paths_available=(
+                0 if source_resolution is None else source_resolution.recorded_path_count
+            ),
+            relocation_candidates=(
+                0 if source_resolution is None else source_resolution.relocated_path_count
+            ),
+            missing_source_count=(
+                0 if source_resolution is None else source_resolution.missing_count
+            ),
+            checksum_mismatch_count=(
+                0 if source_resolution is None else source_resolution.checksum_mismatch_count
+            ),
+            unreadable_source_count=(
+                0 if source_resolution is None else source_resolution.unreadable_count
+            ),
+            unmatched_relocation_count=(
+                0 if source_resolution is None else source_resolution.unmatched_candidate_count
+            ),
+            rejected_candidate_count=(
+                0 if source_resolution is None else source_resolution.rejected_candidate_count
+            ),
+            duplicate_valid_candidate_count=(
+                0
+                if source_resolution is None
+                else source_resolution.duplicate_valid_candidate_count
+            ),
+            resolution_evidence_counts=(
+                {} if source_resolution is None else source_resolution.evidence_counts
+            ),
+            resolution_digest=(None if source_resolution is None else source_resolution.digest),
+            failures=(
+                ()
+                if source_resolution is None
+                else tuple(
+                    row.to_dict(include_path=False)
+                    for row in source_resolution.rows
+                    if row.status != "resolved"
+                )[:10]
+            ),
             signal_read_count=signal_count,
             signal_count_complete=count_complete,
             duplicate_read_id_count=duplicate_read_id_count,
         ),
         blockers,
         pod5_index,
+        source_resolution,
     )
 
 
@@ -788,6 +910,7 @@ def build_rebasecall_plan(
     selection = RebasecallSelectionPlan(mode=request.selection.mode)
     identity = RebasecallIdentityPlan(mode="unavailable", status="unavailable")
     pod5_index = None
+    source_resolution = None
     selected_observations = None
     resolution = None
 
@@ -829,7 +952,7 @@ def build_rebasecall_plan(
 
     if raw_parent is not None:
         try:
-            sources, source_blockers, pod5_index = _source_plan(
+            sources, source_blockers, pod5_index, source_resolution = _source_plan(
                 request,
                 raw_parent,
                 pod5_indexer=pod5_indexer,
@@ -945,6 +1068,7 @@ def build_rebasecall_plan(
         identity=identity,
         _identity_resolution=resolution,
         _pod5_index=pod5_index,
+        _source_resolution=source_resolution,
         blockers=tuple(blockers),
         warnings=tuple(warnings),
     )
@@ -986,6 +1110,7 @@ def format_rebasecall_plan(plan: RebasecallPlan) -> str:
         f"{plan.identity.resolved_molecule_count}/{plan.identity.selected_molecule_count} molecule(s), "
         f"{plan.identity.unique_pod5_read_count} unique signal read(s)",
         f"Sources: {plan.sources.pod5_source_count}/{plan.sources.source_count} POD5; "
+        f"validated {plan.sources.resolved_source_count}/{plan.sources.pod5_source_count}; "
         f"signal reads {plan.sources.signal_read_count if plan.sources.signal_read_count is not None else 'unknown'}",
         f"Requested model: {plan.request.basecall.model} (resolution deferred to SRB-04)",
         f"Downstream target: {plan.request.downstream_target}",
