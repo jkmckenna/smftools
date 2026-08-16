@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -22,7 +23,7 @@ def _pod5_index(*read_ids):
     return Pod5DatasetIndex({read_id: ("source-a",) for read_id in read_ids})
 
 
-def _request(mode="qc", **selection_overrides):
+def _request(mode="qc", *, signal=None, **selection_overrides):
     if mode == "qc":
         selection = {
             "mode": "qc",
@@ -48,7 +49,7 @@ def _request(mode="qc", **selection_overrides):
             "source": source,
             "selection": selection,
             "basecall": {"model": "hac@latest"},
-            "signal": {"materialize": False},
+            "signal": signal or {"materialize": False},
             "downstream": {"target": "full"},
             "promotion": {"activate": False},
         }
@@ -80,7 +81,7 @@ def _install_parent_fixtures(tmp_path, monkeypatch, *, preprocess_source="raw-a"
             InputManifestRow(
                 source_id="source-a",
                 path=str(signal),
-                sha256="a" * 64,
+                sha256=hashlib.sha256(signal.read_bytes()).hexdigest(),
                 size_bytes=signal.stat().st_size,
                 source_kind="pod5",
                 source_role="raw_signal",
@@ -123,6 +124,7 @@ def _install_parent_fixtures(tmp_path, monkeypatch, *, preprocess_source="raw-a"
         experiment_name="experiment-a",
         raw_parent=raw_parent,
         preprocess_parent=preprocess_parent,
+        source_manifest=source_manifest,
     )
 
 
@@ -196,6 +198,136 @@ def test_signal_inventory_failure_preserves_source_plan_and_qc_selection(tmp_pat
     assert plan.sources.source_count == 1
     assert plan.sources.signal_read_count is None
     assert "signal_inventory_unavailable" in {reason.code for reason in plan.blockers}
+
+
+def test_checksum_validated_relocation_is_indexed_and_plan_id_is_path_invariant(
+    tmp_path, monkeypatch
+):
+    cfg = _install_parent_fixtures(tmp_path, monkeypatch)
+    original = Path(cfg.source_manifest.rows[0].path)
+    content = original.read_bytes()
+    original.unlink()
+    first_relocation = tmp_path / "archive-a" / "renamed.pod5"
+    second_relocation = tmp_path / "archive-b" / "other-name.pod5"
+    first_relocation.parent.mkdir()
+    second_relocation.parent.mkdir()
+    first_relocation.write_bytes(content)
+    second_relocation.write_bytes(content)
+    source = cfg.source_manifest.rows[0]
+    indexed_paths = []
+
+    def index_sources(sources):
+        indexed_paths.append(sources)
+        return _pod5_index("r1", "r2", "r3")
+
+    def relocated_request(path):
+        return _request(
+            "all-parent-molecules",
+            signal={
+                "materialize": False,
+                "relocations": [
+                    {
+                        "source_id": source.source_id,
+                        "sha256": source.sha256,
+                        "path": str(path),
+                    }
+                ],
+            },
+        )
+
+    first = rebasecall_plan.build_rebasecall_plan(
+        cfg,
+        relocated_request(first_relocation),
+        pod5_indexer=index_sources,
+    )
+    second = rebasecall_plan.build_rebasecall_plan(
+        cfg,
+        relocated_request(second_relocation),
+        pod5_indexer=index_sources,
+    )
+
+    assert first.status == "ready"
+    assert first.sources.resolution_status == "resolved"
+    assert first.sources.recorded_paths_available == 0
+    assert first.sources.relocation_candidates == 1
+    assert first.sources.resolution_evidence_counts == {"explicit_relocation": 1}
+    assert indexed_paths == [
+        ((source.source_id, first_relocation.resolve()),),
+        ((source.source_id, second_relocation.resolve()),),
+    ]
+    assert first.request.request_id == second.request.request_id
+    assert first.plan_id == second.plan_id
+    assert (
+        "source_checksum_relocation_and_replayability:srb-03"
+        not in first.to_dict()["deferred_capabilities"]
+    )
+    assert (
+        "filtered_signal_materialization_and_replayability:srb-03b"
+        in first.to_dict()["deferred_capabilities"]
+    )
+
+
+def test_checksum_mismatch_blocks_before_pod5_inventory(tmp_path, monkeypatch):
+    cfg = _install_parent_fixtures(tmp_path, monkeypatch)
+    original = Path(cfg.source_manifest.rows[0].path)
+    original.unlink()
+    wrong = tmp_path / "archive" / "reads.pod5"
+    wrong.parent.mkdir()
+    wrong.write_bytes(b"different bytes")
+    source = cfg.source_manifest.rows[0]
+
+    def unexpected_index(_sources):
+        raise AssertionError("checksum-mismatched sources must not be indexed")
+
+    plan = rebasecall_plan.build_rebasecall_plan(
+        cfg,
+        _request(
+            "all-parent-molecules",
+            signal={
+                "relocations": [
+                    {
+                        "source_id": source.source_id,
+                        "sha256": source.sha256,
+                        "path": str(wrong),
+                    }
+                ]
+            },
+        ),
+        pod5_indexer=unexpected_index,
+    )
+
+    assert plan.status == "blocked"
+    assert plan.sources.checksum_mismatch_count == 1
+    assert plan.sources.signal_read_count is None
+    assert plan.sources.failures[0]["source_id"] == source.source_id
+    assert plan.sources.failures[0]["status"] == "checksum_mismatch"
+    assert "source_checksum_mismatch" in {reason.code for reason in plan.blockers}
+
+
+def test_unknown_explicit_relocation_blocks_without_overriding_valid_original(
+    tmp_path, monkeypatch
+):
+    cfg = _install_parent_fixtures(tmp_path, monkeypatch)
+
+    plan = rebasecall_plan.build_rebasecall_plan(
+        cfg,
+        _request(
+            "all-parent-molecules",
+            signal={
+                "relocations": [
+                    {
+                        "source_id": "unknown-source",
+                        "path": str(tmp_path / "unknown.pod5"),
+                    }
+                ]
+            },
+        ),
+        pod5_indexer=lambda sources: _pod5_index("r1", "r2", "r3"),
+    )
+
+    assert plan.sources.resolution_status == "resolved"
+    assert plan.sources.unmatched_relocation_count == 1
+    assert "source_relocation_unmatched" in {reason.code for reason in plan.blockers}
 
 
 def test_missing_explicit_id_blocks_without_silently_dropping_it(tmp_path, monkeypatch):

@@ -580,6 +580,24 @@ def _checksum(path: Path, connection: sqlite3.Connection) -> tuple[str, int, boo
     return hexdigest, before.st_size, False
 
 
+def checksum_input_source(path: str | Path) -> tuple[str, int]:
+    """Hash one source without publishing or persisting checksum state.
+
+    The file is checked before, during, and after bounded reads so callers do
+    not accept a digest from a source that changed while it was inspected.
+
+    Args:
+        path: Source file to inspect.
+
+    Returns:
+        The lowercase SHA-256 digest and byte size.
+    """
+    with sqlite3.connect(":memory:") as connection:
+        _initialize_cache(connection)
+        digest, size_bytes, _ = _checksum(Path(path), connection)
+    return digest, size_bytes
+
+
 def _fastq_stem(path: Path) -> str:
     lower = path.name.lower()
     for suffix in _FASTQ_SUFFIXES:
