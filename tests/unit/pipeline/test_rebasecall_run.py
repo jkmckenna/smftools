@@ -4,6 +4,7 @@ import csv
 from dataclasses import replace
 from pathlib import Path
 
+import pandas as pd
 import pytest
 from tests.unit.pipeline.test_rebasecall_basecall import _case, _execute, _FakeDorado
 
@@ -46,8 +47,15 @@ def _config_values(path: Path) -> dict[str, str]:
     return {row[0]: row[1] for row in rows[1:]}
 
 
-def _lineage_case(tmp_path, monkeypatch, *, mode="all-parent-molecules"):
+def _selected_reads(frozen):
+    return sorted(pd.read_parquet(frozen.rows_path)["pod5_read_id"].astype(str))
+
+
+def _lineage_case(tmp_path, monkeypatch, *, mode="all-parent-molecules", target="preprocess"):
     _, _, plan, frozen = _case(tmp_path, monkeypatch, mode=mode)
+    # The shared fixture requests "full"; lineage execution currently supports
+    # raw and preprocess, and refuses deeper targets rather than stopping short.
+    plan = replace(plan, request=replace(plan.request, downstream_target=target))
     basecall = _execute(plan, frozen, tmp_path / "basecalls", _FakeDorado())
     return plan, frozen, basecall
 
@@ -56,13 +64,26 @@ def _spine(tmp_path, stage, generation_id):
     return tmp_path / stage / "generations" / generation_id / "spine.h5ad"
 
 
-def _stage_runner(tmp_path, stage, generation_id, *, record=None):
+def _stage_runner(tmp_path, stage, generation_id, *, record=None, read_ids=()):
+    """A stage double that publishes the artifacts the transition report reads."""
+
     def runner(config_path, **kwargs):
         if record is not None:
             # Read the config here: it lives in the lineage staging tree, which
             # is gone by the time the caller inspects the result.
             record.append({"config": _config_values(Path(config_path)), **kwargs})
-        return (_spine(tmp_path, stage, generation_id), None)
+        spine = _spine(tmp_path, stage, generation_id)
+        spine.parent.mkdir(parents=True, exist_ok=True)
+        rows = list(read_ids)
+        if stage == "raw_outputs":
+            pd.DataFrame(
+                {"read_id": rows, "molecule_uid": [f"m-{value}" for value in rows]}
+            ).to_parquet(spine.parent / "obs.parquet", index=False)
+        else:
+            pd.DataFrame({"read_id": rows, "passes_qc": [True] * len(rows)}).to_parquet(
+                spine.parent / "stage_obs.parquet", index=False
+            )
+        return (spine, None)
 
     return runner
 
@@ -108,12 +129,19 @@ def test_the_stages_run_inside_the_lineage_and_are_recorded(tmp_path, monkeypatc
         root,
         accepted_plan_id=plan.plan_id,
         parent_config_path=parent,
-        raw_stage_runner=_stage_runner(tmp_path, "raw_outputs", "descendant-a", record=raw_seen),
+        raw_stage_runner=_stage_runner(
+            tmp_path,
+            "raw_outputs",
+            "descendant-a",
+            record=raw_seen,
+            read_ids=_selected_reads(frozen),
+        ),
         preprocess_stage_runner=_stage_runner(
             tmp_path,
             "preprocess_adata_outputs",
             "descendant-p",
             record=preprocess_seen,
+            read_ids=_selected_reads(frozen),
         ),
     )
 
@@ -139,8 +167,7 @@ def test_the_stages_run_inside_the_lineage_and_are_recorded(tmp_path, monkeypatc
 
 
 def test_a_raw_only_target_stops_after_raw(tmp_path, monkeypatch):
-    plan, frozen, basecall = _lineage_case(tmp_path, monkeypatch)
-    plan = replace(plan, request=replace(plan.request, downstream_target="raw"))
+    plan, frozen, basecall = _lineage_case(tmp_path, monkeypatch, target="raw")
     parent = _write_parent_config(tmp_path)
     preprocess_calls: list[dict[str, object]] = []
 
@@ -151,7 +178,9 @@ def test_a_raw_only_target_stops_after_raw(tmp_path, monkeypatch):
         tmp_path / "rebasecall_outputs",
         accepted_plan_id=plan.plan_id,
         parent_config_path=parent,
-        raw_stage_runner=_stage_runner(tmp_path, "raw_outputs", "descendant-a"),
+        raw_stage_runner=_stage_runner(
+            tmp_path, "raw_outputs", "descendant-a", read_ids=_selected_reads(frozen)
+        ),
         preprocess_stage_runner=_stage_runner(
             tmp_path,
             "preprocess_adata_outputs",
@@ -175,8 +204,12 @@ def test_the_result_payload_follows_the_workflow_contract(tmp_path, monkeypatch)
         tmp_path / "rebasecall_outputs",
         accepted_plan_id=plan.plan_id,
         parent_config_path=parent,
-        raw_stage_runner=_stage_runner(tmp_path, "raw_outputs", "descendant-a"),
-        preprocess_stage_runner=_stage_runner(tmp_path, "preprocess_adata_outputs", "descendant-p"),
+        raw_stage_runner=_stage_runner(
+            tmp_path, "raw_outputs", "descendant-a", read_ids=_selected_reads(frozen)
+        ),
+        preprocess_stage_runner=_stage_runner(
+            tmp_path, "preprocess_adata_outputs", "descendant-p", read_ids=_selected_reads(frozen)
+        ),
     )
 
     payload = result.to_dict()
@@ -246,8 +279,12 @@ def test_a_relocated_lineage_still_validates(tmp_path, monkeypatch):
         root,
         accepted_plan_id=plan.plan_id,
         parent_config_path=parent,
-        raw_stage_runner=_stage_runner(tmp_path, "raw_outputs", "descendant-a"),
-        preprocess_stage_runner=_stage_runner(tmp_path, "preprocess_adata_outputs", "descendant-p"),
+        raw_stage_runner=_stage_runner(
+            tmp_path, "raw_outputs", "descendant-a", read_ids=_selected_reads(frozen)
+        ),
+        preprocess_stage_runner=_stage_runner(
+            tmp_path, "preprocess_adata_outputs", "descendant-p", read_ids=_selected_reads(frozen)
+        ),
     )
 
     relocated = tmp_path / "moved_outputs"
@@ -257,3 +294,36 @@ def test_a_relocated_lineage_still_validates(tmp_path, monkeypatch):
     # Lineage identity is path-neutral, so moving the container preserves it.
     assert [item.lineage_id for item in moved] == [result.lineage.lineage_id]
     assert moved[0].stage_generations == {"raw": "descendant-a", "preprocess": "descendant-p"}
+
+
+def test_the_lineage_publishes_a_reconcilable_transition_report(tmp_path, monkeypatch):
+    """The exit gate, end to end: run the lineage, then reconcile what it wrote."""
+    from smftools.pipeline.rebasecall_transition import (
+        read_qc_transition,
+        reconcile_qc_transition,
+    )
+
+    plan, frozen, basecall = _lineage_case(tmp_path, monkeypatch)
+    parent = _write_parent_config(tmp_path)
+    selected = _selected_reads(frozen)
+
+    result = run_lineage_raw_stage(
+        plan,
+        frozen,
+        basecall,
+        tmp_path / "rebasecall_outputs",
+        accepted_plan_id=plan.plan_id,
+        parent_config_path=parent,
+        raw_stage_runner=_stage_runner(tmp_path, "raw_outputs", "descendant-a", read_ids=selected),
+        preprocess_stage_runner=_stage_runner(
+            tmp_path, "preprocess_adata_outputs", "descendant-p", read_ids=selected
+        ),
+    )
+
+    frame, summary = read_qc_transition(result.lineage)
+    report = reconcile_qc_transition(frame, summary)
+
+    assert report["reconciled"] is True
+    assert len(frame) == len(selected)
+    assert summary["selected_molecule_count"] == len(selected)
+    assert result.to_dict()["qc_transition"]["passes_qc_count"] == len(selected)

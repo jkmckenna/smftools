@@ -18,8 +18,14 @@ from .rebasecall_lineage import (
 )
 from .rebasecall_plan import RebasecallPlan
 from .rebasecall_selection import FrozenRebasecallSelection
+from .rebasecall_transition import build_qc_transition, write_qc_transition
 
 DESCENDANT_CONFIG_FILENAME = "descendant_config.csv"
+
+# Stages a lineage can currently run. Deeper targets are refused rather than
+# silently stopping at preprocess, because a lineage that quietly delivered less
+# than its accepted request asked for would be worse than one that declined.
+_SUPPORTED_TARGETS = frozenset({"raw", "preprocess"})
 
 # Fields the descendant overrides. Everything else is inherited verbatim: a
 # lineage re-runs the *same* experiment against new calls, so silently changing
@@ -35,6 +41,7 @@ class LineageRawStageResult:
     raw_generation_id: str
     descendant_config_path: Path
     run_root: Path
+    qc_transition: Mapping[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Return the engine-facing result payload."""
@@ -45,6 +52,7 @@ class LineageRawStageResult:
             "raw_generation_id": self.raw_generation_id,
             "run_root": str(self.run_root),
             "descendant_config_path": str(self.descendant_config_path),
+            "qc_transition": dict(self.qc_transition) if self.qc_transition else None,
         }
 
 
@@ -127,6 +135,12 @@ def run_lineage_raw_stage(
     of ``raw`` stops after raw; anything deeper also preprocesses, reading the
     descendant raw generation rather than whatever the parent currently selects.
     """
+    if plan.request.downstream_target not in _SUPPORTED_TARGETS:
+        raise RebasecallLineageError(
+            "lineage_target_unsupported",
+            f"lineage execution supports {sorted(_SUPPORTED_TARGETS)}; "
+            f"{plan.request.downstream_target!r} needs spatial/hmm/latent threading (SRB-06c)",
+        )
     if raw_stage_runner is None:
         from ..cli.raw_adata import raw_adata as raw_stage_runner  # noqa: PLC0415
     if preprocess_stage_runner is None:
@@ -159,24 +173,38 @@ def run_lineage_raw_stage(
         result = raw_stage_runner(str(descendant_config), lineage_provenance=provenance)
         generation_id = _descendant_generation_id(result)
         staged.record_stage_generation("raw", generation_id)
+        preprocess_generation_id = None
         if plan.request.downstream_target != "raw":
             preprocess_result = preprocess_stage_runner(
                 str(descendant_config),
                 lineage_generations={"raw": generation_id},
                 lineage_provenance=provenance,
             )
-            staged.record_stage_generation(
-                "preprocess",
-                _descendant_generation_id(preprocess_result),
-            )
+            preprocess_generation_id = _descendant_generation_id(preprocess_result)
+            staged.record_stage_generation("preprocess", preprocess_generation_id)
         final_dir = staged.final_dir
 
     lineage = read_published_rebasecall_lineage(final_dir, expected_lineage_id=staged.lineage_id)
+
+    # The transition report is written after publication and is outside lineage
+    # identity: recomputing it must never change what the lineage is.
+    frame, summary = build_qc_transition(
+        selection,
+        basecall,
+        run_root / "raw_outputs" / "generations" / generation_id,
+        (
+            run_root / "preprocess_adata_outputs" / "generations" / preprocess_generation_id
+            if preprocess_generation_id is not None
+            else None
+        ),
+    )
+    write_qc_transition(lineage, frame, summary)
     return LineageRawStageResult(
         lineage=lineage,
         raw_generation_id=generation_id,
         descendant_config_path=lineage.directory / DESCENDANT_CONFIG_FILENAME,
         run_root=run_root,
+        qc_transition=summary.to_dict(),
     )
 
 
