@@ -98,6 +98,15 @@ def plan_raw_append(
     transition = classify_input_manifest_transition(previous_manifest, current_manifest)
     if not transition.permits_incremental_append:
         return RawAppendPlan(False, f"source transition is {transition.kind.value}", transition)
+    if generation.get("lineage") is not None:
+        # A re-basecalled descendant is a parallel lineage, not a later state of
+        # the parent's source universe. Appending onto one would silently merge
+        # a selected cohort back into the population it was drawn from.
+        return RawAppendPlan(
+            False,
+            "previous generation is a re-basecalling lineage descendant",
+            transition,
+        )
     if str(generation.get("config_hash", "")) != str(config_hash):
         return RawAppendPlan(False, "raw configuration changed", transition)
     previous_non_source = _non_source_artifact_ids(generation.get("input_artifact_ids"))

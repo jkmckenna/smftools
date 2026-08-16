@@ -91,6 +91,7 @@ def staged_generation(
     manifest_checksum: Callable[[Path], str] | None = None,
     write_json: Callable[[str | Path, Any], None] | None = None,
     after_current: Callable[[Path, Path, Path], None] | None = None,
+    select_current: bool = True,
 ) -> Iterator[StagedGeneration]:
     """Build and atomically publish one immutable generation.
 
@@ -113,6 +114,11 @@ def staged_generation(
         after_current: Optional ``(staging_dir, final_dir, run_root)`` callable
             run after the selector advances. A failure restores the previous
             selector and removes the new generation.
+        select_current: Whether publication also advances ``current.json``.
+            Set ``False`` to publish without selecting, which is how a
+            re-basecalling lineage adds a descendant generation beside the
+            parent's: the generation becomes addressable immediately, and only
+            explicit promotion changes what ordinary readers resolve.
 
     Yields:
         A :class:`StagedGeneration`. The caller must call
@@ -169,15 +175,16 @@ def staged_generation(
             validate(staging_dir, final_dir, run_root)
         os.replace(staging_dir, final_dir)
         moved = True
-        pointer = {
-            "schema_version": CURRENT_SCHEMA_VERSION,
-            "generation_id": generation_id,
-            "generation_path": final_dir.relative_to(output_dir).as_posix(),
-        }
-        if manifest_checksum is not None:
-            pointer["manifest_sha256"] = manifest_checksum(final_dir / GENERATION_MANIFEST)
-        write_json(pointer_path, pointer)
-        current_advanced = True
+        if select_current:
+            pointer = {
+                "schema_version": CURRENT_SCHEMA_VERSION,
+                "generation_id": generation_id,
+                "generation_path": final_dir.relative_to(output_dir).as_posix(),
+            }
+            if manifest_checksum is not None:
+                pointer["manifest_sha256"] = manifest_checksum(final_dir / GENERATION_MANIFEST)
+            write_json(pointer_path, pointer)
+            current_advanced = True
         if after_current is not None:
             after_current(staging_dir, final_dir, run_root)
     except Exception:
