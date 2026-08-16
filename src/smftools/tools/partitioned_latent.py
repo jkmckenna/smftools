@@ -13,6 +13,7 @@ import os
 import shutil
 import warnings
 from pathlib import Path
+from typing import Any, Mapping
 from urllib.parse import quote
 from uuid import uuid4
 
@@ -1886,8 +1887,14 @@ def execute_partitioned_latent(
     output_dir,
     *,
     reuse_generation: str | Path | None = None,
+    lineage_provenance: Mapping[str, Any] | None = None,
 ) -> dict[str, Path | str | int]:
-    """Build, validate, and atomically publish one immutable latent generation."""
+    """Build, validate, and atomically publish one immutable latent generation.
+
+    ``lineage_provenance`` marks the result as a re-basecalled descendant, which
+    publishes beside the parent's generation without advancing ``current.json``.
+    The canonical stage-root spine follows selection, so it is left alone.
+    """
     from ..cli.helpers import stage_config_hash, stage_plot_config_hash
 
     spine_path = Path(spine_path)
@@ -1910,6 +1917,7 @@ def execute_partitioned_latent(
         validate=validate,
         write_json=atomic_write_json,
         after_current=publish_spine,
+        select_current=lineage_provenance is None,
     ) as staged:
         generation_id = staged.generation_id
         staging_dir = staged.staging_dir
@@ -2141,6 +2149,7 @@ def execute_partitioned_latent(
             {
                 "schema_version": LATENT_GENERATION_SCHEMA_VERSION,
                 "generation_id": generation_id,
+                "lineage": (dict(lineage_provenance) if lineage_provenance is not None else None),
                 "compute_config_hash": stage_config_hash(cfg, "latent"),
                 "plot_config_hash": stage_plot_config_hash(cfg, "latent"),
                 "source": source_provenance,

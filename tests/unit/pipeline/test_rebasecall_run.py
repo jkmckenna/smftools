@@ -327,3 +327,72 @@ def test_the_lineage_publishes_a_reconcilable_transition_report(tmp_path, monkey
     assert len(frame) == len(selected)
     assert summary["selected_molecule_count"] == len(selected)
     assert result.to_dict()["qc_transition"]["passes_qc_count"] == len(selected)
+
+
+def test_a_full_target_runs_every_stage_pinned_to_its_own_lineage(tmp_path, monkeypatch):
+    plan, frozen, basecall = _lineage_case(tmp_path, monkeypatch, target="full")
+    parent = _write_parent_config(tmp_path)
+    selected = _selected_reads(frozen)
+    seen: dict[str, dict[str, object]] = {}
+
+    def runner_for(stage, directory, generation_id):
+        record: list[dict[str, object]] = []
+
+        def runner(config_path, **kwargs):
+            seen[stage] = kwargs
+            return _stage_runner(
+                tmp_path, directory, generation_id, record=record, read_ids=selected
+            )(config_path, **kwargs)
+
+        return runner
+
+    result = run_lineage_raw_stage(
+        plan,
+        frozen,
+        basecall,
+        tmp_path / "rebasecall_outputs",
+        accepted_plan_id=plan.plan_id,
+        parent_config_path=parent,
+        raw_stage_runner=runner_for("raw", "raw_outputs", "descendant-raw"),
+        preprocess_stage_runner=runner_for(
+            "preprocess", "preprocess_adata_outputs", "descendant-pre"
+        ),
+        spatial_stage_runner=runner_for("spatial", "spatial_adata_outputs", "descendant-spa"),
+        hmm_stage_runner=runner_for("hmm", "hmm_adata_outputs", "descendant-hmm"),
+        latent_stage_runner=runner_for("latent", "latent_adata_outputs", "descendant-lat"),
+    )
+
+    assert result.lineage.stage_generations == {
+        "raw": "descendant-raw",
+        "preprocess": "descendant-pre",
+        "spatial": "descendant-spa",
+        "hmm": "descendant-hmm",
+        "latent": "descendant-lat",
+    }
+    # Raw has nothing upstream to pin; every later stage reads the generations
+    # this lineage already published, never the parent's current ones.
+    assert "lineage_generations" not in seen["raw"]
+    assert seen["preprocess"]["lineage_generations"] == {"raw": "descendant-raw"}
+    assert seen["latent"]["lineage_generations"] == {
+        "raw": "descendant-raw",
+        "preprocess": "descendant-pre",
+        "spatial": "descendant-spa",
+        "hmm": "descendant-hmm",
+    }
+
+
+def test_an_unknown_target_is_refused(tmp_path, monkeypatch):
+    plan, frozen, basecall = _lineage_case(tmp_path, monkeypatch)
+    unknown = replace(plan, request=replace(plan.request, downstream_target="chimeric"))
+
+    with pytest.raises(RebasecallLineageError) as error:
+        run_lineage_raw_stage(
+            unknown,
+            frozen,
+            basecall,
+            tmp_path / "rebasecall_outputs",
+            accepted_plan_id=unknown.plan_id,
+            parent_config_path=tmp_path / "missing.csv",
+        )
+
+    assert error.value.code == "lineage_target_unsupported"

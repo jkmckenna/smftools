@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 from dataclasses import dataclass
+from importlib import import_module
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
@@ -22,10 +23,27 @@ from .rebasecall_transition import build_qc_transition, write_qc_transition
 
 DESCENDANT_CONFIG_FILENAME = "descendant_config.csv"
 
-# Stages a lineage can currently run. Deeper targets are refused rather than
-# silently stopping at preprocess, because a lineage that quietly delivered less
-# than its accepted request asked for would be worse than one that declined.
-_SUPPORTED_TARGETS = frozenset({"raw", "preprocess"})
+_STAGE_MODULES = {
+    "raw": "raw_adata",
+    "preprocess": "preprocess_adata",
+    "spatial": "spatial_adata",
+    "hmm": "hmm_adata",
+    "latent": "latent_adata",
+}
+
+# Stage order a lineage executes, and the stage each target stops after. A
+# lineage that quietly delivered less than its accepted request asked for would
+# be worse than one that declined, so an unknown target is refused rather than
+# truncated.
+_LINEAGE_STAGE_ORDER = ("raw", "preprocess", "spatial", "hmm", "latent")
+_TARGET_STAGES = {
+    "raw": ("raw",),
+    "preprocess": ("raw", "preprocess"),
+    "spatial": ("raw", "preprocess", "spatial"),
+    "hmm": ("raw", "preprocess", "spatial", "hmm"),
+    "latent": ("raw", "preprocess", "spatial", "hmm", "latent"),
+    "full": _LINEAGE_STAGE_ORDER,
+}
 
 # Fields the descendant overrides. Everything else is inherited verbatim: a
 # lineage re-runs the *same* experiment against new calls, so silently changing
@@ -123,6 +141,9 @@ def run_lineage_raw_stage(
     parent_config_path: str | Path,
     raw_stage_runner: Callable[..., Any] | None = None,
     preprocess_stage_runner: Callable[..., Any] | None = None,
+    spatial_stage_runner: Callable[..., Any] | None = None,
+    hmm_stage_runner: Callable[..., Any] | None = None,
+    latent_stage_runner: Callable[..., Any] | None = None,
     identity_map: str | None = None,
 ) -> LineageRawStageResult:
     """Publish one lineage whose descendant generations were actually built.
@@ -131,22 +152,24 @@ def run_lineage_raw_stage(
     leaves the parent run and every prior complete lineage untouched: no
     descendant generation is ever selected, and the lineage never appears.
 
-    How far this runs is the accepted request's ``downstream.target``. A target
-    of ``raw`` stops after raw; anything deeper also preprocesses, reading the
-    descendant raw generation rather than whatever the parent currently selects.
+    How far this runs is the accepted request's ``downstream.target``: ``raw``
+    stops after raw, ``full`` runs the whole chain. Every stage reads the
+    generations this lineage already published rather than whatever the parent
+    currently selects.
     """
-    if plan.request.downstream_target not in _SUPPORTED_TARGETS:
+    target = plan.request.downstream_target
+    if target not in _TARGET_STAGES:
         raise RebasecallLineageError(
             "lineage_target_unsupported",
-            f"lineage execution supports {sorted(_SUPPORTED_TARGETS)}; "
-            f"{plan.request.downstream_target!r} needs spatial/hmm/latent threading (SRB-06c)",
+            f"lineage execution supports {sorted(_TARGET_STAGES)}; {target!r} is not a target",
         )
-    if raw_stage_runner is None:
-        from ..cli.raw_adata import raw_adata as raw_stage_runner  # noqa: PLC0415
-    if preprocess_stage_runner is None:
-        from ..cli.preprocess_adata import (  # noqa: PLC0415
-            preprocess_adata as preprocess_stage_runner,
-        )
+    runners = _stage_runners(
+        raw=raw_stage_runner,
+        preprocess=preprocess_stage_runner,
+        spatial=spatial_stage_runner,
+        hmm=hmm_stage_runner,
+        latent=latent_stage_runner,
+    )
 
     rebasecall_root = Path(rebasecall_root)
     identity = build_lineage_identity(plan, selection, basecall)
@@ -170,18 +193,19 @@ def run_lineage_raw_stage(
             basecall,
             identity_map=identity_map,
         )
-        result = raw_stage_runner(str(descendant_config), lineage_provenance=provenance)
-        generation_id = _descendant_generation_id(result)
-        staged.record_stage_generation("raw", generation_id)
-        preprocess_generation_id = None
-        if plan.request.downstream_target != "raw":
-            preprocess_result = preprocess_stage_runner(
-                str(descendant_config),
-                lineage_generations={"raw": generation_id},
-                lineage_provenance=provenance,
-            )
-            preprocess_generation_id = _descendant_generation_id(preprocess_result)
-            staged.record_stage_generation("preprocess", preprocess_generation_id)
+        # Each stage reads the generations this lineage already published, not
+        # whatever the parent currently selects, so the chain stays internally
+        # consistent even while the parent keeps answering for ordinary readers.
+        pinned: dict[str, str] = {}
+        for stage in _TARGET_STAGES[target]:
+            stage_kwargs: dict[str, Any] = {"lineage_provenance": provenance}
+            if pinned:
+                stage_kwargs["lineage_generations"] = dict(pinned)
+            stage_result = runners[stage](str(descendant_config), **stage_kwargs)
+            pinned[stage] = _descendant_generation_id(stage_result)
+            staged.record_stage_generation(stage, pinned[stage])
+        generation_id = pinned["raw"]
+        preprocess_generation_id = pinned.get("preprocess")
         final_dir = staged.final_dir
 
     lineage = read_published_rebasecall_lineage(final_dir, expected_lineage_id=staged.lineage_id)
@@ -206,6 +230,18 @@ def run_lineage_raw_stage(
         run_root=run_root,
         qc_transition=summary.to_dict(),
     )
+
+
+def _stage_runners(**overrides: Callable[..., Any] | None) -> dict[str, Callable[..., Any]]:
+    """Resolve each stage's runner, importing the real CLI stage only if needed."""
+    resolved: dict[str, Callable[..., Any]] = {}
+    for stage, override in overrides.items():
+        if override is not None:
+            resolved[stage] = override
+            continue
+        module = import_module(f"..cli.{_STAGE_MODULES[stage]}", __package__)
+        resolved[stage] = getattr(module, _STAGE_MODULES[stage])
+    return resolved
 
 
 def _descendant_generation_id(result: Any) -> str:
