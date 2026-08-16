@@ -150,6 +150,10 @@ def test_qc_plan_resolves_exact_parents_counts_selection_and_writes_nothing(tmp_
     assert plan.identity.status == "resolved"
     assert plan.identity.evidence_counts == {"read_id": 1}
     assert plan.to_dict()["execution_status"] == "not_implemented"
+    assert plan.to_dict()["selection_freezing"] == {
+        "status": "available_during_run_preparation",
+        "accepted_plan_id": plan.plan_id,
+    }
     assert "dorado_and_model_bundle_resolution:srb-04" in plan.to_dict()["deferred_capabilities"]
     assert plan.to_json() == plan.to_json()
     assert sorted(path.relative_to(tmp_path) for path in tmp_path.rglob("*")) == before
@@ -275,6 +279,7 @@ def test_nested_cli_emits_human_and_stable_json(tmp_path, monkeypatch):
     )
 
     assert human.exit_code == 0, human.output
+    assert f"Plan ID: {plan.plan_id}" in human.output
     assert "Execution: unavailable" in human.output
     assert machine.exit_code == 0, machine.output
     payload = json.loads(machine.output)
