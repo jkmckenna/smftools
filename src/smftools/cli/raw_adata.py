@@ -35,7 +35,15 @@ from smftools.constants import (
 )
 from smftools.logging_utils import get_logger, mark_stage_outcome, stage_logging_lifecycle
 
-from ..informatics.molecule_identity import alignment_segment_id, namespaced_source_id
+from ..informatics.molecule_identity import (
+    BASECALL_PARENT_READ_ID_COLUMN,
+    BASECALL_READ_ID_COLUMN,
+    POD5_IDENTITY_EVIDENCE_COLUMN,
+    POD5_IDENTITY_STATUS_COLUMN,
+    POD5_READ_ID_COLUMN,
+    alignment_segment_id,
+    namespaced_source_id,
+)
 
 logger = get_logger(__name__)
 
@@ -409,39 +417,84 @@ def _attach_direct_signals_from_bam(
 
 
 def _attach_pod5_metadata(frame: pd.DataFrame, *, cfg) -> pd.DataFrame:
-    """Link each read to its origin POD5 and attach scalar sequencing/signal metadata.
+    """Validate each basecall's source POD5 identity and attach POD5 metadata.
 
-    Only runs for POD5 inputs. Scalar ``pod5_*`` columns are carried onto the
-    molecule spine by ``raw_store``; the optional full current trace
-    (``pod5_current_pa``) stays in the parquet shard.
+    Dorado split children use the BAM ``pi`` tag as their candidate POD5 UUID;
+    unsplit calls use their original BAM query name. A candidate is promoted to
+    ``pod5_read_id`` only when it exists in the configured POD5 dataset. This
+    identity validation always runs for available POD5 inputs, even when the
+    optional sequencing-metadata enrichment is disabled. Scalar ``pod5_*``
+    columns are carried onto the molecule spine by ``raw_store``; the optional
+    full current trace (``pod5_current_pa``) stays in the parquet shard.
     """
     if str(getattr(cfg, "input_type", "")).lower() != "pod5":
         return frame
-    if not getattr(cfg, "extract_pod5_metadata", True):
-        return frame
+
+    frame = frame.copy()
+    if BASECALL_READ_ID_COLUMN not in frame:
+        frame[BASECALL_READ_ID_COLUMN] = frame["read_id"].astype(str)
+    basecall_ids = frame[BASECALL_READ_ID_COLUMN].fillna("").astype(str)
+    basecall_ids = basecall_ids.where(basecall_ids.str.len() > 0, frame["read_id"].astype(str))
+    parent_ids = frame.get(
+        BASECALL_PARENT_READ_ID_COLUMN,
+        pd.Series(None, index=frame.index, dtype=object),
+    )
+    parent_ids = parent_ids.fillna("").astype(str).str.strip()
+    candidates = parent_ids.where(parent_ids.str.len() > 0, basecall_ids)
+    candidate_sources = parent_ids.str.len() > 0
+
     pod5_path = getattr(cfg, "input_data_path", None)
     if pod5_path is None or not Path(pod5_path).exists():
         logger.warning("input_type=pod5 but input_data_path is missing; skipping POD5 metadata")
+        frame[POD5_READ_ID_COLUMN] = None
+        frame[POD5_IDENTITY_STATUS_COLUMN] = "source_unavailable"
+        frame[POD5_IDENTITY_EVIDENCE_COLUMN] = "pod5_source_unavailable"
         return frame
 
     from ..informatics.pod5_functions import extract_pod5_read_metadata
 
+    include_metadata = bool(getattr(cfg, "extract_pod5_metadata", True))
     metadata = extract_pod5_read_metadata(
         pod5_path,
-        target_ids=frame["read_id"].astype(str),
+        target_ids=candidates,
         n_jobs=getattr(cfg, "threads", 1),
-        include_current=bool(getattr(cfg, "raw_store_pod5_current", False)),
+        include_current=(include_metadata and bool(getattr(cfg, "raw_store_pod5_current", False))),
         verbose=False,
     )
-    if metadata.empty:
-        logger.warning("No POD5 metadata matched the extracted reads")
-        return frame
+    matched = (
+        candidates.isin(metadata.index.astype(str))
+        if not metadata.empty
+        else candidates.ne(candidates)
+    )
+    frame[POD5_READ_ID_COLUMN] = [
+        candidate if is_matched else None
+        for candidate, is_matched in zip(candidates, matched, strict=True)
+    ]
+    frame[POD5_IDENTITY_STATUS_COLUMN] = np.where(matched, "resolved", "unresolved")
+    frame[POD5_IDENTITY_EVIDENCE_COLUMN] = np.select(
+        [matched & candidate_sources, matched & ~candidate_sources, candidate_sources],
+        ["bam_pi+pod5_index", "bam_qname+pod5_index", "bam_pi_not_found"],
+        default="bam_qname_not_found",
+    )
 
-    frame = frame.set_index("read_id", drop=False)
-    for column in metadata.columns:
-        frame[column] = metadata[column].reindex(frame.index)
-    logger.info("Linked %d read(s) to origin POD5 with sequencing/signal metadata", len(metadata))
-    return frame.reset_index(drop=True)
+    if not metadata.empty:
+        metadata.index = metadata.index.astype(str)
+        columns = metadata.columns if include_metadata else ["pod5_origin"]
+        for column in columns:
+            if column in metadata:
+                frame[column] = candidates.map(metadata[column]).to_numpy()
+    if not matched.all():
+        logger.warning(
+            "Could not validate POD5 origin identity for %d/%d extracted read(s)",
+            int((~matched).sum()),
+            len(frame),
+        )
+    logger.info(
+        "Validated POD5 origin identity for %d/%d extracted read(s)",
+        int(matched.sum()),
+        len(frame),
+    )
+    return frame
 
 
 def _read_move_tables(
@@ -502,23 +555,29 @@ def _attach_signal_features(frame: pd.DataFrame, *, cfg, aligned_bam: Path) -> p
         for read_id, sequence in frame["sequence"].items()
     }
 
+    pod5_by_read = frame.get(POD5_READ_ID_COLUMN, frame["read_id"]).to_dict()
+    reads_by_pod5: dict[str, list[str]] = {}
+    for read_id, pod5_read_id in pod5_by_read.items():
+        if pd.isna(pod5_read_id) or read_id not in move_tables:
+            continue
+        reads_by_pod5.setdefault(str(pod5_read_id), []).append(str(read_id))
+
     attached = 0
-    for read_id, signal in iter_pod5_signals(pod5_path, read_ids=list(move_tables)):
-        if read_id not in move_tables or read_id not in frame.index:
-            continue
-        mv, ts = move_tables[read_id]
-        features = read_signal_features(
-            mv,
-            ts,
-            bool(reverse_by_read.get(read_id, False)),
-            signal,
-            expected_bases=seq_len_by_read.get(read_id),
-        )
-        if features is None:
-            continue
-        for column in SIGNAL_FEATURE_COLUMNS:
-            frame.at[read_id, column] = features[column].tolist()
-        attached += 1
+    for pod5_read_id, signal in iter_pod5_signals(pod5_path, read_ids=list(reads_by_pod5)):
+        for read_id in reads_by_pod5.get(pod5_read_id, []):
+            mv, ts = move_tables[read_id]
+            features = read_signal_features(
+                mv,
+                ts,
+                bool(reverse_by_read.get(read_id, False)),
+                signal,
+                expected_bases=seq_len_by_read.get(read_id),
+            )
+            if features is None:
+                continue
+            for column in SIGNAL_FEATURE_COLUMNS:
+                frame.at[read_id, column] = features[column].tolist()
+            attached += 1
 
     logger.info("Attached current signal features for %d/%d read(s)", attached, len(frame))
     return frame.reset_index(drop=True)

@@ -4152,6 +4152,12 @@ def extract_read_relative_base_identities(
             if quality_string and quality_string != "*"
             else None
         )
+        parent_read_id = None
+        for raw_tag in fields[11:]:
+            parts = raw_tag.split(":", 2)
+            if len(parts) == 3 and parts[0] == "pi":
+                parent_read_id = parts[2]
+                break
         read = SimpleNamespace(
             is_unmapped=False,
             is_reverse=bool(flag & 16),
@@ -4172,6 +4178,7 @@ def extract_read_relative_base_identities(
             next_reference_start=int(fields[7]) - 1 if fields[7] != "0" else -1,
             template_length=int(fields[8]),
             cigarstring=cigar,
+            basecall_parent_read_id=parent_read_id,
         )
         records.append(
             alignment_to_ragged_record(
@@ -4584,7 +4591,10 @@ def extract_read_tags_from_bam(
         Mapping of read name to a dict of extracted tag values.
     """
     backend_choice = _resolve_samtools_backend(samtools_backend)
-    tag_names_list = [tag.upper() for tag in tag_names] if tag_names else []
+    # SAM tags are case-sensitive. Preserve the caller's spelling so Dorado's
+    # lowercase ``pi`` source-parent tag is addressable alongside conventional
+    # uppercase tags such as ``NM`` and ``MD``.
+    tag_names_list = [str(tag) for tag in tag_names] if tag_names else []
     read_tags: Dict[str, Dict[str, object]] = {}
 
     def _decode_flags(flag: int) -> list[str]:
@@ -4641,7 +4651,7 @@ def extract_read_tags_from_bam(
                     parts = raw_tag.split(":", 2)
                     if len(parts) == 3:
                         tag_name, _tag_type, value = parts
-                        parsed_tags[tag_name.upper()] = value
+                        parsed_tags[tag_name] = value
                 for tag in tag_names_list:
                     tag_map[tag] = parsed_tags.get(tag)
             read_tags[read_name] = tag_map

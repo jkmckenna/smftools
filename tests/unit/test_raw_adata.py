@@ -12,6 +12,8 @@ from click.testing import CliRunner
 from smftools.cli.raw_adata import (
     _attach_direct_signals,
     _attach_direct_signals_from_bam,
+    _attach_pod5_metadata,
+    _attach_signal_features,
     _bucket_read_ids,
     _ChromosomeGroupAccumulator,
     _conversion_signal,
@@ -63,7 +65,16 @@ def test_conversion_signal_matches_existing_binarization_maps():
 
 def test_partitioned_streaming_qualifies_source_local_read_identity(monkeypatch):
     def fake_build(_cfg, *, aligned_bam, **_kwargs):
-        frame = pd.DataFrame({"read_id": ["shared"], "template_id": ["shared"], "namespace": [""]})
+        frame = pd.DataFrame(
+            {
+                "read_id": ["split-child"],
+                "template_id": ["split-child"],
+                "namespace": [""],
+                "basecall_read_id": ["split-child"],
+                "basecall_parent_read_id": ["pod5-parent"],
+                "pod5_read_id": ["pod5-parent"],
+            }
+        )
         return iter([("ref", frame, True)]), {"ref": 12}, {"signal_columns": []}
 
     monkeypatch.setattr("smftools.cli.raw_adata.build_ragged_records_streaming", fake_build)
@@ -78,9 +89,127 @@ def test_partitioned_streaming_qualifies_source_local_read_identity(monkeypatch)
 
     materialized = [frame for _reference, frame, _final in frames]
     assert lengths == {"ref": 12}
-    assert [frame.loc[0, "source_read_id"] for frame in materialized] == ["shared", "shared"]
+    assert [frame.loc[0, "source_read_id"] for frame in materialized] == [
+        "split-child",
+        "split-child",
+    ]
     assert len({frame.loc[0, "read_id"] for frame in materialized}) == 2
     assert len({frame.loc[0, "template_id"] for frame in materialized}) == 2
+    assert {frame.loc[0, "basecall_read_id"] for frame in materialized} == {"split-child"}
+    assert {frame.loc[0, "basecall_parent_read_id"] for frame in materialized} == {"pod5-parent"}
+    assert {frame.loc[0, "pod5_read_id"] for frame in materialized} == {"pod5-parent"}
+
+
+def test_attach_pod5_metadata_validates_unsplit_and_split_origin_ids(tmp_path, monkeypatch):
+    pod5_dir = tmp_path / "pod5"
+    pod5_dir.mkdir()
+    observed_targets = set()
+
+    def fake_metadata(_path, *, target_ids, **_kwargs):
+        observed_targets.update(map(str, target_ids))
+        return pd.DataFrame(
+            {
+                "pod5_origin": ["source.pod5", "source.pod5"],
+                "pod5_channel": [7, 8],
+            },
+            index=["pod5-parent", "unsplit"],
+        )
+
+    monkeypatch.setattr(
+        "smftools.informatics.pod5_functions.extract_pod5_read_metadata", fake_metadata
+    )
+    frame = pd.DataFrame(
+        {
+            "read_id": ["split-a", "split-b", "unsplit", "missing"],
+            "basecall_read_id": ["split-a", "split-b", "unsplit", "missing"],
+            "basecall_parent_read_id": ["pod5-parent", "pod5-parent", None, None],
+        }
+    )
+    cfg = SimpleNamespace(
+        input_type="pod5",
+        input_data_path=pod5_dir,
+        extract_pod5_metadata=True,
+        raw_store_pod5_current=False,
+        threads=1,
+    )
+
+    result = _attach_pod5_metadata(frame, cfg=cfg).set_index("read_id")
+
+    assert observed_targets == {"pod5-parent", "unsplit", "missing"}
+    assert result.loc["split-a", "pod5_read_id"] == "pod5-parent"
+    assert result.loc["split-b", "pod5_read_id"] == "pod5-parent"
+    assert result.loc["unsplit", "pod5_read_id"] == "unsplit"
+    assert pd.isna(result.loc["missing", "pod5_read_id"])
+    assert result.loc["split-a", "pod5_identity_evidence"] == "bam_pi+pod5_index"
+    assert result.loc["unsplit", "pod5_identity_evidence"] == "bam_qname+pod5_index"
+    assert result.loc["missing", "pod5_identity_evidence"] == "bam_qname_not_found"
+    assert result.loc["missing", "pod5_identity_status"] == "unresolved"
+    assert result.loc["split-b", "pod5_channel"] == 7
+
+
+def test_attach_pod5_identity_runs_when_optional_metadata_is_disabled(tmp_path, monkeypatch):
+    pod5_dir = tmp_path / "pod5"
+    pod5_dir.mkdir()
+    monkeypatch.setattr(
+        "smftools.informatics.pod5_functions.extract_pod5_read_metadata",
+        lambda *_args, **_kwargs: pd.DataFrame(
+            {"pod5_origin": ["source.pod5"], "pod5_channel": [7]}, index=["read-1"]
+        ),
+    )
+    cfg = SimpleNamespace(
+        input_type="pod5",
+        input_data_path=pod5_dir,
+        extract_pod5_metadata=False,
+        threads=1,
+    )
+
+    result = _attach_pod5_metadata(pd.DataFrame({"read_id": ["read-1"]}), cfg=cfg)
+
+    assert result.loc[0, "pod5_read_id"] == "read-1"
+    assert result.loc[0, "pod5_origin"] == "source.pod5"
+    assert "pod5_channel" not in result
+
+
+def test_signal_features_use_validated_pod5_parent_for_split_children(tmp_path, monkeypatch):
+    pod5_dir = tmp_path / "pod5"
+    pod5_dir.mkdir()
+    monkeypatch.setattr(
+        "smftools.cli.raw_adata._read_move_tables",
+        lambda *_args, **_kwargs: {
+            "split-a": ([1, 1, 1], 0),
+            "split-b": ([1, 1, 1], 0),
+        },
+    )
+    monkeypatch.setattr(
+        "smftools.informatics.pod5_functions.iter_pod5_signals",
+        lambda _path, *, read_ids: iter([("pod5-parent", np.asarray([1.0, 2.0]))]),
+    )
+    monkeypatch.setattr(
+        "smftools.informatics.signal_features.read_signal_features",
+        lambda *_args, **_kwargs: {
+            "current_mean": np.asarray([1.0, 2.0]),
+            "current_std": np.asarray([0.0, 0.0]),
+            "dwell": np.asarray([1.0, 1.0]),
+            "signal_start": np.asarray([0.0, 1.0]),
+        },
+    )
+    frame = pd.DataFrame(
+        {
+            "read_id": ["split-a", "split-b"],
+            "pod5_read_id": ["pod5-parent", "pod5-parent"],
+            "mapping_direction": ["fwd", "rev"],
+            "sequence": [[0, 1], [1, 0]],
+        }
+    )
+    cfg = SimpleNamespace(
+        input_type="pod5",
+        input_data_path=pod5_dir,
+        extract_signal_features=True,
+    )
+
+    result = _attach_signal_features(frame, cfg=cfg, aligned_bam=tmp_path / "calls.bam")
+
+    assert result["current_mean"].tolist() == [[1.0, 2.0], [1.0, 2.0]]
 
 
 def test_split_by_reference_strand_separates_mixed_deaminase_chromosome():

@@ -1,3 +1,5 @@
+import io
+
 import numpy as np
 import pandas as pd
 
@@ -216,3 +218,31 @@ def test_extract_read_relative_base_identities_windowed_filters_by_reference_sta
     )
 
     assert [record["read_id"] for record in records] == ["inside"]
+
+
+def test_cli_read_relative_extraction_preserves_dorado_split_parent(monkeypatch, tmp_path):
+    class FakeProcess:
+        stdout = io.StringIO(
+            "split-child\t0\tchr1\t1\t60\t4M\t*\t0\t0\tACGT\t????\tpi:Z:pod5-parent\n"
+        )
+        stderr = io.StringIO("")
+
+        @staticmethod
+        def wait():
+            return 0
+
+    monkeypatch.setattr(bam_functions.shutil, "which", lambda _name: "/usr/bin/samtools")
+    monkeypatch.setattr(bam_functions, "_ensure_bam_index", lambda *_args: None)
+    monkeypatch.setattr(bam_functions.subprocess, "Popen", lambda *_args, **_kwargs: FakeProcess())
+    bam_path = tmp_path / "sample.bam"
+    bam_path.write_text("stub")
+
+    records = bam_functions.extract_read_relative_base_identities(
+        bam_path,
+        "chr1",
+        "ACGT",
+        samtools_backend="cli",
+    )
+
+    assert records[0]["basecall_read_id"] == "split-child"
+    assert records[0]["basecall_parent_read_id"] == "pod5-parent"
