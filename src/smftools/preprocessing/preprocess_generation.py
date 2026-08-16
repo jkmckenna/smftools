@@ -6,7 +6,7 @@ import json
 import os
 import shutil
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 from uuid import uuid4
 
 import pandas as pd
@@ -24,6 +24,7 @@ from ..informatics.generation import (
     GenerationError,
     resolve_current_generation,
     staged_generation,
+    validate_lineage_provenance,
 )
 from ..informatics.partition_read import load_spine, relative_uns_path
 from ..informatics.sidecar_manifest import resolve_sidecar, sidecar_manifest_path
@@ -265,6 +266,10 @@ def validate_preprocess_generation(
         raise PreprocessGenerationError("preprocess generation schema is incompatible")
     if manifest.get("status") != "complete":
         raise PreprocessGenerationError("preprocess generation is not complete")
+    try:
+        validate_lineage_provenance(manifest.get("lineage"))
+    except GenerationError as exc:
+        raise PreprocessGenerationError(f"preprocess {exc}") from exc
     generation_id = str(manifest.get("generation_id", ""))
     if not generation_id or (
         expected_generation_id is not None and generation_id != expected_generation_id
@@ -497,8 +502,16 @@ def publish_preprocess_generation(
     output_dir: str | Path,
     *,
     executor: Callable[..., dict[str, Path]] | None = None,
+    lineage_provenance: Mapping[str, Any] | None = None,
+    select_current: bool = True,
 ) -> dict[str, Path | str | int]:
-    """Build, validate, and atomically select one immutable preprocess generation."""
+    """Build, validate, and atomically publish one immutable preprocess generation.
+
+    ``lineage_provenance`` marks the result as a re-basecalled descendant.
+    Publishing one with ``select_current=False`` also leaves the canonical
+    stage-root spine untouched, because that file is what ordinary readers
+    resolve and a non-selected generation must never become their answer.
+    """
     from ..cli.helpers import stage_config_hash
     from ..informatics.experiment_spine import write_experiment_spine
     from .partitioned_executor import execute_partitioned_preprocessing
@@ -512,6 +525,12 @@ def publish_preprocess_generation(
         preprocess_force_targets,
     )
 
+    try:
+        lineage_provenance = validate_lineage_provenance(
+            dict(lineage_provenance) if lineage_provenance is not None else None
+        )
+    except GenerationError as exc:
+        raise PreprocessGenerationError(f"preprocess {exc}") from exc
     spine_path = Path(spine_path)
     output_dir = Path(output_dir)
     run_root = output_dir.parent
@@ -553,6 +572,7 @@ def publish_preprocess_generation(
             manifest_checksum=_checksum,
             write_json=atomic_write_json,
             after_current=publish_spine,
+            select_current=select_current,
         ) as staged:
             generation_id = staged.generation_id
             staging_dir = staged.staging_dir
@@ -640,6 +660,9 @@ def publish_preprocess_generation(
                     "task_count": task_count,
                     "upgrade_plan": upgrade_plan.to_dict(),
                     "node_results": [result.to_dict() for result in node_results],
+                    "lineage": (
+                        dict(lineage_provenance) if lineage_provenance is not None else None
+                    ),
                     "artifacts": artifacts,
                 }
             )

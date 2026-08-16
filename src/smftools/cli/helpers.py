@@ -4,7 +4,7 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import anndata as ad
 
@@ -439,17 +439,27 @@ def partitioned_stage_is_complete(
     )
 
 
-def get_adata_paths(cfg, *, allow_invalid_raw: bool = False) -> AdataPaths:
+def get_adata_paths(
+    cfg,
+    *,
+    allow_invalid_raw: bool = False,
+    lineage_generations: Mapping[str, str] | None = None,
+) -> AdataPaths:
     """Compute all standard AnnData paths for an experiment.
 
     Args:
         cfg: Loaded experiment configuration.
         allow_invalid_raw: Fall back to the legacy raw spine when the current
             generation selector is invalid. Reserved for raw-stage recovery.
+        lineage_generations: Optional ``stage -> generation id`` map pinning
+            which generation each stage resolves. This is the `D1` selector: a
+            re-basecalling lineage reads its own descendant generations while
+            ``current.json`` keeps answering for everyone else.
 
     Returns:
         The canonical and generation-selected artifact paths.
     """
+    lineage_generations = dict(lineage_generations or {})
     output_directory = Path(cfg.output_directory)
 
     # Raw and Preprocessed adata file pathes will have set names.
@@ -483,23 +493,38 @@ def get_adata_paths(cfg, *, allow_invalid_raw: bool = False) -> AdataPaths:
     spine = load_dir / "spine.h5ad"
     catalog = load_dir / "catalog.parquet"
     raw_output_dir = output_directory / RAW_DIR
+    from ..informatics.generation import resolve_stage_generation
     from ..informatics.raw_generation import RawGenerationError, resolve_current_raw_generation
 
-    try:
-        current_raw_generation = resolve_current_raw_generation(raw_output_dir)
-    except RawGenerationError:
-        if not allow_invalid_raw:
-            raise
+    def _stage_spine(stage: str, stage_dir: Path) -> Path:
+        """Resolve one stage's spine, honouring a lineage pin when present."""
+        pinned = lineage_generations.get(stage)
+        if pinned is None:
+            return stage_dir / "spine.h5ad"
+        resolved = resolve_stage_generation(stage_dir, pinned)
+        if resolved is None:
+            raise RawGenerationError(f"{stage} lineage generation {pinned!r} could not be resolved")
+        return resolved[0] / "spine.h5ad"
+
+    if "raw" in lineage_generations:
         current_raw_generation = None
-    raw_spine = (
-        current_raw_generation[0] / "spine.h5ad"
-        if current_raw_generation is not None
-        else raw_output_dir / "spine.h5ad"
-    )
-    preprocess_spine = output_directory / PREPROCESS_DIR / "spine.h5ad"
-    spatial_spine = output_directory / SPATIAL_DIR / "spine.h5ad"
-    hmm_spine = output_directory / HMM_DIR / "spine.h5ad"
-    latent_spine = output_directory / LATENT_DIR / "spine.h5ad"
+        raw_spine = _stage_spine("raw", raw_output_dir)
+    else:
+        try:
+            current_raw_generation = resolve_current_raw_generation(raw_output_dir)
+        except RawGenerationError:
+            if not allow_invalid_raw:
+                raise
+            current_raw_generation = None
+        raw_spine = (
+            current_raw_generation[0] / "spine.h5ad"
+            if current_raw_generation is not None
+            else raw_output_dir / "spine.h5ad"
+        )
+    preprocess_spine = _stage_spine("preprocess", output_directory / PREPROCESS_DIR)
+    spatial_spine = _stage_spine("spatial", output_directory / SPATIAL_DIR)
+    hmm_spine = _stage_spine("hmm", output_directory / HMM_DIR)
+    latent_spine = _stage_spine("latent", output_directory / LATENT_DIR)
 
     return AdataPaths(
         raw=raw,
