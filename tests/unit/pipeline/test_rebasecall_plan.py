@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -10,6 +11,12 @@ import pytest
 from click.testing import CliRunner
 
 from smftools import cli_entry
+from smftools.informatics.dorado_model import (
+    DoradoBasecallResolution,
+    DoradoModelArtifact,
+    DoradoModelError,
+    DoradoRunCondition,
+)
 from smftools.informatics.input_manifest import InputManifestRow, ResolvedInputManifest
 from smftools.informatics.pod5_identity import Pod5DatasetIndex
 from smftools.pipeline import rebasecall_plan
@@ -21,6 +28,27 @@ pytestmark = pytest.mark.unit
 
 def _pod5_index(*read_ids):
     return Pod5DatasetIndex({read_id: ("source-a",) for read_id in read_ids})
+
+
+def _resolved_dorado(options, tmp_path):
+    simplex = DoradoModelArtifact("chem_hac@v1.0.0", "a" * 64, 2, 20)
+    return DoradoBasecallResolution(
+        selector=options.model,
+        dorado_version="1.3.1+test",
+        chemistry="chem",
+        run_conditions=(DoradoRunCondition("FLOW", "KIT", 5000),),
+        simplex_model=simplex,
+        modification_models=(),
+        model_bundle_digest="b" * 64,
+        supported_flags=("--read-ids",),
+        capability_digest="c" * 64,
+        options=options,
+        normalized_argv=("dorado", "basecaller", "chem_hac@v1.0.0"),
+        executable_path=tmp_path / "dorado",
+        model_directory=tmp_path / "models",
+        simplex_path=tmp_path / "models" / simplex.name,
+        modification_paths=(),
+    )
 
 
 def _request(mode="qc", *, signal=None, **selection_overrides):
@@ -118,6 +146,11 @@ def _install_parent_fixtures(tmp_path, monkeypatch, *, preprocess_source="raw-a"
         "read_experiment_manifest",
         lambda _root: {"experiment_uid": "uid-a", "experiment_id": "experiment-a"},
     )
+    monkeypatch.setattr(
+        rebasecall_plan,
+        "resolve_dorado_basecall",
+        lambda options, *_args: _resolved_dorado(options, tmp_path),
+    )
     return SimpleNamespace(
         output_directory=tmp_path,
         experiment_id="experiment-a",
@@ -125,6 +158,8 @@ def _install_parent_fixtures(tmp_path, monkeypatch, *, preprocess_source="raw-a"
         raw_parent=raw_parent,
         preprocess_parent=preprocess_parent,
         source_manifest=source_manifest,
+        model_dir=tmp_path / "models",
+        device="auto",
     )
 
 
@@ -156,7 +191,16 @@ def test_qc_plan_resolves_exact_parents_counts_selection_and_writes_nothing(tmp_
         "status": "available_during_run_preparation",
         "accepted_plan_id": plan.plan_id,
     }
-    assert "dorado_and_model_bundle_resolution:srb-04" in plan.to_dict()["deferred_capabilities"]
+    assert plan.model.status == "resolved"
+    assert plan.model.simplex_model["name"] == "chem_hac@v1.0.0"
+    assert plan.to_dict()["requested_model"]["model_bundle_digest"] == "b" * 64
+    assert (
+        "dorado_and_model_bundle_resolution:srb-04" not in plan.to_dict()["deferred_capabilities"]
+    )
+    assert (
+        "dorado_basecall_execution_and_validation:srb-04b"
+        in plan.to_dict()["deferred_capabilities"]
+    )
     assert plan.to_json() == plan.to_json()
     assert sorted(path.relative_to(tmp_path) for path in tmp_path.rglob("*")) == before
 
@@ -178,6 +222,58 @@ def test_all_signal_keeps_signal_and_parent_universes_distinct(tmp_path, monkeyp
     assert plan.identity.mode == "signal_inventory"
     assert plan.identity.unique_pod5_read_count == 5
     assert [warning.code for warning in plan.warnings] == ["full_signal_scope"]
+
+
+def test_exact_model_bundle_changes_accepted_plan_identity(tmp_path, monkeypatch):
+    cfg = _install_parent_fixtures(tmp_path, monkeypatch)
+
+    def first_resolver(options, *_args):
+        return _resolved_dorado(options, tmp_path)
+
+    def changed_resolver(options, *_args):
+        original = _resolved_dorado(options, tmp_path)
+        return replace(
+            original,
+            simplex_model=replace(original.simplex_model, sha256="d" * 64),
+            model_bundle_digest="e" * 64,
+        )
+
+    first = rebasecall_plan.build_rebasecall_plan(
+        cfg,
+        _request("all-parent-molecules"),
+        pod5_indexer=lambda sources: _pod5_index("r1", "r2", "r3"),
+        dorado_resolver=first_resolver,
+    )
+    changed = rebasecall_plan.build_rebasecall_plan(
+        cfg,
+        _request("all-parent-molecules"),
+        pod5_indexer=lambda sources: _pod5_index("r1", "r2", "r3"),
+        dorado_resolver=changed_resolver,
+    )
+
+    assert first.request.request_id == changed.request.request_id
+    assert first.selection.to_dict() == changed.selection.to_dict()
+    assert first.plan_id != changed.plan_id
+
+
+def test_model_resolution_failure_blocks_execution_but_not_selection(tmp_path, monkeypatch):
+    cfg = _install_parent_fixtures(tmp_path, monkeypatch)
+
+    def fail_resolution(*_args):
+        raise DoradoModelError("dorado_model_not_installed", "model bytes are absent")
+
+    plan = rebasecall_plan.build_rebasecall_plan(
+        cfg,
+        _request("all-parent-molecules"),
+        pod5_indexer=lambda sources: _pod5_index("r1", "r2", "r3"),
+        dorado_resolver=fail_resolution,
+    )
+
+    assert plan.status == "blocked"
+    assert plan.selection_status == "ready"
+    assert plan.model.status == "blocked"
+    assert plan.model.failure_code == "dorado_model_not_installed"
+    assert "dorado_model_not_installed" in {reason.code for reason in plan.blockers}
 
 
 def test_signal_inventory_failure_preserves_source_plan_and_qc_selection(tmp_path, monkeypatch):
@@ -416,12 +512,14 @@ def test_nested_cli_emits_human_and_stable_json(tmp_path, monkeypatch):
 
     assert human.exit_code == 0, human.output
     assert f"Plan ID: {plan.plan_id}" in human.output
+    assert "Dorado model: chem_hac@v1.0.0 (1.3.1+test" in human.output
     assert "Execution: unavailable" in human.output
     assert machine.exit_code == 0, machine.output
     payload = json.loads(machine.output)
     assert payload["schema_version"] == 1
     assert payload["selection"]["mode"] == "all-parent-molecules"
     assert payload["identity"]["status"] == "resolved"
+    assert payload["requested_model"]["resolution_status"] == "resolved"
     assert payload["execution_status"] == "not_implemented"
 
 

@@ -13,6 +13,12 @@ from typing import Any, Callable, Mapping
 import pandas as pd
 
 from ..constants import PREPROCESS_DIR, RAW_DIR
+from ..informatics.dorado_model import (
+    DoradoBasecallOptions,
+    DoradoBasecallResolution,
+    DoradoModelError,
+    resolve_dorado_basecall,
+)
 from ..informatics.experiment_manifest import (
     read_experiment_manifest,
     resolve_artifact_record,
@@ -50,7 +56,7 @@ from .rebasecall_request import (
 REBASECALL_PLAN_SCHEMA_VERSION = 1
 _GENERATION_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _DEFERRED_CAPABILITIES = (
-    "dorado_and_model_bundle_resolution:srb-04",
+    "dorado_basecall_execution_and_validation:srb-04b",
     "lineage_execution_and_publication:srb-05",
 )
 
@@ -241,6 +247,58 @@ class RebasecallIdentityPlan:
 
 
 @dataclass(frozen=True)
+class RebasecallModelPlan:
+    """Bounded immutable Dorado executable and model-resolution summary."""
+
+    selector: str
+    status: str = "unavailable"
+    dorado_version: str | None = None
+    chemistry: str | None = None
+    simplex_model: Mapping[str, object] | None = None
+    modification_models: tuple[Mapping[str, object], ...] = ()
+    model_bundle_digest: str | None = None
+    capability_digest: str | None = None
+    normalized_argv: tuple[str, ...] = ()
+    failure_code: str | None = None
+    failure_message: str | None = None
+
+    @classmethod
+    def from_resolution(cls, resolution: DoradoBasecallResolution) -> "RebasecallModelPlan":
+        """Build a bounded public summary from an exact internal resolution."""
+        return cls(
+            selector=resolution.selector,
+            status="resolved",
+            dorado_version=resolution.dorado_version,
+            chemistry=resolution.chemistry,
+            simplex_model=resolution.simplex_model.to_dict(),
+            modification_models=tuple(model.to_dict() for model in resolution.modification_models),
+            model_bundle_digest=resolution.model_bundle_digest,
+            capability_digest=resolution.capability_digest,
+            normalized_argv=resolution.normalized_argv,
+        )
+
+    def semantic_payload(self) -> dict[str, object]:
+        """Return stable model state included in accepted-plan identity."""
+        return {
+            "selector": self.selector,
+            "status": self.status,
+            "dorado_version": self.dorado_version,
+            "chemistry": self.chemistry,
+            "simplex_model": None if self.simplex_model is None else dict(self.simplex_model),
+            "modification_models": [dict(model) for model in self.modification_models],
+            "model_bundle_digest": self.model_bundle_digest,
+            "capability_digest": self.capability_digest,
+            "normalized_argv": list(self.normalized_argv),
+            "failure_code": self.failure_code,
+        }
+
+    def to_dict(self) -> dict[str, object]:
+        payload = self.semantic_payload()
+        payload["resolution_status"] = payload.pop("status")
+        return {**payload, "failure_message": self.failure_message}
+
+
+@dataclass(frozen=True)
 class RebasecallPlan:
     """Stable schema-1 read-only re-basecall plan."""
 
@@ -253,6 +311,7 @@ class RebasecallPlan:
     sources: RebasecallSourcePlan
     selection: RebasecallSelectionPlan
     identity: RebasecallIdentityPlan
+    model: RebasecallModelPlan
     _identity_resolution: Pod5IdentityResolution | None = field(
         default=None,
         repr=False,
@@ -260,6 +319,11 @@ class RebasecallPlan:
     )
     _pod5_index: Pod5DatasetIndex | None = field(default=None, repr=False, compare=False)
     _source_resolution: Pod5SourceResolution | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+    _model_resolution: DoradoBasecallResolution | None = field(
         default=None,
         repr=False,
         compare=False,
@@ -316,6 +380,7 @@ class RebasecallPlan:
                 "sources": self.sources.semantic_payload(),
                 "selection": self.selection.to_dict(),
                 "identity": self.identity.to_dict(),
+                "model": self.model.semantic_payload(),
                 "blocker_codes": [reason.code for reason in self.blockers],
                 "warning_codes": [reason.code for reason in self.warnings],
             }
@@ -355,11 +420,7 @@ class RebasecallPlan:
             "sources": self.sources.to_dict(),
             "selection": self.selection.to_dict(),
             "identity": self.identity.to_dict(),
-            "requested_model": {
-                "selector": self.request.basecall.model,
-                "resolution_status": "deferred",
-                "reason_code": "resolved_model_identity_requires_srb_04",
-            },
+            "requested_model": self.model.to_dict(),
             "downstream_target": self.request.downstream_target,
             "deferred_capabilities": list(_DEFERRED_CAPABILITIES),
             "blockers": [reason.to_dict() for reason in self.blockers],
@@ -895,8 +956,11 @@ def build_rebasecall_plan(
         [tuple[tuple[str, Path], ...]], Pod5DatasetIndex
     ] = build_pod5_dataset_index,
     bam_tag_reader: Callable[[Path], Mapping[str, Mapping[str, object]]] = _read_bam_pi,
+    dorado_resolver: Callable[..., DoradoBasecallResolution] | None = None,
 ) -> RebasecallPlan:
     """Inspect exact immutable parents and selection counts without writing artifacts."""
+    if dorado_resolver is None:
+        dorado_resolver = resolve_dorado_basecall
     run_root = Path(cfg.output_directory)
     experiment_manifest = read_experiment_manifest(run_root)
     experiment_id = str(
@@ -916,10 +980,12 @@ def build_rebasecall_plan(
     sources = RebasecallSourcePlan()
     selection = RebasecallSelectionPlan(mode=request.selection.mode)
     identity = RebasecallIdentityPlan(mode="unavailable", status="unavailable")
+    model = RebasecallModelPlan(selector=request.basecall.model)
     pod5_index = None
     source_resolution = None
     selected_observations = None
     resolution = None
+    model_resolution = None
 
     if experiment_uid is None:
         blockers.append(
@@ -1034,6 +1100,41 @@ def build_rebasecall_plan(
                 )
             )
 
+    if source_resolution is not None and source_resolution.complete:
+        try:
+            basecall_options = DoradoBasecallOptions(
+                model=request.basecall.model,
+                modified_bases=request.basecall.modified_bases,
+                read_splitting=request.basecall.read_splitting,
+                trim=request.basecall.trim,
+                emit_moves=request.basecall.emit_moves,
+                min_qscore=request.basecall.min_qscore,
+                barcode_kit=request.basecall.barcode_kit,
+                barcode_both_ends=request.basecall.barcode_both_ends,
+                device=str(getattr(cfg, "device", "auto") or "auto"),
+            )
+            model_resolution = dorado_resolver(
+                basecall_options,
+                tuple(path for _, path in source_resolution.resolved_sources),
+                getattr(cfg, "model_dir", None),
+            )
+            model = RebasecallModelPlan.from_resolution(model_resolution)
+        except DoradoModelError as exc:
+            model = RebasecallModelPlan(
+                selector=request.basecall.model,
+                status="blocked",
+                failure_code=exc.code,
+                failure_message=str(exc),
+            )
+            blockers.append(RebasecallPlanReason(exc.code, str(exc)))
+        except ValueError as exc:
+            model = RebasecallModelPlan(
+                selector=request.basecall.model,
+                status="blocked",
+                failure_code="dorado_options_invalid",
+                failure_message=str(exc),
+            )
+            blockers.append(RebasecallPlanReason("dorado_options_invalid", str(exc)))
     if request.selection.mode == "all-signal":
         warnings.append(
             RebasecallPlanReason(
@@ -1073,9 +1174,11 @@ def build_rebasecall_plan(
         sources=sources,
         selection=selection,
         identity=identity,
+        model=model,
         _identity_resolution=resolution,
         _pod5_index=pod5_index,
         _source_resolution=source_resolution,
+        _model_resolution=model_resolution,
         blockers=tuple(blockers),
         warnings=tuple(warnings),
     )
@@ -1125,7 +1228,13 @@ def format_rebasecall_plan(plan: RebasecallPlan) -> str:
         f"Sources: {plan.sources.pod5_source_count}/{plan.sources.source_count} POD5; "
         f"validated {plan.sources.resolved_source_count}/{plan.sources.pod5_source_count}; "
         f"signal reads {plan.sources.signal_read_count if plan.sources.signal_read_count is not None else 'unknown'}",
-        f"Requested model: {plan.request.basecall.model} (resolution deferred to SRB-04)",
+        "Dorado model: "
+        + (
+            f"{plan.model.simplex_model['name']} ({plan.model.dorado_version}; "
+            f"bundle {plan.model.model_bundle_digest})"
+            if plan.model.status == "resolved" and plan.model.simplex_model is not None
+            else f"{plan.request.basecall.model} ({plan.model.status})"
+        ),
         f"Downstream target: {plan.request.downstream_target}",
         "Execution: unavailable; this command writes no scientific artifacts.",
         "",

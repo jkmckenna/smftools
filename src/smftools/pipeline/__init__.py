@@ -35,6 +35,7 @@ from .project_graph import (
 )
 from .rebasecall_plan import (
     REBASECALL_PLAN_SCHEMA_VERSION,
+    RebasecallModelPlan,
     RebasecallPlan,
     RebasecallPlanReason,
     RebasecallSelectionPlan,
@@ -124,6 +125,7 @@ __all__ = [
     "REBASECALL_REQUEST_SCHEMA_VERSION",
     "REBASECALL_SELECTION_SCHEMA_VERSION",
     "REBASECALL_SIGNAL_SCHEMA_VERSION",
+    "RebasecallModelPlan",
     "RebasecallPlan",
     "RebasecallPlanReason",
     "RebasecallRequest",

@@ -28,6 +28,7 @@ Processes raw sequencing data to load an adata object.
    smftools.informatics.complement_base_list
    smftools.informatics.converted_BAM_to_adata
    smftools.informatics.derived_read_index
+   smftools.informatics.dorado_model
    smftools.informatics.export_bundle
    smftools.informatics.fasta_functions
    smftools.informatics.fastq_export
@@ -62,8 +63,10 @@ partitioned storage architecture: a read-relative ragged parquet source of truth
 molecule-index `spine.h5ad`, and on-demand dense-slice materialization. `molecule_identity` and
 `derived_read_index` provide project-wide molecule keys and searchable raw-to-derived task
 lineage. `pod5_identity` resolves current and historical molecule identities against authoritative
-POD5 UUID indexes. `fastq_export` and `sequence_encoding` build on the ragged store to reconstruct
-literal read sequence/quality for FASTQ export.
+POD5 UUID indexes. `dorado_model` resolves installed Dorado capabilities, sequencing chemistry,
+and exact checksummed model bundles without running basecalling. `fastq_export` and
+`sequence_encoding` build on the ragged store to reconstruct literal read sequence/quality for
+FASTQ export.
 `partition_query` prunes molecule and derived-task Parquet indexes before opening array stores,
 then projects Zarr rows, genomic columns, and requested layers before bounded conversion to memory.
 `artifact_paths` keeps cross-stage pointers relative to the run or project root when the platform
