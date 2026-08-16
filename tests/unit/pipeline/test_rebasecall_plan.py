@@ -1,0 +1,274 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from types import SimpleNamespace
+
+import pandas as pd
+import pytest
+from click.testing import CliRunner
+
+from smftools import cli_entry
+from smftools.informatics.input_manifest import InputManifestRow, ResolvedInputManifest
+from smftools.pipeline import rebasecall_plan
+from smftools.pipeline.rebasecall_plan import ParentGeneration, RebasecallPlanError
+from smftools.pipeline.rebasecall_request import rebasecall_request_from_dict
+
+pytestmark = pytest.mark.unit
+
+
+def _request(mode="qc", **selection_overrides):
+    if mode == "qc":
+        selection = {
+            "mode": "qc",
+            "predicate": {
+                "all": [
+                    {"column": "passes_read_qc", "op": "eq", "value": True},
+                    {"column": "passes_dedup", "op": "eq", "value": True},
+                ]
+            },
+        }
+    elif mode == "ids":
+        selection = {"mode": "ids", "id_kind": "read_id", "ids": ["r1", "missing"]}
+    else:
+        selection = {"mode": mode}
+    selection.update(selection_overrides)
+    source = {"raw_generation": "raw-a"}
+    if mode == "qc":
+        source["preprocess_generation"] = "pre-a"
+    return rebasecall_request_from_dict(
+        {
+            "schema_version": 1,
+            "name": "test-request",
+            "source": source,
+            "selection": selection,
+            "basecall": {"model": "hac@latest"},
+            "signal": {"materialize": False},
+            "downstream": {"target": "full"},
+            "promotion": {"activate": False},
+        }
+    )
+
+
+def _install_parent_fixtures(tmp_path, monkeypatch, *, preprocess_source="raw-a"):
+    raw_dir = tmp_path / "raw_outputs" / "generations" / "raw-a"
+    preprocess_dir = tmp_path / "preprocess_adata_outputs" / "generations" / "pre-a"
+    raw_dir.mkdir(parents=True)
+    preprocess_dir.mkdir(parents=True)
+    pd.DataFrame(
+        {
+            "read_id": ["r1", "r2", "r3"],
+            "molecule_uid": ["m1", "m2", "m3"],
+        }
+    ).to_parquet(raw_dir / "obs.parquet", index=False)
+    pd.DataFrame(
+        {
+            "read_id": ["r1", "r2", "r3"],
+            "passes_read_qc": [True, True, False],
+            "passes_dedup": [True, False, False],
+        }
+    ).to_parquet(preprocess_dir / "stage_obs.parquet", index=False)
+    signal = tmp_path / "reads.pod5"
+    signal.write_bytes(b"pod5")
+    source_manifest = ResolvedInputManifest(
+        rows=(
+            InputManifestRow(
+                source_id="source-a",
+                path=str(signal),
+                sha256="a" * 64,
+                size_bytes=signal.stat().st_size,
+                source_kind="pod5",
+                source_role="raw_signal",
+            ),
+        ),
+        digest="manifest-a",
+        resolution_method="published",
+        base_directory=str(tmp_path),
+    )
+    raw_parent = ParentGeneration(
+        stage="raw",
+        selector="raw-a",
+        generation_id="raw-a",
+        generation_dir=raw_dir,
+        manifest={"generation_id": "raw-a"},
+    )
+    preprocess_parent = ParentGeneration(
+        stage="preprocess",
+        selector="pre-a",
+        generation_id="pre-a",
+        generation_dir=preprocess_dir,
+        manifest={
+            "generation_id": "pre-a",
+            "source": {"generation_id": preprocess_source},
+        },
+    )
+    monkeypatch.setattr(rebasecall_plan, "_resolve_raw_parent", lambda *_args: raw_parent)
+    monkeypatch.setattr(
+        rebasecall_plan, "_resolve_preprocess_parent", lambda *_args: preprocess_parent
+    )
+    monkeypatch.setattr(rebasecall_plan, "_read_input_manifest", lambda _parent: source_manifest)
+    monkeypatch.setattr(
+        rebasecall_plan,
+        "read_experiment_manifest",
+        lambda _root: {"experiment_uid": "uid-a", "experiment_id": "experiment-a"},
+    )
+    return SimpleNamespace(
+        output_directory=tmp_path,
+        experiment_id="experiment-a",
+        experiment_name="experiment-a",
+        raw_parent=raw_parent,
+        preprocess_parent=preprocess_parent,
+    )
+
+
+def test_qc_plan_resolves_exact_parents_counts_selection_and_writes_nothing(tmp_path, monkeypatch):
+    cfg = _install_parent_fixtures(tmp_path, monkeypatch)
+    before = sorted(path.relative_to(tmp_path) for path in tmp_path.rglob("*"))
+
+    plan = rebasecall_plan.build_rebasecall_plan(
+        cfg,
+        _request("qc"),
+        signal_counter=lambda paths: 5,
+    )
+
+    assert plan.status == "ready"
+    assert plan.selection_status == "ready"
+    assert plan.raw_parent is not None
+    assert plan.raw_parent.generation_id == "raw-a"
+    assert plan.raw_parent.molecule_count == 3
+    assert plan.preprocess_parent is not None
+    assert plan.preprocess_parent.generation_id == "pre-a"
+    assert plan.selection.universe_count == 3
+    assert plan.selection.selected_count == 1
+    assert plan.selection.consumed_columns == ("passes_dedup", "passes_read_qc")
+    assert plan.sources.signal_read_count == 5
+    assert plan.to_dict()["execution_status"] == "not_implemented"
+    assert "dorado_and_model_bundle_resolution:srb-04" in plan.to_dict()["deferred_capabilities"]
+    assert plan.to_json() == plan.to_json()
+    assert sorted(path.relative_to(tmp_path) for path in tmp_path.rglob("*")) == before
+
+
+def test_all_signal_keeps_signal_and_parent_universes_distinct(tmp_path, monkeypatch):
+    cfg = _install_parent_fixtures(tmp_path, monkeypatch)
+
+    plan = rebasecall_plan.build_rebasecall_plan(
+        cfg,
+        _request("all-signal"),
+        signal_counter=lambda paths: 5,
+    )
+
+    assert plan.status == "ready"
+    assert plan.raw_parent is not None
+    assert plan.raw_parent.molecule_count == 3
+    assert plan.selection.universe_count == 5
+    assert plan.selection.selected_count == 5
+    assert [warning.code for warning in plan.warnings] == ["full_signal_scope"]
+
+
+def test_signal_inventory_failure_preserves_source_plan_and_qc_selection(tmp_path, monkeypatch):
+    cfg = _install_parent_fixtures(tmp_path, monkeypatch)
+
+    def fail_inventory(_paths):
+        raise RebasecallPlanError("signal_inventory_unavailable", "duplicate POD5 UUID")
+
+    plan = rebasecall_plan.build_rebasecall_plan(
+        cfg,
+        _request("qc"),
+        signal_counter=fail_inventory,
+    )
+
+    assert plan.status == "blocked"
+    assert plan.selection_status == "ready"
+    assert plan.selection.selected_count == 1
+    assert plan.sources.source_count == 1
+    assert plan.sources.signal_read_count is None
+    assert "signal_inventory_unavailable" in {reason.code for reason in plan.blockers}
+
+
+def test_missing_explicit_id_blocks_without_silently_dropping_it(tmp_path, monkeypatch):
+    cfg = _install_parent_fixtures(tmp_path, monkeypatch)
+
+    plan = rebasecall_plan.build_rebasecall_plan(
+        cfg,
+        _request("ids"),
+        signal_counter=lambda paths: 5,
+    )
+
+    assert plan.status == "blocked"
+    assert plan.selection.requested_id_count == 2
+    assert plan.selection.matched_id_count == 1
+    assert plan.selection.missing_ids == ("missing",)
+    assert "selection_ids_missing" in {reason.code for reason in plan.blockers}
+
+
+def test_qc_plan_blocks_when_preprocess_does_not_descend_from_raw(tmp_path, monkeypatch):
+    cfg = _install_parent_fixtures(tmp_path, monkeypatch, preprocess_source="different-raw")
+
+    plan = rebasecall_plan.build_rebasecall_plan(
+        cfg,
+        _request("qc"),
+        signal_counter=lambda paths: 5,
+    )
+
+    assert plan.status == "blocked"
+    assert "parent_generation_mismatch" in {reason.code for reason in plan.blockers}
+
+
+def test_qc_plan_infers_preprocess_parent_from_generation_scoped_source_path(tmp_path, monkeypatch):
+    cfg = _install_parent_fixtures(tmp_path, monkeypatch, preprocess_source="")
+    cfg.preprocess_parent.manifest["source"] = {
+        "artifact": {
+            "path": "raw_outputs/generations/raw-a/spine.h5ad",
+            "path_kind": "relative",
+            "anchor": "run_root",
+        },
+        "generation_id": None,
+        "stage": None,
+    }
+
+    plan = rebasecall_plan.build_rebasecall_plan(
+        cfg,
+        _request("qc"),
+        signal_counter=lambda paths: 5,
+    )
+
+    assert plan.status == "ready"
+    assert plan.selection.selected_count == 1
+
+
+def test_nested_cli_emits_human_and_stable_json(tmp_path, monkeypatch):
+    cfg = _install_parent_fixtures(tmp_path, monkeypatch)
+    plan = rebasecall_plan.build_rebasecall_plan(
+        cfg,
+        _request("all-parent-molecules"),
+        signal_counter=lambda paths: 5,
+    )
+    config_path = tmp_path / "experiment.csv"
+    request_path = tmp_path / "request.yaml"
+    config_path.touch()
+    request_path.touch()
+    monkeypatch.setattr(rebasecall_plan, "plan_rebasecall", lambda *_args: plan)
+
+    human = CliRunner().invoke(
+        cli_entry.cli,
+        ["experiment", "rebasecall", "plan", str(config_path), str(request_path)],
+    )
+    machine = CliRunner().invoke(
+        cli_entry.cli,
+        [
+            "experiment",
+            "rebasecall",
+            "plan",
+            str(config_path),
+            str(request_path),
+            "--json",
+        ],
+    )
+
+    assert human.exit_code == 0, human.output
+    assert "Execution: unavailable in SRB-01a" in human.output
+    assert machine.exit_code == 0, machine.output
+    payload = json.loads(machine.output)
+    assert payload["schema_version"] == 1
+    assert payload["selection"]["mode"] == "all-parent-molecules"
+    assert payload["execution_status"] == "not_implemented"
