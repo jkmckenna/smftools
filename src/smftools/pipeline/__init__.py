@@ -112,6 +112,13 @@ from .rebasecall_transition import (
     reconcile_qc_transition,
     write_qc_transition,
 )
+from .rebasecall_validate import (
+    REBASECALL_VALIDATION_SCHEMA_VERSION,
+    LineageCheck,
+    LineageValidationReport,
+    promote_rebasecall_lineage,
+    validate_rebasecall_lineage,
+)
 from .semantic_graph import (
     AnalysisScope,
     ArtifactIdentity,
@@ -154,7 +161,9 @@ __all__ = [
     "EXPERIMENT_TARGETS",
     "ExperimentExecutionResult",
     "FrozenRebasecallSelection",
+    "LineageCheck",
     "LineageRawStageResult",
+    "LineageValidationReport",
     "MaterializedRebasecallSignal",
     "NodeInputs",
     "NodeResult",
@@ -182,6 +191,7 @@ __all__ = [
     "REBASECALL_SELECTION_SCHEMA_VERSION",
     "REBASECALL_SIGNAL_SCHEMA_VERSION",
     "REBASECALL_TRANSITION_SCHEMA_VERSION",
+    "REBASECALL_VALIDATION_SCHEMA_VERSION",
     "RebasecallBasecallError",
     "RebasecallLineageError",
     "RebasecallModelPlan",
@@ -236,6 +246,7 @@ __all__ = [
     "project_node_inputs",
     "project_node_specs",
     "project_source_member_record",
+    "promote_rebasecall_lineage",
     "rebasecall_request_from_dict",
     "read_frozen_rebasecall_selection",
     "read_materialized_rebasecall_signal",
@@ -247,6 +258,7 @@ __all__ = [
     "run_lineage_raw_stage",
     "run_project_rebasecall",
     "staged_lineage",
+    "validate_rebasecall_lineage",
     "write_lineage_validation",
     "write_qc_transition",
 ]
