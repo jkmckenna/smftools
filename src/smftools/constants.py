@@ -4,6 +4,39 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Dict, Final, Mapping
 
+## Operating-system metadata ##
+# Files the OS or a file browser drops into directories without anyone asking.
+# Merely opening a published generation's folder in macOS Finder creates a
+# `.DS_Store` inside it; a directory checksum that counted such a file would
+# report a validated, immutable artifact as corrupt for a reason having nothing
+# to do with its contents. Content hashing therefore skips them.
+OS_METADATA_FILENAMES: Final[frozenset[str]] = frozenset(
+    {
+        ".DS_Store",  # macOS Finder
+        "Thumbs.db",  # Windows Explorer
+        "desktop.ini",  # Windows Explorer
+        ".directory",  # KDE Dolphin
+    }
+)
+# macOS resource-fork sidecars on non-HFS volumes, and Spotlight/trash state.
+OS_METADATA_PREFIXES: Final[tuple[str, ...]] = ("._",)
+OS_METADATA_DIRECTORIES: Final[frozenset[str]] = frozenset(
+    {".Spotlight-V100", ".Trashes", ".fseventsd", "__MACOSX"}
+)
+
+
+def is_os_metadata(path: Path) -> bool:
+    """Return whether a path is operating-system metadata rather than content.
+
+    Used by every directory content hash. Keeping one predicate means an
+    artifact's digest cannot depend on which platform last browsed it.
+    """
+    if path.name in OS_METADATA_FILENAMES:
+        return True
+    if path.name.startswith(OS_METADATA_PREFIXES):
+        return True
+    return any(part in OS_METADATA_DIRECTORIES for part in path.parts)
+
 
 ## Helpers ##
 def _deep_freeze(obj: Any) -> Any:

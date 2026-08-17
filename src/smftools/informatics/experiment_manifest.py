@@ -24,6 +24,7 @@ from pathlib import Path
 from time import perf_counter
 from typing import Any
 
+from ..constants import is_os_metadata
 from ..logging_utils import get_logger
 from ..metadata import smftools_code_identity
 from ..readwrite import atomic_write_json
@@ -155,7 +156,9 @@ def artifact_record(
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     if path.is_dir():
-        for child in sorted(item for item in path.rglob("*") if item.is_file()):
+        for child in sorted(
+            item for item in path.rglob("*") if item.is_file() and not is_os_metadata(item)
+        ):
             digest.update(child.relative_to(path).as_posix().encode("utf-8"))
             digest.update(b"\0")
             with child.open("rb") as handle:
