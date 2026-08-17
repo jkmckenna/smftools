@@ -1070,6 +1070,61 @@ def project_list_cmd(project_dir: Path):
         click.echo(f"{n_canon} canonical reference(s) across the project.")
 
 
+@project_group.group("rebasecall")
+def project_rebasecall_group():
+    """Plan selective POD5 re-basecalling across a project's experiments."""
+
+
+@project_rebasecall_group.command("plan")
+@click.argument("project_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.argument(
+    "request_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+)
+@click.option(
+    "--set",
+    "set_name",
+    default=None,
+    help="Restrict the fan-out to a named project set.",
+)
+@click.option(
+    "--experiment",
+    "experiment_ids",
+    multiple=True,
+    help="Restrict the fan-out to specific experiment ids; repeat per experiment.",
+)
+@click.option("--json", "as_json", is_flag=True, help="Emit stable machine-readable JSON.")
+def project_rebasecall_plan_cmd(
+    project_dir: Path,
+    request_path: Path,
+    set_name: str | None,
+    experiment_ids: tuple[str, ...],
+    as_json: bool,
+):
+    """Report what one request would do to each selected experiment, writing nothing."""
+    import json
+
+    from .pipeline.rebasecall_project import (
+        format_project_rebasecall_plan,
+        plan_project_rebasecall,
+    )
+    from .pipeline.rebasecall_request import load_rebasecall_request
+
+    try:
+        plan = plan_project_rebasecall(
+            project_dir,
+            load_rebasecall_request(request_path),
+            experiments=list(experiment_ids) or None,
+            set_name=set_name,
+        )
+    except Exception as error:
+        raise click.ClickException(str(error)) from error
+    if as_json:
+        click.echo(json.dumps(plan.to_dict(), sort_keys=True, separators=(",", ":"), indent=2))
+        return
+    click.echo(format_project_rebasecall_plan(plan))
+
+
 @project_group.group("analyses")
 def project_analyses_group():
     """Inspect project-owned analysis caches without loading their results."""

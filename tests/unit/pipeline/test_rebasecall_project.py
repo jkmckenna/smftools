@@ -305,3 +305,57 @@ def test_the_human_report_names_each_experiment_and_its_state(tmp_path):
     assert "exp-a: ready" in report
     assert "chem_hac@v1.0.0" in report
     assert "until an explicit promotion" in report
+
+
+def test_the_project_plan_command_reports_without_writing(tmp_path, monkeypatch):
+    """The CLI the tutorial documents must exist and stay read-only."""
+    import json
+
+    from click.testing import CliRunner
+
+    from smftools import cli_entry
+
+    project_dir, entries = _project(tmp_path)
+    request_path = tmp_path / "request.json"
+    request_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "name": "cli-request",
+                "source": {"raw_generation": "raw-a"},
+                "selection": {"mode": "all-parent-molecules"},
+                "basecall": {"model": "hac@latest"},
+                "signal": {"materialize": False},
+                "downstream": {"target": "preprocess"},
+                "promotion": {"activate": False},
+            }
+        ),
+        encoding="utf-8",
+    )
+    before = sorted(path.name for path in tmp_path.rglob("*"))
+    # Capture the real planner before patching, or the stub would call itself.
+    real_plan = plan_project_rebasecall
+
+    def stub(*args, **kwargs):
+        return real_plan(
+            *args,
+            **{
+                **kwargs,
+                "planner": _planner(),
+                "catalog_opener": lambda *_a, **_k: _FakeCatalog(entries),
+            },
+        )
+
+    monkeypatch.setattr("smftools.pipeline.rebasecall_project.plan_project_rebasecall", stub)
+
+    result = CliRunner().invoke(
+        cli_entry.cli,
+        ["project", "rebasecall", "plan", str(project_dir), str(request_path), "--json"],
+    )
+
+    assert result.exit_code == 0, result.output
+    # CliRunner folds stderr into output, and config loading warns here.
+    payload = json.loads(result.output[result.output.index("{") :])
+    assert payload["ready_count"] == 2
+    assert {member["experiment_id"] for member in payload["members"]} == {"exp-a", "exp-b"}
+    assert sorted(path.name for path in tmp_path.rglob("*")) == before
