@@ -758,3 +758,149 @@ def test_separate_runs_keep_separate_identities(tmp_path):
     entries = reg.list_experiments(proj)
     assert sorted(entry["id"] for entry in entries) == ["expA", "expB"]
     assert len({entry["experiment_uid"] for entry in entries}) == 2
+
+
+# --- lineage-aware registration (SRB-07) -------------------------------------
+
+
+def _register_one(tmp_path):
+    """Register a single experiment and return ``(project_dir, experiment_id)``."""
+    project_dir = tmp_path / "project"
+    reg.init_project(project_dir)
+    experiment = _make_experiment(
+        tmp_path / "expA",
+        name="expA",
+        modality="direct",
+        reference_uids={"chr1_top": "uid1"},
+    )
+    exp_id, _ = reg.add_experiment(project_dir, experiment)
+    return project_dir, exp_id
+
+
+def _lineage_project(tmp_path):
+    """A registered experiment plus one re-basecalled descendant lineage."""
+    from smftools.project.registry import register_experiment_lineage
+
+    project_dir, exp_id = _register_one(tmp_path)
+    descendant = tmp_path / "descendant"
+    descendant.mkdir(exist_ok=True)
+    spine = descendant / "spine.h5ad"
+    spine.touch()
+    register_experiment_lineage(
+        project_dir,
+        exp_id,
+        "lineage-a",
+        spines={"raw": spine},
+        metadata={"basecall_id": "b" * 64},
+    )
+    return project_dir, exp_id, spine
+
+
+def test_registering_a_lineage_does_not_change_what_the_project_resolves(tmp_path):
+    from smftools.project.registry import list_experiments
+
+    project_dir, exp_id, descendant_spine = _lineage_project(tmp_path)
+
+    entries = {entry["id"]: entry for entry in list_experiments(project_dir)}
+
+    assert entries[exp_id]["lineage"] == "original"
+    assert entries[exp_id]["available_lineages"] == ["lineage-a", "original"]
+    assert entries[exp_id]["spines"]["raw"] != str(descendant_spine)
+
+
+def test_a_named_lineage_is_queryable_before_it_is_active(tmp_path):
+    from smftools.project.registry import list_experiments
+
+    project_dir, exp_id, descendant_spine = _lineage_project(tmp_path)
+
+    entries = list_experiments(project_dir, lineage="lineage-a")
+
+    assert entries[0]["lineage"] == "lineage-a"
+    assert entries[0]["spines"]["raw"] == str(descendant_spine)
+
+
+def test_promotion_moves_only_the_selector(tmp_path):
+    from smftools.project.registry import list_experiments, set_active_lineage
+
+    project_dir, exp_id, descendant_spine = _lineage_project(tmp_path)
+    before = list_experiments(project_dir, lineage="original")[0]["spines"]
+
+    set_active_lineage(project_dir, exp_id, "lineage-a")
+    after = list_experiments(project_dir)[0]
+    original = list_experiments(project_dir, lineage="original")[0]
+
+    assert after["lineage"] == "lineage-a"
+    assert after["spines"]["raw"] == str(descendant_spine)
+    # The prior lineage is exactly as queryable as it was.
+    assert original["spines"] == before
+
+
+def test_an_unknown_lineage_is_an_error_not_a_fallback(tmp_path):
+    from smftools.project.registry import (
+        LineageSelectionError,
+        list_experiments,
+        set_active_lineage,
+    )
+
+    project_dir, exp_id, _ = _lineage_project(tmp_path)
+
+    with pytest.raises(LineageSelectionError, match="no lineage"):
+        list_experiments(project_dir, lineage="not-a-lineage")
+    with pytest.raises(LineageSelectionError, match="no lineage"):
+        set_active_lineage(project_dir, exp_id, "not-a-lineage")
+
+
+def test_two_lineages_of_one_experiment_cannot_be_pooled(tmp_path):
+    from smftools.project.registry import (
+        LineageSelectionError,
+        assert_one_lineage_per_experiment,
+    )
+
+    entries = [
+        {"id": "exp-a", "experiment_uid": "uid-a", "lineage": "original"},
+        {"id": "exp-a", "experiment_uid": "uid-a", "lineage": "lineage-a"},
+    ]
+
+    with pytest.raises(LineageSelectionError, match="exactly one lineage"):
+        assert_one_lineage_per_experiment(entries)
+
+    # Distinct experiments on different lineages are a legitimate selection.
+    assert_one_lineage_per_experiment(
+        [
+            {"id": "exp-a", "experiment_uid": "uid-a", "lineage": "original"},
+            {"id": "exp-b", "experiment_uid": "uid-b", "lineage": "lineage-a"},
+        ]
+    )
+
+
+def test_an_incomplete_lineage_cannot_become_active(tmp_path):
+    from smftools.project.registry import (
+        LineageSelectionError,
+        register_experiment_lineage,
+        set_active_lineage,
+    )
+
+    project_dir, exp_id = _register_one(tmp_path)
+    spine = tmp_path / "partial_spine.h5ad"
+    spine.touch()
+    register_experiment_lineage(
+        project_dir,
+        exp_id,
+        "lineage-partial",
+        spines={"raw": spine},
+        status="incomplete",
+    )
+
+    with pytest.raises(LineageSelectionError, match="not complete"):
+        set_active_lineage(project_dir, exp_id, "lineage-partial")
+
+
+def test_a_descendant_cannot_claim_the_original_lineage_name(tmp_path):
+    from smftools.project.registry import LineageSelectionError, register_experiment_lineage
+
+    project_dir, exp_id = _register_one(tmp_path)
+    spine = tmp_path / "descendant_spine.h5ad"
+    spine.touch()
+
+    with pytest.raises(LineageSelectionError, match="own processing"):
+        register_experiment_lineage(project_dir, exp_id, "original", spines={"raw": spine})
