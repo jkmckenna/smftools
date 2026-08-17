@@ -16,6 +16,7 @@ from smftools.plotting.plotting_utils import (
     _methylation_fraction_for_layer,
     _ordered_columns,
     clean_barplot,
+    coerce_bool_series,
     normalized_mean,
     subsample_reads_for_plot,
 )
@@ -1141,7 +1142,7 @@ def combined_hmm_raw_clustermap(
         else (lambda s: pd.Series(True, index=s.index)),
     )
     chimeric_mask = (
-        _mask_or_true("chimeric_variant_sites", lambda s: ~s.astype(bool))
+        _mask_or_true("chimeric_variant_sites", lambda s: ~coerce_bool_series(s))
         if omit_chimeric_reads
         else pd.Series(True, index=adata.obs.index)
     )
@@ -1852,7 +1853,7 @@ def combined_hmm_length_clustermap(
         else (lambda s: pd.Series(True, index=s.index)),
     )
     chimeric_mask = (
-        _mask_or_true("chimeric_variant_sites", lambda s: ~s.astype(bool))
+        _mask_or_true("chimeric_variant_sites", lambda s: ~coerce_bool_series(s))
         if omit_chimeric_reads
         else pd.Series(True, index=adata.obs.index)
     )

@@ -13,6 +13,37 @@ if TYPE_CHECKING:
     import anndata as ad
 
 
+_TRUTHY_STRINGS = frozenset({"1", "true", "t", "yes", "y", "on"})
+
+
+def coerce_bool_series(series: "pd.Series") -> "pd.Series":
+    """Interpret an obs column as booleans, including string-valued ones.
+
+    ``Series.astype(bool)`` is wrong for anything object- or category-typed
+    holding ``"True"``/``"False"``: Python truthiness makes the *string*
+    ``"False"`` true, so a filter meant to exclude a minority of reads excludes
+    none of them -- or, negated, excludes all of them.
+
+    That is not theoretical. ``chimeric_variant_sites`` round-trips through
+    parquet as a category of ``"True"``/``"False"``, so ``~s.astype(bool)`` was
+    empty for every read and every HMM clustermap silently plotted nothing
+    while still creating its output directories (`F13`).
+
+    Missing values are False: a read whose chimeric status is unknown is not
+    evidence of chimerism.
+    """
+    if series.dtype == bool:
+        return series
+    if isinstance(series.dtype, pd.CategoricalDtype):
+        series = series.astype(object)
+    if pd.api.types.is_bool_dtype(series):
+        return series.fillna(False).astype(bool)
+    if pd.api.types.is_numeric_dtype(series):
+        return series.fillna(0).astype(bool)
+    normalized = series.astype("string").str.strip().str.lower()
+    return normalized.isin(_TRUTHY_STRINGS).fillna(False).astype(bool)
+
+
 def _fixed_tick_positions(n_positions: int, n_ticks: int) -> np.ndarray:
     """
     Return indices for ~n_ticks evenly spaced labels across [0, n_positions-1].
