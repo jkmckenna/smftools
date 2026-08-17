@@ -4,7 +4,7 @@ import copy
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, List, Optional, Sequence, Tuple, Union
+from typing import TYPE_CHECKING, Any, List, Mapping, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
@@ -779,7 +779,12 @@ def _feature_ranges_for_merged_layer(core_layer: str, feature_sets: dict) -> dic
 
 
 @stage_logging_lifecycle
-def hmm_adata(config_path: str):
+def hmm_adata(
+    config_path: str,
+    *,
+    lineage_generations: Mapping[str, str] | None = None,
+    lineage_provenance: Mapping[str, Any] | None = None,
+):
     """
     CLI-facing wrapper for HMM analysis.
 
@@ -811,14 +816,21 @@ def hmm_adata(config_path: str):
     if getattr(cfg, "output_directory", None) is not None:
         setup_stage_logging(cfg, Path(cfg.output_directory) / HMM_DIR)
 
-    paths = get_adata_paths(cfg)
+    paths = (
+        get_adata_paths(cfg, lineage_generations=lineage_generations)
+        if lineage_generations
+        else get_adata_paths(cfg)
+    )
     execution_mode = str(getattr(cfg, "hmm_execution_mode", "auto")).lower()
     if execution_mode not in {"auto", "legacy", "partitioned"}:
         raise ValueError("hmm_execution_mode must be auto, legacy, or partitioned")
 
     # 2) choose starting AnnData
+    # A lineage builds a descendant beside whatever is current, so the parent
+    # looking complete says nothing about whether this run has work to do.
     force_redo = (
-        cfg.force_redo_hmm_fit
+        lineage_provenance is not None
+        or cfg.force_redo_hmm_fit
         or cfg.force_redo_hmm_apply
         or getattr(cfg, "force_redo_hmm_plots", False)
     )
@@ -905,7 +917,11 @@ def hmm_adata(config_path: str):
                 # failure leaves the previously current generation selected and
                 # untouched. Artifact paths returned here therefore point into
                 # staging and are remapped after publication.
-                with staged_generation(hmm_root, run_root=run_root) as staged:
+                with staged_generation(
+                    hmm_root,
+                    run_root=run_root,
+                    select_current=lineage_provenance is None,
+                ) as staged:
                     outputs = execute_partitioned_hmm(
                         partitioned_source,
                         cfg,
@@ -931,6 +947,9 @@ def hmm_adata(config_path: str):
                             "stage": "hmm",
                             "config_hash": stage_config_hash(cfg, "hmm"),
                             "rebound_spine_pointers": rebound,
+                            "lineage": (
+                                dict(lineage_provenance) if lineage_provenance is not None else None
+                            ),
                         }
                     )
             outputs = remap_staged_paths(outputs, staged)
@@ -938,14 +957,21 @@ def hmm_adata(config_path: str):
             # paths.hmm_spine keep resolving. It sits two levels below the run
             # root, so its run-root-relative uns pointers resolve unchanged.
             canonical_spine = hmm_root / HMM_SPINE_FILENAME
-            publish_canonical_spine(outputs["spine"], canonical_spine)
+            # A non-selected descendant must not overwrite the canonical stage-root
+            # spine: that file is what ordinary readers resolve, and it belongs
+            # to whatever generation is current.
+            if lineage_provenance is None:
+                publish_canonical_spine(outputs["spine"], canonical_spine)
             outputs["generation"] = staged.final_dir
             outputs["generation_spine"] = outputs["spine"]
             outputs["generation_manifest"] = staged.final_dir / GENERATION_MANIFEST
             outputs["current"] = hmm_root / "current.json"
             # `spine` stays the stable stage-root path readers resolve;
-            # `generation_spine` records the copy inside this generation.
-            outputs["spine"] = canonical_spine
+            # `generation_spine` records the copy inside this generation. A
+            # descendant has no claim on the stage-root path, so it reports its
+            # own generation spine for both.
+            if lineage_provenance is None:
+                outputs["spine"] = canonical_spine
             publish_stage_outputs(
                 lifecycle,
                 outputs,

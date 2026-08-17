@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Any, Mapping, Optional, Sequence, Tuple
 
 import anndata as ad
 
@@ -205,6 +205,9 @@ def _build_reference_position_mask(
 
 def latent_adata(
     config_path: str,
+    *,
+    lineage_generations: Mapping[str, str] | None = None,
+    lineage_provenance: Mapping[str, Any] | None = None,
 ) -> Tuple[Optional[ad.AnnData], Optional[Path]]:
     """
     CLI-facing wrapper for representation learning.
@@ -233,7 +236,11 @@ def latent_adata(
     if getattr(cfg, "output_directory", None) is not None:
         setup_stage_logging(cfg, Path(cfg.output_directory) / LATENT_DIR)
 
-    paths = get_adata_paths(cfg)
+    paths = (
+        get_adata_paths(cfg, lineage_generations=lineage_generations)
+        if lineage_generations
+        else get_adata_paths(cfg)
+    )
 
     latent_path = paths.latent
     partitioned_latent_path = paths.latent_spine
@@ -241,7 +248,11 @@ def latent_adata(
     if execution_mode not in {"auto", "legacy", "partitioned"}:
         raise ValueError("latent_execution_mode must be auto, legacy, or partitioned")
 
-    force_redo = bool(getattr(cfg, "force_redo_latent_analyses", False))
+    # A lineage builds a descendant beside whatever is current, so the parent
+    # looking complete says nothing about whether this run has work to do.
+    force_redo = lineage_provenance is not None or bool(
+        getattr(cfg, "force_redo_latent_analyses", False)
+    )
     if not force_redo and execution_mode == "legacy":
         if latent_path.exists():
             logger.info(f"Latent AnnData found: {latent_path}\nSkipping smftools latent")
@@ -307,6 +318,7 @@ def latent_adata(
                 cfg,
                 Path(cfg.output_directory) / LATENT_DIR,
                 reuse_generation=reuse_generation,
+                lineage_provenance=lineage_provenance,
             )
             path_outputs = {key: value for key, value in outputs.items() if isinstance(value, Path)}
             publish_stage_outputs(

@@ -1070,3 +1070,88 @@ def test_plot_hmm_parameters_across_barcodes_skips_single_barcode_windows(tmp_pa
 
     catalog = pd.read_parquet(layout.catalog)
     assert catalog.empty
+
+
+_LINEAGE_PROVENANCE = {
+    "lineage_id": "a" * 64,
+    "origin_experiment_uid": "uid-a",
+    "parent_raw_generation_id": "parent-a",
+    "parent_preprocess_generation_id": None,
+    "selection_id": "b" * 64,
+    "source_resolution_digest": None,
+    "basecall_id": "c" * 64,
+    "generation_kind": "selected_cohort",
+    "identity_map": None,
+}
+
+
+def test_a_descendant_hmm_generation_does_not_take_the_canonical_spine(tmp_path, monkeypatch):
+    """The stage-root spine belongs to whatever generation is current."""
+    from smftools.cli import helpers
+    from smftools.tools import partitioned_hmm
+
+    spatial_spine = tmp_path / "spatial_adata_outputs" / "spine.h5ad"
+    spatial_spine.parent.mkdir()
+    spatial_spine.touch()
+    hmm_root = tmp_path / "hmm_adata_outputs"
+    paths = SimpleNamespace(
+        hmm=tmp_path / "missing_hmm.h5ad.gz",
+        hmm_spine=hmm_root / "spine.h5ad",
+        spatial_spine=spatial_spine,
+        preprocess_spine=None,
+    )
+    cfg = SimpleNamespace(
+        output_directory=tmp_path,
+        hmm_execution_mode="auto",
+        force_redo_hmm_fit=False,
+        force_redo_hmm_apply=False,
+        force_redo_hmm_plots=False,
+        from_adata_stage=None,
+    )
+    monkeypatch.setattr(helpers, "load_experiment_config", lambda _path: cfg)
+    monkeypatch.setattr(helpers, "get_adata_paths", lambda _cfg, **_kwargs: paths)
+
+    def execute(_source, _cfg, output_dir):
+        output_dir.mkdir(parents=True, exist_ok=True)
+        # The real executor writes its spine inside the staging directory, which
+        # is what lets publication remap it into the generation.
+        staged_spine = output_dir / "spine.h5ad"
+        ad.AnnData().write_h5ad(staged_spine)
+        task_catalog = output_dir / "task_catalog.parquet"
+        pd.DataFrame({"task_id": ["task-1"]}).to_parquet(task_catalog, index=False)
+        for name in ("store", "read_index", "models"):
+            (output_dir / name).mkdir()
+        (output_dir / "store" / "task-1").touch()
+        (output_dir / "models" / "model-1.json").write_text("{}\n", encoding="utf-8")
+        plot_catalog = output_dir / "plots" / "catalog.parquet"
+        plot_catalog.parent.mkdir()
+        pd.DataFrame().to_parquet(plot_catalog, index=False)
+        (output_dir / "sidecar_manifest.json").write_text("{}\n", encoding="utf-8")
+        return {
+            "spine": staged_spine,
+            "task_catalog": task_catalog,
+            "read_index": output_dir / "read_index",
+            "store": output_dir / "store",
+            "models": output_dir / "models",
+            "plot_catalog": plot_catalog,
+            "manifest": output_dir / "sidecar_manifest.json",
+        }
+
+    monkeypatch.setattr(partitioned_hmm, "execute_partitioned_hmm", execute)
+
+    hmm_adata("experiment.csv")
+    parent_pointer = json.loads((hmm_root / "current.json").read_text(encoding="utf-8"))
+
+    _, descendant_spine = hmm_adata(
+        "experiment.csv",
+        lineage_provenance=dict(_LINEAGE_PROVENANCE),
+    )
+
+    # The descendant published its own generation without taking the selector.
+    assert descendant_spine != paths.hmm_spine
+    assert descendant_spine.parent.parent.name == "generations"
+    manifest = json.loads(
+        (descendant_spine.parent / "generation_manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["lineage"] == _LINEAGE_PROVENANCE
+    assert json.loads((hmm_root / "current.json").read_text(encoding="utf-8")) == parent_pointer

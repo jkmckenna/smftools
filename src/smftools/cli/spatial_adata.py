@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Any, Mapping, Optional, Tuple
 
 import anndata as ad
 
@@ -19,6 +19,9 @@ logger = get_logger(__name__)
 @stage_logging_lifecycle
 def spatial_adata(
     config_path: str,
+    *,
+    lineage_generations: Mapping[str, str] | None = None,
+    lineage_provenance: Mapping[str, Any] | None = None,
 ) -> Tuple[Optional[ad.AnnData], Optional[Path]]:
     """
     CLI-facing wrapper for spatial analyses.
@@ -59,7 +62,11 @@ def spatial_adata(
     if getattr(cfg, "output_directory", None) is not None:
         setup_stage_logging(cfg, Path(cfg.output_directory) / SPATIAL_DIR)
 
-    paths = get_adata_paths(cfg)
+    paths = (
+        get_adata_paths(cfg, lineage_generations=lineage_generations)
+        if lineage_generations
+        else get_adata_paths(cfg)
+    )
 
     spatial_path = paths.spatial
     partitioned_spatial_path = paths.spatial_spine
@@ -68,8 +75,10 @@ def spatial_adata(
     if execution_mode not in {"auto", "legacy", "partitioned"}:
         raise ValueError("spatial_execution_mode must be auto, legacy, or partitioned")
 
+    # A lineage builds a descendant beside whatever is current, so the parent
+    # looking complete says nothing about whether this run has work to do.
     # Stage-skipping logic for spatial
-    if not getattr(cfg, "force_redo_spatial_analyses", False):
+    if lineage_provenance is None and not getattr(cfg, "force_redo_spatial_analyses", False):
         if (
             execution_mode != "legacy"
             and partitioned_spatial_path is not None
@@ -135,7 +144,11 @@ def spatial_adata(
             with perf_substep("partitioned_spatial"):
                 # Built inside staging, so a failure leaves the previously
                 # current generation selected and untouched.
-                with staged_generation(spatial_root, run_root=run_root) as staged:
+                with staged_generation(
+                    spatial_root,
+                    run_root=run_root,
+                    select_current=lineage_provenance is None,
+                ) as staged:
                     outputs = execute_partitioned_spatial(
                         partitioned_source_path,
                         cfg,
@@ -161,18 +174,28 @@ def spatial_adata(
                             "stage": "spatial",
                             "config_hash": stage_config_hash(cfg, "spatial"),
                             "rebound_spine_pointers": rebound,
+                            "lineage": (
+                                dict(lineage_provenance) if lineage_provenance is not None else None
+                            ),
                         }
                     )
             outputs = remap_staged_paths(outputs, staged)
             canonical_spine = spatial_root / SPATIAL_SPINE_FILENAME
-            publish_canonical_spine(outputs["spine"], canonical_spine)
+            # A non-selected descendant must not overwrite the canonical stage-root
+            # spine: that file is what ordinary readers resolve, and it belongs
+            # to whatever generation is current.
+            if lineage_provenance is None:
+                publish_canonical_spine(outputs["spine"], canonical_spine)
             outputs["generation"] = staged.final_dir
             outputs["generation_spine"] = outputs["spine"]
             outputs["generation_manifest"] = staged.final_dir / GENERATION_MANIFEST
             outputs["current"] = spatial_root / "current.json"
             # `spine` stays the stable stage-root path readers resolve;
-            # `generation_spine` records the copy inside this generation.
-            outputs["spine"] = canonical_spine
+            # `generation_spine` records the copy inside this generation. A
+            # descendant has no claim on the stage-root path, so it reports its
+            # own generation spine for both.
+            if lineage_provenance is None:
+                outputs["spine"] = canonical_spine
             publish_stage_outputs(
                 lifecycle,
                 outputs,

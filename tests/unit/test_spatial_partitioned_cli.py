@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -240,3 +241,54 @@ def test_spatial_cli_records_failed_stage_when_executor_raises(tmp_path, monkeyp
     entry = read_experiment_manifest(tmp_path)["stages"]["spatial"]
     assert entry["state"] == "failed"
     assert "simulated spatial plot failure" in entry["outcome"]
+
+
+_LINEAGE_PROVENANCE = {
+    "lineage_id": "a" * 64,
+    "origin_experiment_uid": "uid-a",
+    "parent_raw_generation_id": "parent-a",
+    "parent_preprocess_generation_id": None,
+    "selection_id": "b" * 64,
+    "source_resolution_digest": None,
+    "basecall_id": "c" * 64,
+    "generation_kind": "selected_cohort",
+    "identity_map": None,
+}
+
+
+def test_a_descendant_spatial_generation_does_not_take_the_canonical_spine(tmp_path, monkeypatch):
+    """The stage-root spine belongs to whatever generation is current."""
+    cfg = _cfg(tmp_path)
+    paths = helpers.get_adata_paths(cfg)
+    paths.preprocess_spine.parent.mkdir(parents=True)
+    paths.preprocess_spine.touch()
+    monkeypatch.setattr(helpers, "load_experiment_config", lambda _path: cfg)
+    monkeypatch.setattr(
+        partitioned_spatial,
+        "execute_partitioned_spatial",
+        lambda source, passed_cfg, output: _spatial_outputs(output),
+    )
+
+    # A parent run first, which legitimately takes both current and canonical.
+    spatial_adata("config.csv")
+    canonical = paths.spatial_spine
+    parent_bytes = canonical.read_bytes()
+    parent_pointer = json.loads((canonical.parent / "current.json").read_text(encoding="utf-8"))
+
+    _, descendant_spine = spatial_adata(
+        "config.csv",
+        lineage_provenance=dict(_LINEAGE_PROVENANCE),
+    )
+
+    pointer = json.loads((canonical.parent / "current.json").read_text(encoding="utf-8"))
+    # The descendant published its own generation...
+    assert descendant_spine != canonical
+    assert descendant_spine.parent.parent.name == "generations"
+    assert descendant_spine.is_file()
+    manifest = json.loads(
+        (descendant_spine.parent / "generation_manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["lineage"] == _LINEAGE_PROVENANCE
+    # ...without touching what ordinary readers resolve.
+    assert pointer == parent_pointer
+    assert canonical.read_bytes() == parent_bytes

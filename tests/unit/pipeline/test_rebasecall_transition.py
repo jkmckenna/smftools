@@ -243,22 +243,3 @@ def test_a_lineage_without_a_report_says_so(tmp_path, monkeypatch):
         read_qc_transition(lineage)
 
     assert error.value.code == "transition_report_missing"
-
-
-def test_deeper_targets_are_refused_rather_than_stopping_short(tmp_path, monkeypatch):
-    from smftools.pipeline.rebasecall_run import run_lineage_raw_stage
-
-    plan, frozen, basecall = _lineage_case(tmp_path, monkeypatch)
-    deep = replace(plan, request=replace(plan.request, downstream_target="hmm"))
-
-    with pytest.raises(RebasecallLineageError) as error:
-        run_lineage_raw_stage(
-            deep,
-            frozen,
-            basecall,
-            tmp_path / "rebasecall_outputs",
-            accepted_plan_id=deep.plan_id,
-            parent_config_path=tmp_path / "missing.csv",
-        )
-
-    assert error.value.code == "lineage_target_unsupported"
