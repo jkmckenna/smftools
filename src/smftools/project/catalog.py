@@ -16,6 +16,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Mapping
 
 import pandas as pd
 
@@ -50,39 +51,58 @@ def _load_duckdb():
 class ProjectCatalog:
     """Harmonized view over a project's registered experiments."""
 
-    def __init__(self, project_dir, registry, reference_registry, alias_table):
+    def __init__(self, project_dir, registry, reference_registry, alias_table, lineage=None):
         self.project_dir = Path(project_dir)
         self.registry = registry
         self.reference_registry = reference_registry
         self.alias_table = alias_table
+        # Which processing lineage this view answers with. `None` means each
+        # experiment's active lineage. Held on the catalog rather than passed
+        # per call so every downstream consumer -- selection, materialization,
+        # interval catalogs -- reads the same one.
+        self.lineage = lineage
 
     @classmethod
-    def open(cls, project_dir: str | Path) -> "ProjectCatalog":
+    def open(
+        cls,
+        project_dir: str | Path,
+        *,
+        lineage: str | Mapping[str, str] | None = None,
+    ) -> "ProjectCatalog":
         from .reference_registry import (
             REFERENCE_REGISTRY_FILENAME,
             ReferenceRegistry,
             build_reference_alias_table,
         )
-        from .registry import load_registry
+        from .registry import list_experiments, load_registry
 
         project_dir = Path(project_dir)
         registry = load_registry(project_dir)
         reference_registry = ReferenceRegistry.load(project_dir / REFERENCE_REGISTRY_FILENAME)
-        active = [
-            {"id": exp_id, **entry}
-            for exp_id, entry in registry["experiments"].items()
-            if entry.get("status") == "active"
-        ]
+        # Resolve through `list_experiments` so the alias table describes the
+        # same lineage the rest of the catalog answers with. Reading the raw
+        # registry here would leave the harmonized reference view describing the
+        # original processing while queries returned a descendant's.
+        active = list_experiments(project_dir, active_only=True, lineage=lineage)
         alias = build_reference_alias_table(active, reference_registry)
         if not alias.empty:
             modality = {e["id"]: e["modality"] for e in active}
             alias["modality"] = alias["experiment"].map(modality)
-        return cls(project_dir, registry, reference_registry, alias)
+        return cls(project_dir, registry, reference_registry, alias, lineage=lineage)
 
     def experiments(self, *, active_only: bool = True) -> list[dict]:
-        from .registry import list_experiments
+        from .registry import assert_one_lineage_per_experiment, list_experiments
 
-        return list_experiments(self.project_dir, active_only=active_only)
+        entries = list_experiments(
+            self.project_dir,
+            active_only=active_only,
+            lineage=self.lineage,
+        )
+        # Cheap here and load-bearing: every materialization path reads these
+        # entries, and pooling two lineages of one experiment would double-count
+        # every molecule in it.
+        assert_one_lineage_per_experiment(entries)
+        return entries
 
     def references(self) -> pd.DataFrame:
         """Harmonized (experiment, reference_strand, reference_uid, canonical_reference)."""
