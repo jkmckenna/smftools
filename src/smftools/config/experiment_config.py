@@ -1142,6 +1142,15 @@ class ExperimentConfig:
     variant_qc_min_callable_fraction: Optional[float] = None
     variant_qc_min_calls_per_state: Optional[int] = None
     variant_qc_disallowed_event_classes: List[str] = field(default_factory=list)
+    # How many consecutive informative variant sites must call the *other*
+    # reference before a read is reported as a reference-switching chimera.
+    # Sites, not bases: variant sites are sparse, so one discordant site would
+    # otherwise open an interpolated segment spanning hundreds of positions.
+    # The variant caller previously had no such floor -- unlike the deaminase
+    # chimera path, which has carried `deaminase_chimera_min_events_per_span`
+    # all along -- and flagged 100% of QC-passing pilot reads on 2-3 discordant
+    # bases out of ~2,300 (`F14`). Set to 1 to restore the previous behavior.
+    variant_chimera_min_adjacent_sites: int = 2
     references_to_align_for_variant_annotation: List[Optional[str]] = field(
         default_factory=lambda: [None, None]
     )
@@ -2694,6 +2703,7 @@ class ExperimentConfig:
             variant_qc_disallowed_event_classes=merged.get(
                 "variant_qc_disallowed_event_classes", []
             ),
+            variant_chimera_min_adjacent_sites=merged.get("variant_chimera_min_adjacent_sites", 2),
             from_adata_stage=merged.get("from_adata_stage", None),
             plot_current_read_ids=merged.get("plot_current_read_ids", []),
             plot_current_reference_start=merged.get("plot_current_reference_start", None),

@@ -288,6 +288,7 @@ def append_variant_segment_layer(
     uns_flag: str = "append_variant_segment_layer_performed",
     force_redo: bool = False,
     bypass: bool = False,
+    min_adjacent_sites: int = 1,
 ) -> None:
     """Segment each read span into contiguous seq1/seq2 regions based on variant calls.
 
@@ -378,6 +379,7 @@ def append_variant_segment_layer(
             call_matrix[i],
             span_matrix[i] > 0,
             aligned_member_index=(seq_id or 1) - 1,
+            min_adjacent_sites=min_adjacent_sites,
         )
         segment_layer[i] = result.segments
         breakpoint_counts[i] = result.breakpoint_count
