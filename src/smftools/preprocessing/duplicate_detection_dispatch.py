@@ -125,10 +125,17 @@ def _build_duplicate_detection_context_mask(window, reference: str, cfg) -> np.n
         column = f"{reference}_{site_type}_site"
         if column in window.var:
             context_mask |= window.var[column].astype("boolean").fillna(False).to_numpy(dtype=bool)
-    valid_column = f"position_in_{reference}"
-    if valid_column in window.var:
+    # Deliberately not intersected with a coverage-density flag. Sparsity is
+    # already handled where it belongs -- per *pair*, by
+    # `min_overlap_positions`, which asks whether these two reads share enough
+    # measured sites to compare. A global density gate answers a different
+    # question, and when it was empty this function returned `None` for every
+    # chunk: no comparisons ran and every read was reported unique, inflating
+    # library complexity with no error anywhere.
+    member_column = f"position_in_{reference}"
+    if member_column in window.var:
         context_mask &= (
-            window.var[valid_column].astype("boolean").fillna(False).to_numpy(dtype=bool)
+            window.var[member_column].astype("boolean").fillna(False).to_numpy(dtype=bool)
         )
     return context_mask
 

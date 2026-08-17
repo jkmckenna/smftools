@@ -1532,7 +1532,13 @@ def execute_latent_unit(spine_path, unit, cfg, output_dir) -> dict[str, object] 
     non_mod_mask = _build_shared_valid_non_mod_sites_mask(
         fit_adata, references, cfg, modality, deaminase
     )
-    valid_mask = _build_reference_position_mask(fit_adata, references)
+    # Density is judged against the reads this unit will factorize, using the
+    # same tolerance position statistics use, rather than a precomputed
+    # assay-wide flag.
+    latent_min_fraction = 1 - float(getattr(cfg, "position_max_nan_threshold", 1.0) or 0.0)
+    valid_mask = _build_reference_position_mask(
+        fit_adata, references, minimum_valid_fraction=latent_min_fraction
+    )
     fit_indices = np.arange(fit_adata.n_obs, dtype=np.int64)
     signal_layer = str(getattr(cfg, "layer_for_umap_plotting", "nan_half"))
     cp_masks = {

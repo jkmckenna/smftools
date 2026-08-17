@@ -185,38 +185,38 @@ def _expand_mod_target_bases(mod_target_bases: Sequence[str]) -> list[str]:
 def _build_reference_position_mask(
     adata: ad.AnnData,
     references: Sequence[str],
+    *,
+    minimum_valid_fraction: float = 0.0,
 ) -> "np.ndarray":
-    """Build a boolean var mask for positions valid across references."""
+    """Build a var mask of positions this unit can actually factorize.
+
+    Two separate questions, kept separate. Membership -- does the column belong
+    to this reference -- comes from ``position_in_<reference>``. Density -- is it
+    measured in enough of *these* reads -- is computed here from the matrix
+    about to be factorized, because density depends on which reads you are
+    looking at and no precomputed global column can answer it for an arbitrary
+    subset. That mismatch is what previously left every mask empty.
+    """
     import numpy as np
 
     ref_masks = []
     for ref in references:
-        # Latent needs positions shared across the reads it will factorize, so
-        # it wants coverage measured over the analysed population. Generations
-        # published before `EGL-11` carry only the assay-wide column; fall back
-        # to it and say so, rather than failing or silently using a quantity
-        # diluted by reads that QC discarded.
-        analysis_col = f"position_in_{ref}_analysis"
         position_col = f"position_in_{ref}"
-        if analysis_col in adata.var.columns:
-            chosen = analysis_col
-        elif position_col in adata.var.columns:
-            logger.warning(
-                "%s is unavailable; falling back to %s, which is measured over every "
-                "read the assay produced rather than the analysed reads",
-                analysis_col,
-                position_col,
-            )
-            chosen = position_col
-        else:
+        if position_col not in adata.var.columns:
             raise KeyError(f"var_filters not found in adata.var: {position_col}")
-        position_mask = np.asarray(adata.var[chosen].values, dtype=bool)
-        ref_masks.append(position_mask)
+        ref_masks.append(np.asarray(adata.var[position_col].values, dtype=bool))
 
-    if not ref_masks:
-        return np.ones(adata.n_vars, dtype=bool)
-
-    return np.logical_and.reduce(ref_masks)
+    mask = np.ones(adata.n_vars, dtype=bool) if not ref_masks else np.logical_and.reduce(ref_masks)
+    if minimum_valid_fraction > 0 and adata.n_obs:
+        matrix = adata.X
+        # SMF matrices are dense because "unmeasured" is NaN, which sparse
+        # storage cannot represent -- a sparse zero would read as a real call.
+        # Densify rather than let `isfinite` fail on a sparse object.
+        if hasattr(matrix, "toarray"):
+            matrix = matrix.toarray()
+        measured = np.isfinite(np.asarray(matrix, dtype=float)).mean(axis=0)
+        mask &= measured >= float(minimum_valid_fraction)
+    return mask
 
 
 def latent_adata(
