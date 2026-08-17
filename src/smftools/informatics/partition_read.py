@@ -773,19 +773,20 @@ def _overlay_preprocess_var(
         result.var[f"{reference}_valid_count"] = selected["valid_count"].to_numpy()
     if "valid_fraction" in selected:
         result.var[f"{reference}_valid_fraction"] = selected["valid_fraction"].to_numpy()
+    # `position_in_<reference>` answers a *structural* question -- does this
+    # column belong to this reference -- which is what every consumer ANDs it
+    # with a site-type mask to ask. It used to be assigned `position_valid`, a
+    # coverage-density statistic, so a run where no position cleared the density
+    # threshold silently emptied every such mask: duplicate detection compared
+    # nothing and reported zero duplicates, and latent had no eligible
+    # positions. Coverage keeps its own reference-qualified names below.
+    member = np.asarray(positions.isin(frame.index), dtype=bool)
+    result.var[f"position_in_{reference}"] = member
+    result.var["N_Reference_strand_with_position"] = member.astype(np.int64)
     if "position_valid" in selected:
-        valid = selected["position_valid"].fillna(False).to_numpy(dtype=bool)
-        result.var[f"position_in_{reference}"] = valid
-        result.var["N_Reference_strand_with_position"] = valid.astype(np.int64)
-    if "position_valid_analysis" in selected:
-        # Measured over the analysed reads rather than every read the assay
-        # produced. Absent on generations published before `EGL-11`, which is
-        # why consumers fall back rather than assume it.
-        analysed = selected["position_valid_analysis"].fillna(False).to_numpy(dtype=bool)
-        result.var[f"position_in_{reference}_analysis"] = analysed
-    for column in ("valid_count_analysis", "valid_fraction_analysis"):
-        if column in selected:
-            result.var[f"{reference}_{column}"] = selected[column].to_numpy()
+        result.var[f"{reference}_position_valid"] = (
+            selected["position_valid"].astype("boolean").fillna(False).to_numpy(dtype=bool)
+        )
 
 
 def _overlay_spatial_read_metrics(
