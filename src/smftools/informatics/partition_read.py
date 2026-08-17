@@ -777,6 +777,15 @@ def _overlay_preprocess_var(
         valid = selected["position_valid"].fillna(False).to_numpy(dtype=bool)
         result.var[f"position_in_{reference}"] = valid
         result.var["N_Reference_strand_with_position"] = valid.astype(np.int64)
+    if "position_valid_analysis" in selected:
+        # Measured over the analysed reads rather than every read the assay
+        # produced. Absent on generations published before `EGL-11`, which is
+        # why consumers fall back rather than assume it.
+        analysed = selected["position_valid_analysis"].fillna(False).to_numpy(dtype=bool)
+        result.var[f"position_in_{reference}_analysis"] = analysed
+    for column in ("valid_count_analysis", "valid_fraction_analysis"):
+        if column in selected:
+            result.var[f"{reference}_{column}"] = selected[column].to_numpy()
 
 
 def _overlay_spatial_read_metrics(

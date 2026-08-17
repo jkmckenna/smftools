@@ -191,10 +191,26 @@ def _build_reference_position_mask(
 
     ref_masks = []
     for ref in references:
+        # Latent needs positions shared across the reads it will factorize, so
+        # it wants coverage measured over the analysed population. Generations
+        # published before `EGL-11` carry only the assay-wide column; fall back
+        # to it and say so, rather than failing or silently using a quantity
+        # diluted by reads that QC discarded.
+        analysis_col = f"position_in_{ref}_analysis"
         position_col = f"position_in_{ref}"
-        if position_col not in adata.var.columns:
+        if analysis_col in adata.var.columns:
+            chosen = analysis_col
+        elif position_col in adata.var.columns:
+            logger.warning(
+                "%s is unavailable; falling back to %s, which is measured over every "
+                "read the assay produced rather than the analysed reads",
+                analysis_col,
+                position_col,
+            )
+            chosen = position_col
+        else:
             raise KeyError(f"var_filters not found in adata.var: {position_col}")
-        position_mask = np.asarray(adata.var[position_col].values, dtype=bool)
+        position_mask = np.asarray(adata.var[chosen].values, dtype=bool)
         ref_masks.append(position_mask)
 
     if not ref_masks:

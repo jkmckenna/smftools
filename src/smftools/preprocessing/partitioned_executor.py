@@ -475,6 +475,112 @@ def reduce_partial_coverage(
     return output_path
 
 
+ANALYSIS_COVERAGE_COLUMNS = (
+    "valid_count_analysis",
+    "valid_fraction_analysis",
+    "position_valid_analysis",
+)
+
+
+def analysed_read_population(obs: pd.DataFrame) -> tuple[pd.Series, str]:
+    """Return the read mask analyses actually run on, and which column defined it.
+
+    Preference order is ``passes_dedup`` then ``passes_qc``. ``passes_read_qc``
+    is deliberately not a fallback: it admits reads that later fail
+    modification QC, and on real data that is enough to leave a reference with
+    zero shared positions (see `F9`).
+    """
+    for column in ("passes_dedup", "passes_qc"):
+        if column in obs.columns:
+            return obs[column].fillna(False).astype(bool), column
+    return pd.Series(True, index=obs.index), "all_reads"
+
+
+def reduce_analysis_coverage(
+    catalog_path: str | Path,
+    obs_path: str | Path,
+    var_catalog_path: str | Path,
+    *,
+    minimum_valid_fraction: float,
+) -> Path:
+    """Recompute position coverage over the analysed reads only.
+
+    `reduce_partial_coverage` answers "was this position measured in the reads
+    the assay produced", which is the right question for position statistics and
+    is computed before any QC column exists. It is the wrong question for a
+    shared-position set: reads that fail QC are largely the ones covering least,
+    so they dilute every position and are then discarded anyway.
+
+    This second pass answers "was this position measured in the reads we are
+    analysing", written under its own names so the original meaning survives
+    unchanged and old generations stay comparable.
+    """
+    from ..readwrite import safe_read_zarr
+
+    if not 0 <= minimum_valid_fraction <= 1:
+        raise ValueError("minimum_valid_fraction must be between zero and one")
+    catalog_path = Path(catalog_path)
+    var_catalog_path = Path(var_catalog_path)
+    var_catalog = pd.read_parquet(var_catalog_path)
+    obs = pd.read_parquet(obs_path)
+    mask, population = analysed_read_population(obs)
+    read_column = "read_id" if "read_id" in obs.columns else obs.columns[0]
+    analysed_reads = set(obs.loc[mask, read_column].astype(str))
+    reference_column = "Reference_strand" if "Reference_strand" in obs.columns else None
+    denominators = (
+        obs.loc[mask].groupby(obs.loc[mask, reference_column].astype(str)).size().to_dict()
+        if reference_column
+        else {}
+    )
+
+    counts: dict[tuple[str, int], int] = {}
+    catalog = pd.read_parquet(catalog_path)
+    for record in catalog.to_dict("records"):
+        group_path = catalog_path.parent / str(record["group_path"])
+        result, _ = safe_read_zarr(group_path)
+        reference = str(record["reference"])
+        selected = np.fromiter(
+            (str(name) in analysed_reads for name in result.obs_names),
+            dtype=bool,
+            count=result.n_obs,
+        )
+        if not selected.any():
+            continue
+        matrix = np.asarray(result.X, dtype=float)[selected]
+        positions = np.asarray(result.var_names, dtype=np.int64)
+        per_position = np.sum(~np.isnan(matrix), axis=0).astype(np.int64)
+        for position, count in zip(positions, per_position, strict=True):
+            key = (reference, int(position))
+            counts[key] = counts.get(key, 0) + int(count)
+
+    analysis_counts = [
+        counts.get((str(reference), int(position)), 0)
+        for reference, position in zip(
+            var_catalog["reference"], var_catalog["position"], strict=True
+        )
+    ]
+    var_catalog["valid_count_analysis"] = analysis_counts
+    reference_totals = var_catalog["reference"].astype(str).map(denominators)
+    var_catalog["valid_fraction_analysis"] = np.where(
+        reference_totals.to_numpy(dtype=float) > 0,
+        var_catalog["valid_count_analysis"].to_numpy(dtype=float)
+        / reference_totals.to_numpy(dtype=float),
+        0.0,
+    )
+    var_catalog["position_valid_analysis"] = (
+        var_catalog["valid_fraction_analysis"] >= minimum_valid_fraction
+    )
+    var_catalog.to_parquet(var_catalog_path, index=False)
+    logger.info(
+        "Analysis-population coverage: %d/%d positions valid over %d read(s) selected by %r",
+        int(var_catalog["position_valid_analysis"].sum()),
+        len(var_catalog),
+        len(analysed_reads),
+        population,
+    )
+    return var_catalog_path
+
+
 def write_read_qc_sidecar(spine, cfg, output_path: str | Path) -> Path:
     """Compute read-level QC as an aligned mask without deleting spine rows.
 
@@ -1232,6 +1338,17 @@ def execute_partitioned_preprocessing(
     staging_spine = output_dir / f"{PREPROCESS_SPINE_FILENAME}.partial"
     safe_write_h5ad(derived_spine, staging_spine, backup=False, verbose=False)
     obs_sidecar = reduce_duplicate_reads(staging_spine, obs_sidecar, cfg)
+    # Only now do the QC and dedup columns exist, so only now can position
+    # coverage be measured over the reads analyses actually use.
+    analysis_threshold = getattr(cfg, "position_analysis_max_nan_threshold", None)
+    if analysis_threshold is None:
+        analysis_threshold = cfg.position_max_nan_threshold
+    reduce_analysis_coverage(
+        catalog_path,
+        obs_sidecar,
+        var_catalog,
+        minimum_valid_fraction=1 - float(analysis_threshold),
+    )
     if variant_outputs:
         import json
 
