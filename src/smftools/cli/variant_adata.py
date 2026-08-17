@@ -340,6 +340,7 @@ def variant_adata_core(
             seq2_column=seq2_col,
             read_span_layer=cfg.mismatch_frequency_read_span_layer,
             reference_col=cfg.reference_column,
+            min_adjacent_sites=int(getattr(cfg, "variant_chimera_min_adjacent_sites", 1) or 1),
         )
 
     ############################################### Plot mismatch base frequencies ###############################################

@@ -200,6 +200,7 @@ def _execute_variant_task(
     output_dir: Path,
     task: VariantEvidenceTask,
     catalog: VariantInformativeSiteCatalog,
+    min_adjacent_sites: int = 1,
 ) -> dict[str, object]:
     task_root = (
         output_dir
@@ -243,6 +244,7 @@ def _execute_variant_task(
                 span_start=span_start,
                 span_end=span_end,
                 aligned_member_index=task.aligned_member_index,
+                min_adjacent_sites=min_adjacent_sites,
             )
             common = {
                 EXPERIMENT_UID_COLUMN: task.experiment_uid,
@@ -513,6 +515,9 @@ def execute_partitioned_variant_evidence(
     """Compute and index all-molecule variant evidence without monolithic AnnData."""
     if max_workers <= 0 or memory_budget_mb <= 0:
         raise ValueError("max_workers and memory_budget_mb must be positive")
+    # Default 1 (no floor) when there is no cfg, so library callers keep the
+    # historical behavior; pipeline runs get the configured floor. See `F14`.
+    minimum_chimera_sites = max(1, int(getattr(cfg, "variant_chimera_min_adjacent_sites", 1) or 1))
     spine_path = Path(spine_path)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -553,7 +558,13 @@ def execute_partitioned_variant_evidence(
     memory_workers = max(1, int(memory_budget_mb * 1024**2) // maximum_task_bytes)
     bounded_workers = min(max_workers, memory_workers, len(task_list))
     arguments = [
-        (spine_path, output_dir, task, catalogs[task.variant_reference_set_id])
+        (
+            spine_path,
+            output_dir,
+            task,
+            catalogs[task.variant_reference_set_id],
+            minimum_chimera_sites,
+        )
         for task in task_list
     ]
     if cfg is not None:
