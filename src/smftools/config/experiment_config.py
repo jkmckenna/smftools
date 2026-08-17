@@ -1133,6 +1133,11 @@ class ExperimentConfig:
 
     # Preprocessing - Position QC
     position_max_nan_threshold: float = 0.1
+    # Applied to the analysed (QC- and dedup-passing) reads rather than to
+    # every read the assay produced. `None` inherits
+    # `position_max_nan_threshold`; the two are separable because they answer
+    # different questions -- see `F9` in the generation-lifecycle plan.
+    position_analysis_max_nan_threshold: Optional[float] = None
     mismatch_frequency_range: Sequence[float] = field(default_factory=lambda: [0.05, 0.95])
     mismatch_frequency_layer: str = "mismatch_integer_encoding"
     mismatch_frequency_read_span_layer: str = "read_span_mask"
@@ -2488,6 +2493,7 @@ class ExperimentConfig:
                 )
             ),
             position_max_nan_threshold=merged.get("position_max_nan_threshold", 0.1),
+            position_analysis_max_nan_threshold=merged.get("position_analysis_max_nan_threshold"),
             correlation_matrix_types=merged.get(
                 "correlation_matrix_types", ["pearson", "binary_covariance"]
             ),
