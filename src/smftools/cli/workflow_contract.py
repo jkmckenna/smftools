@@ -21,7 +21,7 @@ from uuid import uuid4
 import pandas as pd
 
 from .._version import __version__
-from ..constants import PARTITIONED_STAGE_REQUIRED_ARTIFACTS, PREPROCESS_DIR
+from ..constants import PARTITIONED_STAGE_REQUIRED_ARTIFACTS, PREPROCESS_DIR, is_os_metadata
 from ..informatics.experiment_manifest import (
     MANIFEST_FILENAME,
     read_experiment_manifest,
@@ -102,7 +102,9 @@ def _now() -> str:
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     if path.is_dir():
-        for child in sorted(item for item in path.rglob("*") if item.is_file()):
+        for child in sorted(
+            item for item in path.rglob("*") if item.is_file() and not is_os_metadata(item)
+        ):
             digest.update(child.relative_to(path).as_posix().encode("utf-8"))
             digest.update(b"\0")
             with child.open("rb") as handle:
@@ -147,7 +149,9 @@ def _source_fingerprint(path: Path) -> dict[str, Any]:
     if path.is_dir():
         digest = hashlib.sha256()
         count = 0
-        for child in sorted(item for item in path.rglob("*") if item.is_file()):
+        for child in sorted(
+            item for item in path.rglob("*") if item.is_file() and not is_os_metadata(item)
+        ):
             stat = child.stat()
             digest.update(child.relative_to(path).as_posix().encode("utf-8"))
             digest.update(f"\0{stat.st_size}\0{stat.st_mtime_ns}".encode("utf-8"))

@@ -16,6 +16,7 @@ from typing import Any, Mapping, Sequence
 
 from smftools.constants import RAW_DIR
 
+from ..constants import is_os_metadata
 from ..readwrite import atomic_write_json
 
 RAW_INTERMEDIATE_MANIFEST_SCHEMA_VERSION = 1
@@ -63,7 +64,9 @@ def sha256_file(path: str | Path) -> str:
 
 def _directory_digest(path: Path) -> str:
     records = []
-    for child in sorted(item for item in path.rglob("*") if item.is_file()):
+    for child in sorted(
+        item for item in path.rglob("*") if item.is_file() and not is_os_metadata(item)
+    ):
         records.append(
             {
                 "path": child.relative_to(path).as_posix(),
