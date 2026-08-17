@@ -20,6 +20,7 @@ from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Mapping, Sequence
 
 from smftools.constants import (
     CHIMERIC_DIR,
@@ -44,8 +45,14 @@ logger = get_logger(__name__)
 
 REGISTRY_FILENAME = "registry.json"
 SETS_SUBDIR = "sets"
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 SPINE_FILENAME = "spine.h5ad"
+
+# Schema 5 adds the lineage map. An experiment may hold its original processing
+# lineage beside re-basecalled descendants, with exactly one active at a time.
+# Legacy entries carry no map and are read as a single `original` lineage, so
+# nothing on disk needs rewriting and no caller has to branch on schema version.
+ORIGINAL_LINEAGE = "original"
 _CATALOG_NAMES = ("interval_catalog.parquet", "catalog.parquet")
 
 # Stage name -> output subdirectory, for discovering every stage spine under one
@@ -577,7 +584,12 @@ def remove_experiment(project_dir: str | Path, experiment_id: str) -> None:
         save_registry(project_dir, registry)
 
 
-def list_experiments(project_dir: str | Path, *, active_only: bool = True) -> list[dict]:
+def list_experiments(
+    project_dir: str | Path,
+    *,
+    active_only: bool = True,
+    lineage: str | Mapping[str, str] | None = None,
+) -> list[dict]:
     """Return registered experiments with ``path``/``spines``/``catalogs`` resolved.
 
     ``registry.json`` stores these relative to ``project_dir`` (see
@@ -588,6 +600,14 @@ def list_experiments(project_dir: str | Path, *, active_only: bool = True) -> li
     -- pre-schema-2 entries (single ``path`` + ``spine``, always the raw stage)
     are synthesized into the same shape here, so callers never need to branch on
     schema version.
+
+    Each entry resolves exactly one lineage and reports which in ``lineage``.
+    ``lineage`` selects it: ``None`` takes each experiment's active lineage, a
+    string takes that lineage for every experiment, and a mapping takes it per
+    experiment id. Asking for a lineage an experiment does not have is an error
+    rather than a silent fall back to the original, because quietly answering
+    with different processing than was asked for is the failure this whole
+    program exists to prevent.
     """
     project_dir = Path(project_dir)
     registry = load_registry(project_dir)
@@ -601,10 +621,23 @@ def list_experiments(project_dir: str | Path, *, active_only: bool = True) -> li
         resolved = dict(entry)
         resolved.setdefault("experiment_uid", legacy_experiment_uid(project_identity, exp_id))
         resolved["path"] = str(_resolve_registry_path(entry["path"], project_dir))
-        if "spines" in entry:
+        available = _entry_lineages(entry)
+        requested = (
+            lineage.get(exp_id) if isinstance(lineage, Mapping) else lineage
+        ) or entry_active_lineage(entry)
+        requested = str(requested)
+        if requested not in available:
+            raise LineageSelectionError(
+                f"experiment {exp_id!r} has no lineage {requested!r}; "
+                f"available: {sorted(available)}"
+            )
+        selected = available[requested]
+        resolved["lineage"] = requested
+        resolved["available_lineages"] = sorted(available)
+        if requested != ORIGINAL_LINEAGE or "spines" in entry:
             resolved["spines"] = {
                 stage: str(_resolve_registry_path(value, project_dir))
-                for stage, value in entry["spines"].items()
+                for stage, value in selected.get("spines", {}).items()
             }
         else:
             resolved["spines"] = {
@@ -612,10 +645,148 @@ def list_experiments(project_dir: str | Path, *, active_only: bool = True) -> li
             }
         resolved["catalogs"] = {
             name: str(_resolve_registry_path(value, project_dir))
-            for name, value in entry.get("catalogs", {}).items()
+            for name, value in selected.get("catalogs", {}).items()
         }
         results.append({"id": exp_id, **resolved})
     return results
+
+
+class LineageSelectionError(ValueError):
+    """Raised when a project query cannot resolve exactly one lineage."""
+
+
+def _entry_lineages(entry: dict) -> dict[str, dict]:
+    """Return every lineage on one entry, synthesizing `original` when absent.
+
+    The entry's own ``spines``/``catalogs`` *are* the original lineage. Keeping
+    that synthesis here means a pre-schema-5 registry reads exactly like a
+    post-schema-5 one with a single lineage.
+    """
+    lineages = {
+        ORIGINAL_LINEAGE: {
+            "spines": dict(entry.get("spines", {})),
+            "catalogs": dict(entry.get("catalogs", {})),
+            "status": "complete",
+        }
+    }
+    recorded = entry.get("lineages")
+    if isinstance(recorded, dict):
+        for lineage_id, payload in recorded.items():
+            if isinstance(payload, dict):
+                lineages[str(lineage_id)] = payload
+    return lineages
+
+
+def entry_active_lineage(entry: dict) -> str:
+    """Return the lineage a query resolves for this entry when none is named."""
+    active = str(entry.get("active_lineage") or ORIGINAL_LINEAGE)
+    return active if active in _entry_lineages(entry) else ORIGINAL_LINEAGE
+
+
+def register_experiment_lineage(
+    project_dir: str | Path,
+    experiment_id: str,
+    lineage_id: str,
+    *,
+    spines: Mapping[str, str | Path],
+    catalogs: Mapping[str, str | Path] | None = None,
+    status: str = "complete",
+    metadata: Mapping[str, object] | None = None,
+) -> dict:
+    """Record a descendant lineage without changing what the project resolves.
+
+    Registration and selection are separate: a re-basecalled lineage becomes
+    queryable by name immediately, and only explicit promotion makes it the
+    experiment's answer.
+    """
+    project_dir = Path(project_dir)
+    registry = load_registry(project_dir)
+    entry = registry["experiments"].get(experiment_id)
+    if entry is None:
+        raise LineageSelectionError(f"experiment {experiment_id!r} is not registered")
+    lineage_id = str(lineage_id).strip()
+    if not lineage_id or lineage_id == ORIGINAL_LINEAGE:
+        raise LineageSelectionError(
+            "a descendant lineage needs its own id; "
+            f"{ORIGINAL_LINEAGE!r} names the experiment's own processing"
+        )
+    if not spines:
+        raise LineageSelectionError(f"lineage {lineage_id!r} records no stage spines")
+    payload = {
+        "spines": {
+            stage: _relative_registry_path(Path(path), project_dir)
+            for stage, path in spines.items()
+        },
+        "catalogs": {
+            name: _relative_registry_path(Path(path), project_dir)
+            for name, path in (catalogs or {}).items()
+        },
+        "status": str(status),
+        "registered_at": _now(),
+        **({"metadata": dict(metadata)} if metadata else {}),
+    }
+    entry.setdefault("lineages", {})[lineage_id] = payload
+    entry.setdefault("active_lineage", ORIGINAL_LINEAGE)
+    save_registry(project_dir, registry)
+    logger.info(
+        "Registered lineage '%s' for experiment '%s' (active remains '%s')",
+        lineage_id,
+        experiment_id,
+        entry["active_lineage"],
+    )
+    return payload
+
+
+def set_active_lineage(
+    project_dir: str | Path,
+    experiment_id: str,
+    lineage_id: str,
+) -> str:
+    """Atomically change which lineage this experiment resolves to.
+
+    Only the selector moves. No artifact is rewritten, deleted, or copied, so
+    the prior lineage stays exactly as queryable as it was.
+    """
+    project_dir = Path(project_dir)
+    registry = load_registry(project_dir)
+    entry = registry["experiments"].get(experiment_id)
+    if entry is None:
+        raise LineageSelectionError(f"experiment {experiment_id!r} is not registered")
+    lineage_id = str(lineage_id).strip()
+    available = _entry_lineages(entry)
+    if lineage_id not in available:
+        raise LineageSelectionError(
+            f"experiment {experiment_id!r} has no lineage {lineage_id!r}; "
+            f"available: {sorted(available)}"
+        )
+    if str(available[lineage_id].get("status", "complete")) != "complete":
+        raise LineageSelectionError(
+            f"lineage {lineage_id!r} is not complete and cannot be made active"
+        )
+    entry["active_lineage"] = lineage_id
+    save_registry(project_dir, registry)
+    logger.info("Experiment '%s' now resolves lineage '%s'", experiment_id, lineage_id)
+    return lineage_id
+
+
+def assert_one_lineage_per_experiment(entries: Sequence[Mapping[str, object]]) -> None:
+    """Reject a selection holding two lineages of the same experiment.
+
+    Two lineages of one experiment are the same biology processed twice. Pooling
+    them would double-count every molecule, so this fails before materialization
+    rather than producing a plausible-looking result.
+    """
+    seen: dict[str, str] = {}
+    for entry in entries:
+        uid = str(entry.get("experiment_uid") or entry.get("id") or "")
+        lineage = str(entry.get("lineage") or ORIGINAL_LINEAGE)
+        previous = seen.get(uid)
+        if previous is not None and previous != lineage:
+            raise LineageSelectionError(
+                f"experiment {uid!r} appears twice with lineages {previous!r} and "
+                f"{lineage!r}; a query resolves exactly one lineage per experiment"
+            )
+        seen[uid] = lineage
 
 
 def resolve_experiment_spine(entry: dict, stage: str | None = None) -> tuple[str, Path] | None:
