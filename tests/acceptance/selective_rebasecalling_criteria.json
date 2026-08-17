@@ -1,0 +1,426 @@
+{
+  "schema_version": 1,
+  "source": "dev/in-progress/selective_pod5_rebasecalling_implementation_plan.md#srb-09--acceptance-matrix-and-real-tool-validation",
+  "criteria": [
+    {
+      "id": "finding.srb_c1",
+      "title": "A frozen old-QC cohort joins selective basecalling to a descendant lineage",
+      "status": "automated",
+      "evidence": [
+        "tests/unit/pipeline/test_rebasecall_selection.py::test_freeze_writes_exact_rows_and_reuses_content_addressed_result",
+        "tests/unit/pipeline/test_rebasecall_run.py::test_the_stages_run_inside_the_lineage_and_are_recorded",
+        "tests/unit/pipeline/test_rebasecall_transition.py::test_qc_and_dedup_outcomes_are_reported_per_origin"
+      ]
+    },
+    {
+      "id": "finding.srb_c2",
+      "title": "Old Dorado split-child IDs resolve to POD5 UUIDs through retained `pi`",
+      "status": "automated",
+      "evidence": [
+        "tests/unit/pipeline/test_rebasecall_plan.py::test_historical_split_child_resolves_from_retained_bam_pi",
+        "tests/unit/pipeline/test_rebasecall_plan.py::test_parent_id_selection_retains_all_split_child_rows",
+        "tests/unit/pipeline/test_rebasecall_selection.py::test_split_children_freeze_as_two_rows_with_one_signal_parent"
+      ]
+    },
+    {
+      "id": "finding.srb_h1",
+      "title": "Relocated sources are resolved checksum-first for later replay",
+      "status": "automated",
+      "evidence": [
+        "tests/unit/pipeline/test_rebasecall_plan.py::test_checksum_validated_relocation_is_indexed_and_plan_id_is_path_invariant",
+        "tests/unit/pipeline/test_rebasecall_plan.py::test_checksum_mismatch_blocks_before_pod5_inventory",
+        "tests/unit/pipeline/test_rebasecall_signal.py::test_real_filtered_pod5_remains_valid_after_original_is_removed"
+      ]
+    },
+    {
+      "id": "finding.srb_h2",
+      "title": "Floating model selectors resolve to an immutable recorded model identity",
+      "status": "automated",
+      "evidence": [
+        "tests/unit/pipeline/test_rebasecall_plan.py::test_exact_model_bundle_changes_accepted_plan_identity",
+        "tests/unit/pipeline/test_rebasecall_basecall.py::test_same_alias_with_a_changed_model_bundle_cannot_reuse",
+        "tests/unit/pipeline/test_rebasecall_basecall.py::test_real_bam_from_a_foreign_model_is_rejected"
+      ]
+    },
+    {
+      "id": "finding.srb_h3",
+      "title": "An arbitrary QC predicate is frozen against an exact preprocess generation",
+      "status": "automated",
+      "evidence": [
+        "tests/unit/pipeline/test_rebasecall_request.py::test_predicate_evaluates_nested_safe_operators_and_missing_policy",
+        "tests/unit/pipeline/test_rebasecall_plan.py::test_qc_plan_resolves_exact_parents_counts_selection_and_writes_nothing",
+        "tests/unit/pipeline/test_rebasecall_selection.py::test_plan_fingerprints_complete_consumed_columns"
+      ]
+    },
+    {
+      "id": "finding.srb_h4",
+      "title": "A descendant publishes as a side-by-side lineage, not by advancing a pointer",
+      "status": "automated",
+      "evidence": [
+        "tests/unit/pipeline/test_rebasecall_lineage.py::test_a_descendant_generation_publishes_without_taking_current",
+        "tests/unit/pipeline/test_rebasecall_lineage.py::test_publishing_a_lineage_records_its_stage_generation_set",
+        "tests/integration/informatics/test_lineage_raw_stage_publication.py::test_a_descendant_publishes_beside_the_parent_without_taking_current"
+      ]
+    },
+    {
+      "id": "finding.srb_h5",
+      "title": "A project registry holds multiple lineages of one experiment without replacing pointers",
+      "status": "automated",
+      "evidence": [
+        "tests/unit/test_project_registry.py::test_registering_a_lineage_does_not_change_what_the_project_resolves",
+        "tests/unit/test_project_registry.py::test_a_named_lineage_is_queryable_before_it_is_active",
+        "tests/unit/test_project_registry.py::test_two_lineages_of_one_experiment_cannot_be_pooled"
+      ]
+    },
+    {
+      "id": "finding.srb_h6",
+      "title": "Selected-cohort reanalysis is recorded and reported as scope-biased",
+      "status": "automated",
+      "evidence": [
+        "tests/unit/pipeline/test_rebasecall_basecall.py::test_selection_mode_determines_the_stamped_generation_kind",
+        "tests/unit/pipeline/test_rebasecall_lineage.py::test_descendant_provenance_derives_its_kind_from_the_basecall",
+        "tests/unit/pipeline/test_rebasecall_transition.py::test_every_selected_molecule_gets_exactly_one_row"
+      ],
+      "note": "The prose half is docs/source/tutorials/selective_rebasecalling.md, which leads with the full-signal versus old-QC-selected distinction. Prose is not test-covered; the automated evidence is the machine-readable scope the artifacts carry."
+    },
+    {
+      "id": "finding.srb_m1",
+      "title": "Duplicate basenames and relocated sources are identified by content, not name",
+      "status": "automated",
+      "evidence": [
+        "tests/unit/pipeline/test_rebasecall_plan.py::test_checksum_validated_relocation_is_indexed_and_plan_id_is_path_invariant",
+        "tests/unit/pipeline/test_rebasecall_plan.py::test_unknown_explicit_relocation_blocks_without_overriding_valid_original",
+        "tests/unit/pipeline/test_rebasecall_signal.py::test_materializes_each_source_to_a_deterministic_exact_output"
+      ]
+    },
+    {
+      "id": "finding.srb_m2",
+      "title": "Splitting, trimming, barcoding, and Q-score change input-to-output cardinality accountably",
+      "status": "automated",
+      "evidence": [
+        "tests/unit/pipeline/test_rebasecall_basecall.py::test_split_children_are_counted_against_their_source_parent",
+        "tests/unit/pipeline/test_rebasecall_basecall.py::test_missing_reads_are_reported_without_blocking_publication",
+        "tests/unit/pipeline/test_rebasecall_transition.py::test_split_children_are_aggregated_onto_their_origin"
+      ]
+    },
+    {
+      "id": "finding.srb_m3",
+      "title": "Direct-modification requests resolve compatible models and never reuse old MM/ML QC",
+      "status": "automated",
+      "evidence": [
+        "tests/unit/informatics/test_dorado_model.py::test_resolves_latest_installed_simplex_and_exact_modification_bundle",
+        "tests/unit/informatics/test_dorado_model.py::test_missing_compatible_modification_model_has_stable_error",
+        "tests/unit/test_direct_modality_lineage_qc.py::test_a_direct_descendant_recomputes_modification_qc_from_its_own_signal"
+      ],
+      "note": "The two halves are separable and both covered: model-pair resolution in test_dorado_model.py, and QC recomputation in a descendant whose modification signal is deliberately opposite to its parent's, so inherited QC would pass where it must fail."
+    },
+    {
+      "id": "finding.srb_m4",
+      "title": "Cohort-dependent analyses are not presented as full-universe equivalents",
+      "status": "deferred",
+      "evidence": [],
+      "owner": "jkmckenna",
+      "reason": "The transition report records scope per molecule and the tutorial states the caveat, but no automated case demonstrates that dedup clustering or a fitted HMM differs between a selected cohort and the full universe. Demonstrating it needs real multi-experiment data, so it belongs with the protected-data validation below."
+    },
+    {
+      "id": "item.srb_01a",
+      "title": "Read-only planning contract",
+      "status": "automated",
+      "evidence": [
+        "tests/unit/pipeline/test_rebasecall_plan.py::test_qc_plan_resolves_exact_parents_counts_selection_and_writes_nothing",
+        "tests/unit/pipeline/test_rebasecall_request.py::test_request_is_strict_versioned_and_relocation_independent"
+      ]
+    },
+    {
+      "id": "item.srb_01b",
+      "title": "Accepted-plan selection freezing",
+      "status": "automated",
+      "evidence": [
+        "tests/unit/pipeline/test_rebasecall_selection.py::test_freeze_writes_exact_rows_and_reuses_content_addressed_result",
+        "tests/unit/pipeline/test_rebasecall_selection.py::test_stale_acceptance_and_blocked_plan_write_nothing"
+      ]
+    },
+    {
+      "id": "item.srb_02a",
+      "title": "Durable POD5 origin identity",
+      "status": "automated",
+      "evidence": [
+        "tests/unit/pipeline/test_rebasecall_plan.py::test_parent_id_selection_retains_all_split_child_rows"
+      ]
+    },
+    {
+      "id": "item.srb_02b",
+      "title": "Historical identity resolution",
+      "status": "automated",
+      "evidence": [
+        "tests/unit/pipeline/test_rebasecall_plan.py::test_historical_split_child_resolves_from_retained_bam_pi",
+        "tests/unit/pipeline/test_rebasecall_plan.py::test_unresolved_selected_molecules_have_stable_blocker_and_bounded_evidence"
+      ]
+    },
+    {
+      "id": "item.srb_03a",
+      "title": "Checksum-first source resolution",
+      "status": "automated",
+      "evidence": [
+        "tests/unit/pipeline/test_rebasecall_plan.py::test_checksum_validated_relocation_is_indexed_and_plan_id_is_path_invariant",
+        "tests/unit/pipeline/test_rebasecall_plan.py::test_checksum_mismatch_blocks_before_pod5_inventory"
+      ]
+    },
+    {
+      "id": "item.srb_03b",
+      "title": "Filtered signal materialization",
+      "status": "automated",
+      "evidence": [
+        "tests/unit/pipeline/test_rebasecall_signal.py::test_materializes_exact_selection_and_reuses_content_addressed_result",
+        "tests/unit/pipeline/test_rebasecall_signal.py::test_real_filtered_pod5_remains_valid_after_original_is_removed"
+      ]
+    },
+    {
+      "id": "item.srb_04a",
+      "title": "Dorado capability, chemistry, and model-bundle resolution",
+      "status": "automated",
+      "evidence": [
+        "tests/unit/informatics/test_dorado_model.py::test_resolves_latest_installed_simplex_and_exact_modification_bundle",
+        "tests/unit/pipeline/test_rebasecall_plan.py::test_exact_model_bundle_changes_accepted_plan_identity"
+      ]
+    },
+    {
+      "id": "item.srb_04b",
+      "title": "Atomic execution and immutable basecall publication",
+      "status": "automated",
+      "evidence": [
+        "tests/unit/pipeline/test_rebasecall_basecall.py::test_publishes_validated_basecall_and_reuses_content_addressed_result",
+        "tests/unit/pipeline/test_rebasecall_basecall.py::test_failures_leave_no_reusable_commit",
+        "tests/e2e/cli/test_rebasecall_basecall_e2e.py::test_real_dorado_publishes_a_validated_selective_basecall"
+      ]
+    },
+    {
+      "id": "item.srb_05a",
+      "title": "Lineage transaction and descendant raw provenance",
+      "status": "automated",
+      "evidence": [
+        "tests/unit/pipeline/test_rebasecall_lineage.py::test_a_killed_stage_leaves_no_lineage_and_no_staging",
+        "tests/unit/pipeline/test_rebasecall_lineage.py::test_append_refuses_a_lineage_descendant_as_its_base"
+      ]
+    },
+    {
+      "id": "item.srb_05b",
+      "title": "Descendant raw stage inside the lineage transaction",
+      "status": "automated",
+      "evidence": [
+        "tests/unit/pipeline/test_rebasecall_run.py::test_a_killed_raw_stage_publishes_no_lineage",
+        "tests/integration/informatics/test_lineage_raw_stage_publication.py::test_a_descendant_publishes_beside_the_parent_without_taking_current"
+      ]
+    },
+    {
+      "id": "item.srb_06a",
+      "title": "Downstream stages read their lineage's own generations",
+      "status": "automated",
+      "evidence": [
+        "tests/unit/pipeline/test_rebasecall_run.py::test_the_stages_run_inside_the_lineage_and_are_recorded",
+        "tests/unit/informatics/test_generation.py::test_publishing_without_selecting_leaves_the_pointer_and_selection_hooks_alone"
+      ]
+    },
+    {
+      "id": "item.srb_06b",
+      "title": "QC transition report reconciling every selected molecule",
+      "status": "automated",
+      "evidence": [
+        "tests/unit/pipeline/test_rebasecall_transition.py::test_published_counts_are_reproducible_from_the_table_alone",
+        "tests/unit/pipeline/test_rebasecall_transition.py::test_a_tampered_summary_fails_reconciliation"
+      ]
+    },
+    {
+      "id": "item.srb_06c",
+      "title": "Spatial, hmm, and latent run inside a lineage",
+      "status": "automated",
+      "evidence": [
+        "tests/unit/pipeline/test_rebasecall_run.py::test_a_full_target_runs_every_stage_pinned_to_its_own_lineage",
+        "tests/unit/test_spatial_partitioned_cli.py::test_a_descendant_spatial_generation_does_not_take_the_canonical_spine",
+        "tests/unit/test_hmm_partitioned_cli.py::test_a_descendant_hmm_generation_does_not_take_the_canonical_spine"
+      ]
+    },
+    {
+      "id": "item.srb_07a",
+      "title": "Lineage-aware project registry",
+      "status": "automated",
+      "evidence": [
+        "tests/unit/test_project_registry.py::test_promotion_moves_only_the_selector",
+        "tests/unit/test_project_registry.py::test_an_unknown_lineage_is_an_error_not_a_fallback"
+      ]
+    },
+    {
+      "id": "item.srb_07b",
+      "title": "Project fan-out of one request across experiments",
+      "status": "automated",
+      "evidence": [
+        "tests/unit/pipeline/test_rebasecall_project.py::test_each_experiment_resolves_its_own_model",
+        "tests/unit/pipeline/test_rebasecall_project.py::test_running_registers_each_lineage_without_making_it_active"
+      ]
+    },
+    {
+      "id": "item.srb_08a",
+      "title": "Validation gating promotion, with rollback as the same operation",
+      "status": "automated",
+      "evidence": [
+        "tests/unit/pipeline/test_rebasecall_validate.py::test_an_incomplete_lineage_cannot_be_promoted",
+        "tests/unit/pipeline/test_rebasecall_validate.py::test_a_validated_lineage_is_promoted_and_rollback_is_the_same_operation"
+      ]
+    },
+    {
+      "id": "item.srb_08b",
+      "title": "User documentation and the documented project command",
+      "status": "automated",
+      "evidence": [
+        "tests/unit/pipeline/test_rebasecall_project.py::test_the_project_plan_command_reports_without_writing"
+      ]
+    },
+    {
+      "id": "item.srb_09",
+      "title": "Acceptance catalog traceable to real coverage",
+      "status": "automated",
+      "evidence": [
+        "tests/unit/test_selective_rebasecalling_acceptance_catalog.py::test_selective_rebasecalling_catalog_is_complete_and_traceable"
+      ]
+    },
+    {
+      "id": "scenario.signal_versus_parent_universe",
+      "title": "All POD5 signal versus all parent molecules yields the expected universe difference",
+      "status": "automated",
+      "evidence": [
+        "tests/unit/pipeline/test_rebasecall_plan.py::test_all_signal_keeps_signal_and_parent_universes_distinct",
+        "tests/unit/pipeline/test_rebasecall_signal.py::test_all_signal_materializes_full_inventory"
+      ]
+    },
+    {
+      "id": "scenario.qc_and_id_selection",
+      "title": "Exact QC predicate and explicit-ID selection",
+      "status": "automated",
+      "evidence": [
+        "tests/unit/pipeline/test_rebasecall_request.py::test_predicate_evaluates_nested_safe_operators_and_missing_policy",
+        "tests/unit/pipeline/test_rebasecall_plan.py::test_missing_explicit_id_blocks_without_silently_dropping_it"
+      ]
+    },
+    {
+      "id": "scenario.relocated_duplicate_basenames",
+      "title": "Relocated multi-POD5 sources with duplicate basenames",
+      "status": "automated",
+      "evidence": [
+        "tests/unit/pipeline/test_rebasecall_plan.py::test_checksum_validated_relocation_is_indexed_and_plan_id_is_path_invariant",
+        "tests/unit/pipeline/test_rebasecall_plan.py::test_unknown_explicit_relocation_blocks_without_overriding_valid_original"
+      ]
+    },
+    {
+      "id": "scenario.namespaced_split_children",
+      "title": "Namespaced identities and old split children resolved through `pi`",
+      "status": "automated",
+      "evidence": [
+        "tests/unit/pipeline/test_rebasecall_plan.py::test_historical_split_child_resolves_from_retained_bam_pi",
+        "tests/unit/pipeline/test_rebasecall_selection.py::test_split_children_freeze_as_two_rows_with_one_signal_parent"
+      ]
+    },
+    {
+      "id": "scenario.no_call_and_multiple_children",
+      "title": "A selected parent with no Dorado output, and one parent with multiple new split children",
+      "status": "automated",
+      "evidence": [
+        "tests/unit/pipeline/test_rebasecall_transition.py::test_a_selected_read_with_no_call_is_reconciled_not_dropped",
+        "tests/unit/pipeline/test_rebasecall_transition.py::test_split_children_are_aggregated_onto_their_origin",
+        "tests/unit/pipeline/test_rebasecall_basecall.py::test_split_children_are_counted_against_their_source_parent"
+      ]
+    },
+    {
+      "id": "scenario.floating_alias_resolves_differently",
+      "title": "`hac@latest` resolving differently after a model or tool change",
+      "status": "automated",
+      "evidence": [
+        "tests/unit/informatics/test_dorado_model.py::test_latest_selector_does_not_silently_fall_back_to_old_installed_model",
+        "tests/unit/pipeline/test_rebasecall_basecall.py::test_same_alias_with_a_changed_model_bundle_cannot_reuse"
+      ]
+    },
+    {
+      "id": "scenario.modality_workflows",
+      "title": "Canonical conversion/deaminase and direct modified-base workflows",
+      "status": "automated",
+      "evidence": [
+        "tests/unit/test_direct_modality_lineage_qc.py::test_every_modality_publishes_a_descendant_beside_its_parent",
+        "tests/unit/test_direct_modality_lineage_qc.py::test_a_direct_descendant_recomputes_modification_qc_from_its_own_signal"
+      ],
+      "note": "Parametrized across direct, conversion, and deaminase. Modalities differ in how they compute QC, so a descendant that published correctly for one could still take the selector or skip work in another."
+    },
+    {
+      "id": "scenario.changed_downstream_outcomes",
+      "title": "Changed alignment, barcode, QC, and dedup outcomes are reported rather than assumed",
+      "status": "automated",
+      "evidence": [
+        "tests/unit/pipeline/test_rebasecall_transition.py::test_qc_and_dedup_outcomes_are_reported_per_origin",
+        "tests/unit/pipeline/test_rebasecall_transition.py::test_a_call_that_produced_no_raw_molecule_is_reported"
+      ]
+    },
+    {
+      "id": "scenario.failure_before_and_after_publication",
+      "title": "Failure before and after lineage directory publication leaves the parent intact",
+      "status": "automated",
+      "evidence": [
+        "tests/unit/pipeline/test_rebasecall_lineage.py::test_a_killed_stage_leaves_no_lineage_and_no_staging",
+        "tests/unit/pipeline/test_rebasecall_run.py::test_a_killed_raw_stage_publishes_no_lineage",
+        "tests/unit/pipeline/test_rebasecall_basecall.py::test_failures_leave_no_reusable_commit"
+      ]
+    },
+    {
+      "id": "scenario.project_fanout_mixed_chemistry",
+      "title": "Project fan-out over at least two experiments with independently resolved models",
+      "status": "automated",
+      "evidence": [
+        "tests/unit/pipeline/test_rebasecall_project.py::test_each_experiment_resolves_its_own_model",
+        "tests/unit/pipeline/test_rebasecall_project.py::test_one_failed_experiment_does_not_abort_the_project"
+      ],
+      "note": "Two experiments with genuinely different installed chemistries needs provisioned models; the automated case proves per-experiment resolution with distinct resolved bundles."
+    },
+    {
+      "id": "scenario.lineage_query_promote_rollback",
+      "title": "Original and new lineage query, then explicit promotion and rollback",
+      "status": "automated",
+      "evidence": [
+        "tests/unit/test_project_registry.py::test_a_named_lineage_is_queryable_before_it_is_active",
+        "tests/unit/pipeline/test_rebasecall_validate.py::test_a_validated_lineage_is_promoted_and_rollback_is_the_same_operation"
+      ]
+    },
+    {
+      "id": "scenario.portable_filtered_signal_replay",
+      "title": "Portable filtered-signal replay after the original sources are gone",
+      "status": "automated",
+      "evidence": [
+        "tests/unit/pipeline/test_rebasecall_signal.py::test_real_filtered_pod5_remains_valid_after_original_is_removed",
+        "tests/unit/pipeline/test_rebasecall_validate.py::test_replayability_is_reported_separately_from_completeness"
+      ]
+    },
+    {
+      "id": "scenario.rejects_missing_signal_or_chemistry",
+      "title": "Unsupported chemistry or missing source signal is rejected, not guessed",
+      "status": "automated",
+      "evidence": [
+        "tests/unit/informatics/test_dorado_model.py::test_multiple_source_chemistries_are_rejected",
+        "tests/unit/pipeline/test_rebasecall_plan.py::test_model_resolution_failure_blocks_execution_but_not_selection",
+        "tests/unit/pipeline/test_rebasecall_plan.py::test_signal_inventory_failure_preserves_source_plan_and_qc_selection"
+      ]
+    },
+    {
+      "id": "profile.real_dorado",
+      "title": "Real Dorado and POD5 profile when tools and models are provisioned",
+      "status": "automated",
+      "evidence": [
+        "tests/e2e/cli/test_rebasecall_basecall_e2e.py::test_real_dorado_publishes_a_validated_selective_basecall"
+      ],
+      "note": "Skips cleanly without dorado or a model directory. Ran against installed Dorado 1.3.1 over the checked-in POD5 fixture, basecalling exactly the selected UUIDs."
+    },
+    {
+      "id": "profile.protected_data",
+      "title": "Resource bounds and fan-out on representative protected data",
+      "status": "deferred",
+      "evidence": [],
+      "owner": "jkmckenna",
+      "reason": "Runs outside public CI on the nkg2a_final tree, which is not in the repository. Blocked behind NKG-03: only the 241213 pilot has been regenerated, so there is not yet a multi-experiment project to fan out over."
+    }
+  ]
+}
