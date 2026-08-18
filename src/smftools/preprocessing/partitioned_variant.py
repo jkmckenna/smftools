@@ -34,6 +34,7 @@ from ..informatics.ragged_store import (
     iter_cigar_aligned_pairs,
 )
 from ..informatics.sidecar_manifest import register_sidecar, sidecar_manifest_path
+from ..logging_utils import get_logger
 from ..readwrite import atomic_write_json
 from .variant_evidence import (
     call_observed_variant_sites,
@@ -43,7 +44,10 @@ from .variant_reference import (
     VariantInformativeSiteCatalog,
     VariantReferenceSet,
     calculate_variant_informative_sites,
+    conversion_substitutions_for_strand,
 )
+
+logger = get_logger(__name__)
 
 VARIANT_TASK_CATALOG = "task_catalog.parquet"
 VARIANT_OBS_SIDECAR = "variant_obs"
@@ -178,6 +182,22 @@ def _write_parquet(frame: pd.DataFrame, path: Path) -> Path:
         row_group_size=portable_parquet_row_group_rows(frame),
     )
     return path
+
+
+def strand_of_reference(reference: str) -> str:
+    """Strand context for a reference-strand label such as ``6B6_top``.
+
+    This is the reference-strand *assignment* -- which converted reference the
+    read aligned to -- and is the signal that selects conversion chemistry.
+    Deliberately not the BAM reverse flag: on the `241213` pilot the two are
+    independent (top reads split 7,227 fwd / 11,911 rev) and only this one
+    separates corrupted sites from clean ones.
+    """
+    label = str(reference).strip().lower()
+    for suffix in ("top", "bottom"):
+        if label.endswith(f"_{suffix}"):
+            return suffix
+    return ""
 
 
 def _observed_bases(row: pd.Series) -> dict[int, str]:
@@ -550,10 +570,33 @@ def execute_partitioned_variant_evidence(
         raise ValueError(
             f"variant tasks reference unknown reference sets: {sorted(unknown_task_sets)}"
         )
-    catalogs = {
-        identity: calculate_variant_informative_sites(reference_set)
-        for identity, reference_set in sets_by_id.items()
-    }
+    # One catalog per (reference set, strand). Acceptance depends on the
+    # chemistry a read of that strand could carry, so informative-site status is
+    # strand-dependent; the reference set and its id are shared, so task
+    # grouping is unaffected.
+    modality = getattr(cfg, "smf_modality", None)
+    conversion_types = list(getattr(cfg, "conversion_types", []) or [])
+    task_strands = {strand_of_reference(task.reference) for task in task_list}
+    catalogs = {}
+    for identity, reference_set in sets_by_id.items():
+        for strand in sorted(task_strands):
+            substitutions = conversion_substitutions_for_strand(modality, conversion_types, strand)
+            catalogs[(identity, strand)] = calculate_variant_informative_sites(
+                reference_set,
+                conversion_substitutions=substitutions,
+                conversion_semantics=(
+                    "none"
+                    if not substitutions
+                    else f"{'+'.join(str(m) for m in conversion_types)}:{strand}"
+                ),
+            )
+            logger.info(
+                "Variant informative sites for %s strand=%s: %d site(s) (conversion %s)",
+                identity,
+                strand or "unknown",
+                len(catalogs[(identity, strand)].informative_sites),
+                substitutions or "none",
+            )
     maximum_task_bytes = max(task.estimated_memory_bytes for task in task_list)
     memory_workers = max(1, int(memory_budget_mb * 1024**2) // maximum_task_bytes)
     bounded_workers = min(max_workers, memory_workers, len(task_list))
@@ -562,7 +605,7 @@ def execute_partitioned_variant_evidence(
             spine_path,
             output_dir,
             task,
-            catalogs[task.variant_reference_set_id],
+            catalogs[(task.variant_reference_set_id, strand_of_reference(task.reference))],
             minimum_chimera_sites,
         )
         for task in task_list
@@ -595,10 +638,20 @@ def execute_partitioned_variant_evidence(
         reference_catalog_path,
         {
             "schema_version": VARIANT_EVIDENCE_GENERATION_SCHEMA_VERSION,
+            # One catalog per strand: informative-site status depends on the
+            # chemistry a read of that strand could carry, so a single catalog
+            # cannot describe both. The reference set is shared.
             "reference_sets": [
                 {
                     "reference_set": sets_by_id[identity].to_dict(),
-                    "informative_site_catalog": catalogs[identity].to_dict(),
+                    "informative_site_catalogs": [
+                        {
+                            "strand": strand,
+                            "catalog": catalogs[(catalog_identity, strand)].to_dict(),
+                        }
+                        for (catalog_identity, strand) in sorted(catalogs)
+                        if catalog_identity == identity
+                    ],
                 }
                 for identity in sorted(sets_by_id)
             ],

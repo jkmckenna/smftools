@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Dict, Final, Mapping
+from typing import Any, Dict, Final, Mapping, Tuple
 
 ## Operating-system metadata ##
 # Files the OS or a file browser drops into directories without anyone asking.
@@ -306,4 +306,22 @@ _private_modkit_extract_int_to_base: Dict[int, str] = {
 }
 MODKIT_EXTRACT_SEQUENCE_INT_TO_BASE: Final[Mapping[int, str]] = _deep_freeze(
     _private_modkit_extract_int_to_base
+)
+
+# Base substitution a deamination/conversion chemistry writes, keyed by
+# (modification type, strand of the molecule that was converted).
+#
+# Single source of truth. `informatics.fasta_functions._convert_FASTA_record`
+# builds converted references from it, and `preprocessing.variant_reference`
+# uses it to decide which bases a read could legitimately show at a reference
+# position -- the two must never disagree, or a site excluded from variant
+# calling would still be converted in the reference it is called against.
+_private_conversion_base_substitutions: Dict[Tuple[str, str], Tuple[str, str]] = {
+    ("5mC", "top"): ("C", "T"),
+    ("5mC", "bottom"): ("G", "A"),
+    ("6mA", "top"): ("A", "G"),
+    ("6mA", "bottom"): ("T", "C"),
+}
+CONVERSION_BASE_SUBSTITUTIONS: Final[Mapping[Tuple[str, str], Tuple[str, str]]] = _deep_freeze(
+    _private_conversion_base_substitutions
 )
