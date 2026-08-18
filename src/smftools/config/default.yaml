@@ -299,6 +299,7 @@ mismatch_frequency_read_span_layer: "read_span_mask"
 mismatch_base_frequency_exclude_mod_sites: True
 
 ######## smftools spatial params #########
+variant_chimera_min_adjacent_sites: 2 # Consecutive informative variant sites calling the other reference required before a read is flagged a reference-switching chimera
 invert_adata: False # Whether to invert the AnnData along the positions axis.
 # Reindexing params
 reindexing_offsets: {}
@@ -321,7 +322,7 @@ clustermap_cmap_gpc: "coolwarm"
 clustermap_cmap_cpg: "coolwarm"
 clustermap_cmap_a: "coolwarm"
 spatial_clustermap_sortby: "gpc"
-spatial_clustermap_restrict_to_read_span: False # Crop spatial clustermap x-axis to the observed read span (min reference_start to max reference_end) instead of the full reference
+spatial_clustermap_restrict_to_read_span: True # Crop spatial clustermap x-axis to the observed read span (min reference_start to max reference_end) instead of the full reference
 clustermap_max_reads_per_plot: 5000 # Max reads drawn per (reference, sample) clustermap; larger groups are randomly subsampled to this (reproducible). Raise it to effectively disable.
 spatial_position_matrix_max_width: 5000 # Hard maximum positions in a dense position-by-position product.
 spatial_position_matrix_max_mb: 1024 # Hard estimated-memory limit for all dense matrices retained for one plot region.
@@ -483,7 +484,7 @@ hmm_clustermap_length_layers:
   - all_footprint_features
   - all_footprint_features_merged
 hmm_clustermap_sortby: "hmm"
-hmm_clustermap_restrict_to_read_span: False # Crop HMM clustermap x-axis to the observed read span (min reference_start to max reference_end) instead of the full reference
+hmm_clustermap_restrict_to_read_span: True # Crop HMM clustermap x-axis to the observed read span (min reference_start to max reference_end) instead of the full reference
 hmm_peak_feature_configs:
   all_accessible_features:
     min_distance: 200 # The minimum distance in between called peaks

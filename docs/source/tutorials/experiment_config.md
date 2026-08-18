@@ -362,3 +362,59 @@ Only primary alignments are included in split BAMs and sidecar files.
 
 Notes:
 - `BE`/`BF` are not used by smftools.
+
+## Coordinate systems: reindexing and inversion
+
+**Data is always stored in the reference coordinate frame.** Reindexing and
+inversion define an alternative coordinate system for *display*; they never
+change what is stored, what is analysed, or the order of any array. A run
+configured with offsets produces byte-identical stores to one without.
+
+### The transform
+
+```
+displayed = sign * (position + offset)        sign = -1 when inverted
+```
+
+Offset is applied first, then the sign, which keeps the anchor fixed under
+inversion. With `reindexing_offsets: {my_ref: -3052}`, reference position 3052
+becomes 0, and inverting mirrors the axis about that anchor:
+
+| reference position | 944 | 2000 | 3052 | 3795 |
+|---|---|---|---|---|
+| offset only | -2108 | -1052 | **0** | 743 |
+| offset + invert | 2108 | 1052 | **0** | -743 |
+
+Position-dependent plots sort columns ascending by the displayed coordinate.
+Because an inverted reference's values are already negated, ascending display
+order is descending genomic order, so the rendered axis reverses without the
+underlying array ever being reordered.
+
+### Parameters
+
+| parameter | meaning |
+|---|---|
+| `reindexing_offsets` | `{reference: int}`. Added to each position before the sign. Typically places a feature of interest at 0. |
+| `reindexing_invert` | `True`/`False`, or `{reference: bool}` for per-reference control. Negates the displayed coordinate. |
+| `reindexed_var_suffix` | Name suffix for the generated var column (default `reindexed`). Plots consume it; nothing else reads coordinates through it. |
+
+Both are optional and independent: offsets without inversion re-zero the axis,
+inversion without offsets mirrors about the reference origin.
+
+### `invert_adata` is superseded — do not use it
+
+`invert_adata` physically flipped `X` and every layer along the column axis. It
+is a legacy CLI parameter, **is not honoured by the partitioned pipeline**, and
+setting it has no effect on a modern run. It was superseded by
+`reindexing_invert` in 2.12.0.
+
+The distinction is the point: `invert_adata` changed the data, so an inverted
+store and an uninverted store were different artifacts and could not be
+compared. `reindexing_invert` changes only the projection, so the same store
+serves every orientation and two runs differing only in display settings remain
+directly comparable.
+
+If you have a config carrying `invert_adata: True`, replace it with
+`reindexing_invert: True`. Note that doing so changes the declared
+configuration, so the next run will recompute rather than reuse — which is
+correct, since the previous run's plots were not inverted at all.
