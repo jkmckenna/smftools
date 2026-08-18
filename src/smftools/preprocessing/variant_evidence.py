@@ -151,8 +151,19 @@ def segment_sparse_variant_calls(
     span_start: int,
     span_end: int,
     aligned_member_index: int,
+    min_adjacent_sites: int = 1,
 ) -> SparseVariantSegmentationResult:
-    """Segment sparse calls across a half-open aligned read span."""
+    """Segment sparse calls across a half-open aligned read span.
+
+    ``min_adjacent_sites`` is how many *consecutive informative sites* must call
+    the other reference before the read is reported as reference-switching; see
+    :func:`segment_variant_calls` for why this is counted in sites rather than
+    bases and what happens without it (`F14`). This is the path the partitioned
+    pipeline uses, so it is the one that produced the pilot's 100%-chimeric
+    result.
+
+    Counts and segments stay raw; only the interpretation is gated.
+    """
     if span_start < 0 or span_end < span_start:
         raise ValueError("read span must be a valid half-open interval")
     if aligned_member_index not in (0, 1):
@@ -197,13 +208,38 @@ def segment_sparse_variant_calls(
     )
     other_segments = [segment for segment in segments if segment.state == other_value]
     other_count = sum(segment.end - segment.start for segment in other_segments)
+
+    # Site support per segment. Segments are emitted one per run of
+    # same-class informative sites, in order, so the k-th non-transition
+    # segment is backed by the k-th run -- which makes the run length the
+    # segment's evidence count.
+    minimum_sites = max(1, int(min_adjacent_sites))
+    run_lengths: list[int] = []
+    if informative:
+        run_class = informative[0][1]
+        run_length = 1
+        for _position, current_class in informative[1:]:
+            if current_class == run_class:
+                run_length += 1
+            else:
+                run_lengths.append(run_length)
+                run_class = current_class
+                run_length = 1
+        run_lengths.append(run_length)
+    called_segments = [segment for segment in segments if segment.state in (1, 2)]
+    supported_other = [
+        segment
+        for segment, support in zip(called_segments, run_lengths)
+        if segment.state == other_value and support >= minimum_sites
+    ]
+
     mismatch_type = "no_segment_mismatch"
-    if other_segments:
-        if len(other_segments) >= 2:
+    if supported_other:
+        if len(supported_other) >= 2:
             mismatch_type = "multi_segment_mismatch"
-        elif other_segments[0].start == span_start:
+        elif supported_other[0].start == span_start:
             mismatch_type = "left_segment_mismatch"
-        elif other_segments[0].end == span_end:
+        elif supported_other[0].end == span_end:
             mismatch_type = "right_segment_mismatch"
         else:
             mismatch_type = "middle_segment_mismatch"
@@ -216,7 +252,7 @@ def segment_sparse_variant_calls(
         segments=tuple(segments),
         breakpoints=tuple(breakpoints),
         has_breakpoint=bool(breakpoints),
-        has_other_reference_segment=bool(other_segments),
+        has_other_reference_segment=bool(supported_other),
         other_reference_segment_type=mismatch_type,
         self_base_count=self_count,
         other_base_count=other_count,
@@ -299,8 +335,35 @@ def segment_variant_calls(
     covered: Sequence[bool],
     *,
     aligned_member_index: int,
+    min_adjacent_sites: int = 1,
 ) -> VariantSegmentationResult:
-    """Interpolate calls across a read span using the legacy breakpoint semantics."""
+    """Interpolate calls across a read span using the legacy breakpoint semantics.
+
+    Args:
+        calls: Per-position variant call classes (1 or 2 at informative sites).
+        covered: Per-position read-span mask.
+        aligned_member_index: 0 or 1 -- which reference this read aligned to.
+        min_adjacent_sites: How many *consecutive informative sites* must call
+            the other reference before the read is reported as
+            reference-switching. Sites, not bases: variant sites are sparse, so
+            the run is counted over the informative-site sequence rather than
+            over interpolated genomic positions.
+
+            The default of 1 preserves the historical behavior, in which a
+            single discordant site was enough. That is what made the flag
+            useless on real data: on the `241213` pilot it called 100% of
+            QC-passing reads chimeric on the strength of 2-3 discordant bases
+            out of ~2,300, because one isolated base opens a segment of the
+            other reference (`F14`). Callers that care should pass the
+            configured value; `ExperimentConfig.variant_chimera_min_adjacent
+            _sites` defaults to 2.
+
+            Counts (``self_base_count``, ``other_base_count``) and the segment
+            layer are deliberately left raw. This gates the *interpretation* --
+            whether the read is called chimeric and how the mismatch is typed --
+            so a read with a couple of stray discordant bases still shows them
+            in the plotted segments while being typed ``no_segment_mismatch``.
+    """
     call_row = np.asarray(calls)
     span_row = np.asarray(covered, dtype=bool)
     if call_row.ndim != 1 or span_row.ndim != 1 or call_row.shape != span_row.shape:
@@ -344,10 +407,37 @@ def segment_variant_calls(
     mismatch_mask = in_span == other_value
     self_count = int(np.sum(in_span == self_value))
     other_count = int(np.sum(mismatch_mask))
+
+    # Which stretches of other-reference segment are actually *supported*.
+    # Support is counted in informative sites, so a long interpolated stretch
+    # resting on one discordant site does not qualify while a short stretch
+    # between two adjacent discordant sites does.
+    minimum_sites = max(1, int(min_adjacent_sites))
+    supported_mask = np.zeros_like(mismatch_mask)
+    if covered_positions.size and np.any(mismatch_mask):
+        span_offset = int(covered_positions[0])
+        site_positions = np.flatnonzero((call_row == 1) | (call_row == 2))
+        site_positions = site_positions[
+            (site_positions >= span_offset) & (site_positions <= int(covered_positions[-1]))
+        ]
+        other_sites = site_positions[call_row[site_positions] == other_value] - span_offset
+        # Keep or drop each contiguous stretch *whole*. Trimming a stretch to
+        # its supporting sites would silently re-type it -- a segment running
+        # to the end of the span would stop looking like a right-edge segment
+        # -- so support decides membership only, never geometry.
+        stretch_starts = np.flatnonzero(mismatch_mask & ~np.r_[False, mismatch_mask[:-1]])
+        stretch_ends = np.flatnonzero(mismatch_mask & ~np.r_[mismatch_mask[1:], False])
+        for low, high in zip(stretch_starts, stretch_ends):
+            # Sites inside one stretch are consecutive informative sites all
+            # calling the other reference, so this count is the run length.
+            support = int(np.sum((other_sites >= low) & (other_sites <= high)))
+            if support >= minimum_sites:
+                supported_mask[low : high + 1] = True
+
     mismatch_type = "no_segment_mismatch"
-    if np.any(mismatch_mask):
-        starts = np.flatnonzero(mismatch_mask & ~np.r_[False, mismatch_mask[:-1]])
-        ends = np.flatnonzero(mismatch_mask & ~np.r_[mismatch_mask[1:], False])
+    if np.any(supported_mask):
+        starts = np.flatnonzero(supported_mask & ~np.r_[False, supported_mask[:-1]])
+        ends = np.flatnonzero(supported_mask & ~np.r_[supported_mask[1:], False])
         if len(starts) >= 2:
             mismatch_type = "multi_segment_mismatch"
         elif int(starts[0]) == 0:
@@ -362,7 +452,7 @@ def segment_variant_calls(
         breakpoints=tuple(breakpoints),
         breakpoint_count=len(breakpoints),
         has_breakpoint=bool(breakpoints),
-        has_other_reference_segment=bool(np.any(mismatch_mask)),
+        has_other_reference_segment=bool(np.any(supported_mask)),
         other_reference_segment_type=mismatch_type,
         self_base_count=self_count,
         other_base_count=other_count,

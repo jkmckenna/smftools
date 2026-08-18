@@ -801,6 +801,9 @@ def test_partitioned_executor_writes_derived_layers_context_and_reduced_coverage
         "read_qc",
         "modification_qc",
         "variant_qc",
+        # Variant reporting runs inside preprocess in the partitioned pipeline,
+        # so its segment clustermaps land under this stage.
+        "variant_segments",
         "duplicate_qc",
         "library_complexity",
         "read_span_quality",

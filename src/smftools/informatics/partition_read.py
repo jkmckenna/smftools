@@ -756,8 +756,26 @@ def _overlay_preprocess_var(
     """Attach reduced coverage and reference-context columns to a slice."""
     if result.n_vars == 0:
         return
-    path = resolve_relative_path(spine.uns.get("preprocess_var"), run_root)
-    if path is None or not path.exists():
+    pointer = spine.uns.get("preprocess_var")
+    path = resolve_relative_path(pointer, run_root)
+    if path is None:
+        # No preprocess stage in this lineage (e.g. a raw slice). Expected.
+        return
+    if not path.exists():
+        # A spine that *claims* a var catalog but cannot produce one is a
+        # broken lineage, not a missing stage, and returning quietly here
+        # silently strips every reference-context column from the slice. That
+        # is how `F12` stayed hidden: duplicate detection built its comparison
+        # mask from columns that were never attached, found nothing to compare,
+        # and reported every read unique with no error in any log.
+        logger.warning(
+            "preprocess var catalog pointer does not resolve to an existing file: %s "
+            "(from uns['preprocess_var']=%r). Reference-context columns "
+            "(position_in_<reference>, site types, coverage) will be absent from this "
+            "slice, and any mask built from them will be empty.",
+            path,
+            pointer,
+        )
         return
     references = result.obs["Reference_strand"].astype(str).unique()
     if len(references) != 1:

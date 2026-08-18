@@ -13,6 +13,7 @@ from Bio import SeqIO
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 
+from smftools.constants import CONVERSION_BASE_SUBSTITUTIONS
 from smftools.logging_utils import get_logger
 from smftools.optional_imports import require
 
@@ -109,12 +110,9 @@ def _convert_FASTA_record(
     Raises:
         ValueError: If the modification type/strand combination is invalid.
     """
-    conversion_maps = {
-        ("5mC", "top"): ("C", "T"),
-        ("5mC", "bottom"): ("G", "A"),
-        ("6mA", "top"): ("A", "G"),
-        ("6mA", "bottom"): ("T", "C"),
-    }
+    # Shared with variant calling via smftools.constants: the bases a site
+    # accepts there must match the substitution written here.
+    conversion_maps = CONVERSION_BASE_SUBSTITUTIONS
 
     sequence = str(record.seq).upper()
 

@@ -14,6 +14,7 @@ import pandas as pd
 from smftools.constants import REFERENCE_STRAND
 from smftools.logging_utils import get_logger
 
+from ..informatics.derived_read_index import DERIVED_READ_INDEX_DIRNAME
 from ..informatics.experiment_spine import write_experiment_spine
 from ..informatics.incremental_zarr import (
     append_zarr_layer,
@@ -41,6 +42,20 @@ PREPROCESS_OBS_SIDECAR = "obs.parquet"
 # dev/experiment_storage_schema.md (Phase 3), read via informatics.stage_obs.
 PREPROCESS_STAGE_OBS = "stage_obs.parquet"
 YOUDEN_FIT_SUBDIR = "02B_Position_wide_Youden_threshold_performance"
+
+# uns pointer key -> path relative to the variant reporting subdirectory.
+# Module-level so the staging and publication bindings cannot drift apart.
+_VARIANT_POINTER_RELATIVES = {
+    "preprocess_variant_obs": "variant_obs",
+    "preprocess_variant_read_index": "read_index",
+    "preprocess_variant_reference_catalog": "reference_catalog.json",
+    "preprocess_variant_generation_manifest": "generation_manifest.json",
+    "preprocess_variant_task_catalog": "task_catalog.parquet",
+    "preprocess_variant_task_store": "task_store",
+    "preprocess_variant_qc_metrics": "variant_qc_metrics.parquet",
+    "preprocess_variant_qc_summary": "variant_qc_summary.json",
+    "preprocess_variant_qc_summary_tsv": "variant_qc_summary.tsv",
+}
 
 DERIVED_LAYER_ABSENT_FILL = {
     "nan0_0minus1": 0.0,
@@ -1171,45 +1186,59 @@ def execute_partitioned_preprocessing(
     # these pointers stay correct even after being copied unchanged into a later
     # stage's spine (spatial/hmm), which lives in a sibling directory -- see
     # informatics.partition_read._run_root_from_spine_path.
-    derived_spine.uns["preprocess_store"] = relative_uns_path(
-        publication_dir / PREPROCESS_STORE_SUBDIR, run_root
-    )
-    derived_spine.uns["preprocess_catalog"] = relative_uns_path(
-        publication_dir / PREPROCESS_PARTITION_CATALOG, run_root
-    )
-    derived_spine.uns["preprocess_task_catalog"] = relative_uns_path(
-        publication_dir / PREPROCESS_TASK_CATALOG, run_root
-    )
     derived_spine.uns["preprocess_source_spine"] = relative_uns_path(spine_path, run_root)
     derived_spine.uns["source_base_dir"] = relative_uns_path(spine_path.parent, run_root)
-    derived_spine.uns["preprocess_var"] = relative_uns_path(
-        publication_dir / PREPROCESS_VAR_CATALOG, run_root
-    )
-    derived_spine.uns["preprocess_obs"] = relative_uns_path(
-        publication_dir / PREPROCESS_OBS_SIDECAR, run_root
-    )
-    if variant_outputs:
-        for key, relative in {
-            "preprocess_variant_obs": "variant_obs",
-            "preprocess_variant_read_index": "read_index",
-            "preprocess_variant_reference_catalog": "reference_catalog.json",
-            "preprocess_variant_generation_manifest": "generation_manifest.json",
-            "preprocess_variant_task_catalog": "task_catalog.parquet",
-            "preprocess_variant_task_store": "task_store",
-            "preprocess_variant_qc_metrics": "variant_qc_metrics.parquet",
-            "preprocess_variant_qc_summary": "variant_qc_summary.json",
-            "preprocess_variant_qc_summary_tsv": "variant_qc_summary.tsv",
-        }.items():
-            derived_spine.uns[key] = relative_uns_path(
-                publication_dir / VARIANT_REPORTING_SUBDIR / relative,
-                run_root,
-            )
-    from ..informatics.derived_read_index import DERIVED_READ_INDEX_DIRNAME
+
+    def _bind_artifact_pointers(base_dir: Path) -> None:
+        """Point this spine's artifact pointers at ``base_dir``.
+
+        Called twice with different bases, and the difference is the whole
+        point. ``publication_dir`` is where the artifacts will *end up*;
+        ``output_dir`` is where they are *right now*, because
+        ``staged_generation`` only moves the staging tree into place at
+        publish. Any consumer that runs mid-execute -- ``reduce_duplicate
+        _reads`` below is one -- resolves these pointers before that move, so a
+        staging spine carrying publication paths points at a directory that
+        does not exist yet.
+
+        That is not hypothetical: it silently zeroed duplicate detection.
+        ``_overlay_preprocess_var`` returns quietly when the var catalog is
+        missing, so dedup saw no site-type or membership columns, built an
+        empty comparison mask, and reported every read unique with no error
+        anywhere. See `F12`.
+        """
+        derived_spine.uns["preprocess_store"] = relative_uns_path(
+            base_dir / PREPROCESS_STORE_SUBDIR, run_root
+        )
+        derived_spine.uns["preprocess_catalog"] = relative_uns_path(
+            base_dir / PREPROCESS_PARTITION_CATALOG, run_root
+        )
+        derived_spine.uns["preprocess_task_catalog"] = relative_uns_path(
+            base_dir / PREPROCESS_TASK_CATALOG, run_root
+        )
+        derived_spine.uns["preprocess_var"] = relative_uns_path(
+            base_dir / PREPROCESS_VAR_CATALOG, run_root
+        )
+        derived_spine.uns["preprocess_obs"] = relative_uns_path(
+            base_dir / PREPROCESS_OBS_SIDECAR, run_root
+        )
+        derived_spine.uns["preprocess_read_index"] = relative_uns_path(
+            base_dir / DERIVED_READ_INDEX_DIRNAME, run_root
+        )
+        derived_spine.uns["preprocess_stage_obs"] = relative_uns_path(
+            base_dir / PREPROCESS_STAGE_OBS, run_root
+        )
+        derived_spine.uns["preprocess_plot_catalog"] = relative_uns_path(
+            base_dir / "plots" / "catalog.parquet", run_root
+        )
+        if variant_outputs:
+            for key, relative in _VARIANT_POINTER_RELATIVES.items():
+                derived_spine.uns[key] = relative_uns_path(
+                    base_dir / VARIANT_REPORTING_SUBDIR / relative,
+                    run_root,
+                )
 
     read_index_dir = output_dir / DERIVED_READ_INDEX_DIRNAME
-    derived_spine.uns["preprocess_read_index"] = relative_uns_path(
-        publication_dir / DERIVED_READ_INDEX_DIRNAME, run_root
-    )
     derived_spine.uns["preprocess_schema_version"] = 2
     published_layers = sorted({layer for record in records for layer in record.get("layers", [])})
     derived_spine.uns["preprocess_layer_absent_fill"] = {
@@ -1230,6 +1259,12 @@ def execute_partitioned_preprocessing(
     # merged spine (QC + dedup columns both present) ever lands at
     # output_spine.
     staging_spine = output_dir / f"{PREPROCESS_SPINE_FILENAME}.partial"
+    # Staging paths for the whole of execute. Every consumer that runs before
+    # publication resolves these pointers while the artifacts are still in
+    # `output_dir` -- duplicate detection just below, and the summary plots
+    # further down, both materialize slices. They are rebound to
+    # `publication_dir` exactly once, after the last such consumer.
+    _bind_artifact_pointers(output_dir)
     safe_write_h5ad(derived_spine, staging_spine, backup=False, verbose=False)
     obs_sidecar = reduce_duplicate_reads(staging_spine, obs_sidecar, cfg)
     if variant_outputs:
@@ -1259,12 +1294,6 @@ def execute_partitioned_preprocessing(
     stage_obs_path = write_stage_obs(
         output_dir, derived_spine.obs, columns=new_columns, filename=PREPROCESS_STAGE_OBS
     )
-    derived_spine.uns["preprocess_stage_obs"] = relative_uns_path(
-        publication_dir / PREPROCESS_STAGE_OBS, run_root
-    )
-    derived_spine.uns["preprocess_plot_catalog"] = relative_uns_path(
-        publication_dir / "plots" / "catalog.parquet", run_root
-    )
     # Re-write after adding the stage-obs pointer. The earlier write is needed
     # while reducers materialize against a concrete staging spine.
     safe_write_h5ad(derived_spine, output_spine, backup=False, verbose=False)
@@ -1284,6 +1313,28 @@ def execute_partitioned_preprocessing(
             from .variant_metrics import generate_variant_qc_plots
 
             generate_variant_qc_plots(variant_outputs["metrics"], plot_layout)
+
+            from .partitioned_variant_plots import generate_variant_segment_plots
+
+            try:
+                generate_variant_segment_plots(
+                    output_dir / VARIANT_REPORTING_SUBDIR,
+                    obs_sidecar,
+                    plot_layout,
+                    cfg=cfg,
+                )
+            except Exception:
+                # A plot failure must not abort a generation that is otherwise
+                # complete and publishable, but it must be visible: the whole
+                # reason these were missing for months is that nothing said so.
+                logger.exception("Variant segment clustermaps failed; generation still published")
+
+    # Last mid-execute consumer has run; the spine can now describe where the
+    # artifacts will live rather than where they are. `_bind_generation_spine`
+    # rewrites these again at publish -- this keeps the contract intact for
+    # direct callers that publish some other way.
+    _bind_artifact_pointers(publication_dir)
+    safe_write_h5ad(derived_spine, output_spine, backup=False, verbose=False)
 
     manifest = sidecar_manifest_path(output_dir)
     register_sidecar(manifest, "preprocess_store", output_dir / PREPROCESS_STORE_SUBDIR)

@@ -8,6 +8,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Mapping, Sequence
 
 from ..constants import (
+    CONVERSION_BASE_SUBSTITUTIONS,
     VARIANT_INFORMATIVE_SITE_SCHEMA_VERSION,
     VARIANT_REFERENCE_SET_SCHEMA_VERSION,
 )
@@ -364,6 +365,10 @@ class VariantInformativeSiteCatalog:
     informative_sites: tuple[InformativeVariantSite, ...]
     algorithm_version: str = VARIANT_REFERENCE_ALGORITHM_VERSION
     schema_version: int = VARIANT_INFORMATIVE_SITE_SCHEMA_VERSION
+    # Which chemistry this catalog's acceptance assumes, e.g. "5mC:top".
+    # Part of catalog_id: two strands over the same references yield different
+    # informative-site sets and must not collide as one cached identity.
+    conversion_semantics: str = "none"
 
     @property
     def catalog_id(self) -> str:
@@ -372,6 +377,7 @@ class VariantInformativeSiteCatalog:
             {
                 "reference_set_id": self.reference_set_id,
                 "algorithm_version": self.algorithm_version,
+                "conversion_semantics": self.conversion_semantics,
                 "events": [event.to_dict() for event in self.events],
                 "informative_sites": [site.to_dict() for site in self.informative_sites],
             },
@@ -383,6 +389,7 @@ class VariantInformativeSiteCatalog:
             "algorithm_version": self.algorithm_version,
             "catalog_id": self.catalog_id,
             "reference_set_id": self.reference_set_id,
+            "conversion_semantics": self.conversion_semantics,
             "aligned_sequences": list(self.aligned_sequences),
             "events": [event.to_dict() for event in self.events],
             "informative_sites": [site.to_dict() for site in self.informative_sites],
@@ -452,10 +459,73 @@ def _event_from_mismatch(
     )
 
 
+def conversion_substitutions_for_strand(
+    modality: str | None,
+    conversion_types: Sequence[str] | None,
+    strand: str,
+) -> tuple[tuple[str, str], ...]:
+    """Base substitutions a read of ``strand`` could legitimately carry.
+
+    Chemistry is chosen by the strand the molecule was converted on, which is
+    the reference-strand assignment (`Strand` in obs, the suffix of
+    `Reference_strand`) -- *not* the BAM reverse flag. Measured on the `241213`
+    pilot: split by `Strand`, C/T sites miscall at 31.7% and G/A at 3.1%, a
+    clean separation; split by `Read_mapping_direction` both fwd (21.6%) and rev
+    (38.5%) are affected, so it does not discriminate.
+
+    Returns an empty tuple for `direct` modality, which has no conversion
+    chemistry, and for unknown strands, so callers get canonical-only
+    acceptance rather than a silent guess.
+    """
+    normalized = str(modality or "").strip().lower()
+    if normalized not in {"conversion", "deaminase"}:
+        return ()
+    strand_key = str(strand or "").strip().lower()
+    if strand_key not in {"top", "bottom"}:
+        return ()
+    substitutions: list[tuple[str, str]] = []
+    for modification in conversion_types or ():
+        pair = CONVERSION_BASE_SUBSTITUTIONS.get((str(modification).strip(), strand_key))
+        if pair is not None and pair not in substitutions:
+            substitutions.append(pair)
+    return tuple(substitutions)
+
+
+def _accepted_with_conversion(
+    member: VariantReferenceMember,
+    position: int,
+    substitutions: Sequence[tuple[str, str]],
+) -> frozenset[str]:
+    """Bases acceptable for ``member`` at ``position`` under a conversion.
+
+    A reference C under `C->T` accepts both: the read shows C where the base
+    resisted conversion and T where it did not. Widening acceptance is what
+    makes a site non-disjoint and therefore excluded -- that exclusion is the
+    entire mechanism, so it must be applied to the *reference* base, never to
+    the observed read base.
+    """
+    accepted = set(member.accepted_bases(position))
+    for source, destination in substitutions:
+        if source in accepted:
+            accepted.add(destination)
+    return frozenset(accepted)
+
+
 def calculate_variant_informative_sites(
     reference_set: VariantReferenceSet,
+    *,
+    conversion_substitutions: Sequence[tuple[str, str]] = (),
+    conversion_semantics: str = "none",
 ) -> VariantInformativeSiteCatalog:
-    """Align canonical members and return callable substitutions plus excluded indels."""
+    """Align canonical members and return callable substitutions plus excluded indels.
+
+    ``conversion_substitutions`` widens each member's accepted bases by the
+    chemistry a read of one strand could carry, so a site the chemistry makes
+    ambiguous is excluded rather than miscalled. The reference set itself is
+    unchanged, which keeps ``reference_set_id`` stable across strands -- task
+    planning groups on that id, and one catalog per strand must not look like
+    two different reference sets.
+    """
     if reference_set.informative_site_policy != SUBSTITUTIONS_ONLY_POLICY:
         raise ValueError(
             "informative-site calculation does not support policy "
@@ -480,8 +550,8 @@ def calculate_variant_informative_sites(
             assert mismatch.seq1_base is not None
             assert mismatch.seq2_base is not None
             accepted = (
-                first.accepted_bases(mismatch.seq1_pos),
-                second.accepted_bases(mismatch.seq2_pos),
+                _accepted_with_conversion(first, mismatch.seq1_pos, conversion_substitutions),
+                _accepted_with_conversion(second, mismatch.seq2_pos, conversion_substitutions),
             )
             if accepted[0].intersection(accepted[1]):
                 event = replace(
@@ -504,4 +574,5 @@ def calculate_variant_informative_sites(
         aligned_sequences=(aligned_first, aligned_second),
         events=tuple(events),
         informative_sites=tuple(informative_sites),
+        conversion_semantics=str(conversion_semantics),
     )
