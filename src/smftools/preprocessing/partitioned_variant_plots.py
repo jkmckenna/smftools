@@ -121,6 +121,7 @@ def generate_variant_segment_plots(
     """Render variant segment clustermaps for every reference in a generation."""
     import anndata as ad
 
+    from smftools.cli.stage_artifacts import register_plot_artifact
     from smftools.plotting import plot_variant_segment_clustermaps
 
     variant_dir = Path(variant_dir)
@@ -201,25 +202,40 @@ def generate_variant_segment_plots(
         for column in (REFERENCE_STRAND, sample_column):
             adata.obs[column] = adata.obs[column].astype(str).astype("category")
 
-        results.extend(
-            plot_variant_segment_clustermaps(
-                adata,
-                seq1_column=seq1_column,
-                seq2_column=seq2_column,
-                sample_col=sample_column,
-                reference_col=REFERENCE_STRAND,
-                save_path=save_root,
-                mismatch_type_obs_col=(
-                    "chimeric_variant_sites_type"
-                    if "chimeric_variant_sites_type" in adata.obs.columns
-                    else None
-                ),
-                marker_size=float(getattr(cfg, "variant_overlay_marker_size", 4.0)),
-                show_position_axis=True,
-                max_reads=max_reads,
-                n_jobs=max(1, int(getattr(cfg, "threads", 1) or 1)),
-            )
+        rendered = plot_variant_segment_clustermaps(
+            adata,
+            seq1_column=seq1_column,
+            seq2_column=seq2_column,
+            sample_col=sample_column,
+            reference_col=REFERENCE_STRAND,
+            save_path=save_root,
+            mismatch_type_obs_col=(
+                "chimeric_variant_sites_type"
+                if "chimeric_variant_sites_type" in adata.obs.columns
+                else None
+            ),
+            marker_size=float(getattr(cfg, "variant_overlay_marker_size", 4.0)),
+            show_position_axis=True,
+            max_reads=max_reads,
+            n_jobs=max(1, int(getattr(cfg, "threads", 1) or 1)),
         )
+        results.extend(rendered)
+        # Register into the stage plot catalog like every other category. A plot
+        # that exists on disk but not in the catalog is invisible to anything
+        # that discovers plots through it, which is most things.
+        for record in rendered:
+            path = record.get("output_path") if isinstance(record, dict) else None
+            if not path:
+                continue
+            register_plot_artifact(
+                plot_layout,
+                path,
+                stage="preprocess",
+                category=category,
+                plot_type="variant_segment_clustermap",
+                reference=str(reference),
+                sample=str(record.get("sample")) if record.get("sample") else None,
+            )
         logger.info(
             "Variant segment clustermaps for %s: %d read(s) over %d position(s)",
             reference,
