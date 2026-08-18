@@ -24,6 +24,10 @@ STAGE_PLOT_CATEGORIES = {
         "read_qc",
         "modification_qc",
         "variant_qc",
+        # Variant reporting runs inside preprocess in the partitioned pipeline,
+        # so its segment clustermaps land here rather than under the separate
+        # (pre-partition) "variant" stage below.
+        "variant_segments",
         "duplicate_qc",
         "library_complexity",
         "read_span_quality",

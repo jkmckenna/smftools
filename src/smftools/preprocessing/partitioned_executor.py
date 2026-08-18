@@ -1314,6 +1314,21 @@ def execute_partitioned_preprocessing(
 
             generate_variant_qc_plots(variant_outputs["metrics"], plot_layout)
 
+            from .partitioned_variant_plots import generate_variant_segment_plots
+
+            try:
+                generate_variant_segment_plots(
+                    output_dir / VARIANT_REPORTING_SUBDIR,
+                    obs_sidecar,
+                    plot_layout,
+                    cfg=cfg,
+                )
+            except Exception:
+                # A plot failure must not abort a generation that is otherwise
+                # complete and publishable, but it must be visible: the whole
+                # reason these were missing for months is that nothing said so.
+                logger.exception("Variant segment clustermaps failed; generation still published")
+
     # Last mid-execute consumer has run; the spine can now describe where the
     # artifacts will live rather than where they are. `_bind_generation_spine`
     # rewrites these again at publish -- this keeps the contract intact for
