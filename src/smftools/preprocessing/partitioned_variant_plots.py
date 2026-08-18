@@ -124,6 +124,8 @@ def generate_variant_segment_plots(
     from smftools.cli.stage_artifacts import register_plot_artifact
     from smftools.plotting import plot_variant_segment_clustermaps
 
+    from .reindex_references_adata import reindex_references_adata
+
     variant_dir = Path(variant_dir)
     events = _read_shards(
         variant_dir, "events.parquet", ["read_id", "event_type", "start", "end", "state"]
@@ -202,6 +204,26 @@ def generate_variant_segment_plots(
         for column in (REFERENCE_STRAND, sample_column):
             adata.obs[column] = adata.obs[column].astype(str).astype("category")
 
+        # Project onto the configured display coordinate system, exactly as the
+        # HMM and spatial clustermaps do. Without this these panels plot raw
+        # `var_names` while those plot reindexed coordinates, so two
+        # position-dependent figures in one generation disagree about the axis
+        # -- and under `reindexing_invert` they run in opposite directions.
+        # Purely additive: a new var column, never a reordering of the data.
+        index_suffix = str(getattr(cfg, "reindexed_var_suffix", None) or "") or None
+        reindexing_offsets = getattr(cfg, "reindexing_offsets", None)
+        reindexing_invert = getattr(cfg, "reindexing_invert", None)
+        if index_suffix and (reindexing_offsets or reindexing_invert):
+            reindex_references_adata(
+                adata,
+                reference_col=REFERENCE_STRAND,
+                offsets=reindexing_offsets,
+                new_col=index_suffix,
+                invert=reindexing_invert,
+            )
+        if index_suffix and f"{reference}_{index_suffix}" not in adata.var:
+            index_suffix = None
+
         rendered = plot_variant_segment_clustermaps(
             adata,
             seq1_column=seq1_column,
@@ -216,6 +238,7 @@ def generate_variant_segment_plots(
             ),
             marker_size=float(getattr(cfg, "variant_overlay_marker_size", 4.0)),
             show_position_axis=True,
+            index_col_suffix=index_suffix,
             max_reads=max_reads,
             n_jobs=max(1, int(getattr(cfg, "threads", 1) or 1)),
         )

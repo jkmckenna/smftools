@@ -1162,7 +1162,13 @@ class ExperimentConfig:
     clustermap_cmap_cpg: Optional[str] = "coolwarm"
     clustermap_cmap_a: Optional[str] = "coolwarm"
     spatial_clustermap_sortby: Optional[str] = "gpc"
-    spatial_clustermap_restrict_to_read_span: bool = False
+    # Crop the plotted x-axis to the union of read spans for each reference.
+    # Default on: on the `241213` pilot ~40% of the full reference had no
+    # read at all, so the uncropped panel spends most of its width on
+    # positions no molecule covers. Per reference rather than per barcode --
+    # barcode spans there differ from the union by <2% of positions, which
+    # does not justify losing a common x-axis across panels.
+    spatial_clustermap_restrict_to_read_span: bool = True
     clustermap_max_reads_per_plot: Optional[int] = 5000
     spatial_position_matrix_max_width: int = 5000
     spatial_position_matrix_max_mb: int = 1024
@@ -1291,7 +1297,13 @@ class ExperimentConfig:
         ]
     )
     hmm_clustermap_sortby: Optional[str] = "hmm"
-    hmm_clustermap_restrict_to_read_span: bool = False
+    # Crop the plotted x-axis to the union of read spans for each reference.
+    # Default on: on the `241213` pilot ~40% of the full reference had no
+    # read at all, so the uncropped panel spends most of its width on
+    # positions no molecule covers. Per reference rather than per barcode --
+    # barcode spans there differ from the union by <2% of positions, which
+    # does not justify losing a common x-axis across panels.
+    hmm_clustermap_restrict_to_read_span: bool = True
     hmm_peak_feature_configs: Dict[str, Any] = field(default_factory=dict)
 
     # Pipeline control flow - load adata
@@ -1572,6 +1584,23 @@ class ExperimentConfig:
         if has_input_path and has_manifest_path:
             raise ValueError(
                 "Configure exactly one of input_data_path or input_manifest_path, not both."
+            )
+
+        # `invert_adata` physically flipped X and every layer; it is honoured
+        # only by the legacy CLI and does nothing in a partitioned run. Left
+        # silent, a config asking for inverted data quietly gets uninverted
+        # data -- which is exactly what happened to eight EMseq runs here while
+        # the DAFseq runs, already migrated, inverted correctly. Reject the
+        # value that carries intent; `False` is the default and stays silent.
+        if _parse_bool(merged.get("invert_adata", False)):
+            raise ValueError(
+                "invert_adata is superseded and is not honoured by the partitioned "
+                "pipeline. Use reindexing_invert instead: it projects the display "
+                "coordinate system without altering stored data, so one store serves "
+                "every orientation. Replace `invert_adata: True` with "
+                "`reindexing_invert: True` (or a {reference: bool} mapping for "
+                "per-reference control). See the coordinate systems section of the "
+                "experiment configuration tutorial."
             )
 
         input_manifest_path = None
@@ -2261,7 +2290,7 @@ class ExperimentConfig:
             clustermap_cmap_a=merged.get("clustermap_cmap_a", "coolwarm"),
             spatial_clustermap_sortby=merged.get("spatial_clustermap_sortby", "gpc"),
             spatial_clustermap_restrict_to_read_span=_parse_bool(
-                merged.get("spatial_clustermap_restrict_to_read_span", False)
+                merged.get("spatial_clustermap_restrict_to_read_span", True)
             ),
             clustermap_max_reads_per_plot=_parse_numeric(
                 merged.get("clustermap_max_reads_per_plot", 5000), None
@@ -2372,7 +2401,7 @@ class ExperimentConfig:
             hmm_clustermap_length_layers=hmm_clustermap_length_layers,
             hmm_clustermap_sortby=merged.get("hmm_clustermap_sortby", "hmm"),
             hmm_clustermap_restrict_to_read_span=_parse_bool(
-                merged.get("hmm_clustermap_restrict_to_read_span", False)
+                merged.get("hmm_clustermap_restrict_to_read_span", True)
             ),
             hmm_peak_feature_configs=hmm_peak_feature_configs,
             footprints=merged.get("footprints", None),
