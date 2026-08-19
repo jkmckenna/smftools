@@ -3936,6 +3936,33 @@ def build_classified_read_set(
     return classified_reads, read_to_barcode
 
 
+# Dorado writes reads it could not assign to a barcode into a file named after
+# the run id and basecall model (e.g.
+# "ba0e54a1-67ab-4f30-b7e7-15db5782e51f_dna_r10.4.1_e8.2_400bps_sup@v5.2.0.bam"),
+# not "unclassified.bam". Callers that filter on the word "unclassified" miss
+# it, and a filename-derived barcode then turns that run id into a sample: on
+# the `241213` pilot it became the largest "barcode" in the experiment, 85,436
+# of 268,489 sidecar reads.
+_DORADO_RUN_ID_PREFIX = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(_|$)",
+    flags=re.IGNORECASE,
+)
+
+
+def is_unclassified_bam_name(name: str) -> bool:
+    """Whether a demux output filename holds unbarcoded reads.
+
+    Recognises both spellings dorado uses: an explicit "unclassified" in the
+    name, and the run-id-prefixed name it emits instead. Matching on the run-id
+    shape rather than on any particular model string keeps this working when the
+    basecall model changes.
+    """
+    stem = str(name).strip()
+    if "unclassified" in stem.lower():
+        return True
+    return bool(_DORADO_RUN_ID_PREFIX.match(stem))
+
+
 def build_barcode_sidecar_from_split_bams(
     bam_files: list[Path],
     output_path: Path,
@@ -3972,6 +3999,15 @@ def build_barcode_sidecar_from_split_bams(
         # Infer barcode label from filename (e.g. "barcode01.bam" -> "01")
         stem = bam_path.stem
         match = re.search(r"barcode([0-9A-Za-z\-]+)", stem, flags=re.IGNORECASE)
+        if match is None and is_unclassified_bam_name(stem):
+            # Unbarcoded reads. Falling back to the stem here is what invented a
+            # run id as a barcode; skip the file rather than name a sample after
+            # it. Reads carrying a real BC tag are still picked up from the
+            # per-barcode files.
+            logger.info(
+                "Skipping unclassified demux output %s (%s)", bam_path.name, "no barcode in name"
+            )
+            continue
         filename_barcode = match.group(1) if match else stem
 
         with pysam_mod.AlignmentFile(str(bam_path), "rb", check_sq=False) as bam:
@@ -4038,7 +4074,9 @@ def rebuild_barcode_sidecar_via_dorado_classification(
             no_classify=False,
             file_prefix="",
         )
-        bam_files_for_sidecar = [p for p in classified_bam_files if "unclassified" not in p.name]
+        bam_files_for_sidecar = [
+            p for p in classified_bam_files if not is_unclassified_bam_name(p.stem)
+        ]
         build_barcode_sidecar_from_split_bams(
             bam_files_for_sidecar,
             barcode_sidecar,
