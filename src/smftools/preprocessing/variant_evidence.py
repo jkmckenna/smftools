@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 import numpy as np
 
@@ -258,6 +258,97 @@ def segment_sparse_variant_calls(
         other_base_count=other_count,
         segment_cigar=cigar,
     )
+
+
+def build_segment_aware_site_index(
+    catalogs_by_strand: Mapping[str, "VariantInformativeSiteCatalog"],
+) -> tuple[tuple[tuple[int, int], dict[str, tuple[frozenset[str], frozenset[str]]], str], ...]:
+    """Index candidate sites across per-strand catalogs, keyed by position.
+
+    `EGL-18` builds one catalog per strand, and a site ambiguous under one
+    chemistry is simply absent from that catalog. To call a read whose chemistry
+    *varies along its length*, both catalogs must be consulted per position, so
+    the sites have to be matched across them.
+
+    They are matched on ``member_positions``, not ``site_id``: ids are assigned
+    by enumeration over the sites that survive
+    (``site-{len(informative_sites):06d}``), so the same id denotes different
+    positions in catalogs that excluded different sites. Matching on ids would
+    silently pair unrelated sites.
+
+    Returns one entry per candidate position pair: its per-strand accepted-base
+    sets (absent where that chemistry makes it unreadable) and a stable site id.
+    """
+    merged: dict[tuple[int, int], dict[str, tuple[frozenset[str], frozenset[str]]]] = {}
+    for strand, catalog in catalogs_by_strand.items():
+        for site in catalog.informative_sites:
+            key = (int(site.member_positions[0]), int(site.member_positions[1]))
+            merged.setdefault(key, {})[str(strand)] = site.accepted_bases
+    return tuple(
+        (key, by_strand, f"site-{index:06d}")
+        for index, (key, by_strand) in enumerate(sorted(merged.items()))
+    )
+
+
+def call_observed_variant_sites_by_segment(
+    observed_bases: Mapping[int, str],
+    *,
+    aligned_member_index: int,
+    site_index: Sequence[tuple[tuple[int, int], Mapping[str, Any], str]],
+    strand_at_position: Callable[[int], str | None],
+    default_strand: str,
+) -> tuple[tuple[SparseVariantCall, ...], ReadVariantCalls]:
+    """Call sites using the chemistry local to each position (`EGL-20a`).
+
+    In a conversion experiment the applicable chemistry is fixed for a whole
+    read by its strand, which is what `EGL-18` exploits. In deaminase it is
+    *positional*: a molecule can carry `C->T` over one stretch and `G->A` over
+    another -- that is what makes it a chimera -- so a single per-read
+    acceptance rule is wrong by construction.
+
+    ``strand_at_position`` resolves the deamination segment covering a position;
+    ``default_strand`` applies where no segment covers it. A site the local
+    chemistry makes unreadable is a no-call rather than a guess, which is the
+    conservative direction: it withholds evidence instead of inventing an
+    allele.
+    """
+    if aligned_member_index not in (0, 1):
+        raise ValueError("aligned_member_index must be 0 or 1")
+    calls: list[SparseVariantCall] = []
+    member_counts = [0, 0]
+    no_call_count = 0
+    for positions, by_strand, site_id in site_index:
+        position = int(positions[aligned_member_index])
+        observed = observed_bases.get(position)
+        strand = strand_at_position(position) or default_strand
+        accepted = by_strand.get(str(strand))
+        call = NO_CALL
+        if observed is not None and accepted is not None:
+            base = str(observed).upper()
+            matches = [
+                member_index for member_index, allowed in enumerate(accepted) if base in allowed
+            ]
+            if len(matches) == 1:
+                call = matches[0] + 1
+                member_counts[matches[0]] += 1
+        if call == NO_CALL:
+            no_call_count += 1
+        calls.append(
+            SparseVariantCall(
+                site_id=site_id,
+                position=position,
+                call=call,
+                observed_base=None if observed is None else str(observed).upper(),
+            )
+        )
+    summary = ReadVariantCalls(
+        calls=np.asarray([call.call for call in calls], dtype=np.int8),
+        informative_site_count=len(calls),
+        callable_site_count=sum(member_counts),
+        no_call_count=no_call_count,
+        member_call_counts=(member_counts[0], member_counts[1]),
+    )
+    return tuple(calls), summary
 
 
 def call_read_variant_sites(
