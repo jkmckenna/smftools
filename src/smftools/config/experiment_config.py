@@ -1043,6 +1043,21 @@ class ExperimentConfig:
     # Preprocessing - Deaminase PCR-chimera labeling params (deaminase modality only)
     bypass_label_deaminase_pcr_chimeras: bool = False
     deaminase_chimera_min_events_per_span: int = 3
+    # How many consecutive same-direction deamination events form a supported
+    # segment. Counted over events, not genomic distance: a retained base says a
+    # position resisted conversion, not that the opposite strand's chemistry
+    # applied. The variant lane's `variant_chimera_min_adjacent_sites` is the
+    # same idea for SNP sites (`EGL-16`); this is its deamination counterpart.
+    # BIC-style cost per added change point in deamination segmentation. The
+    # number of switches is inferred from this, not supplied: long reads may
+    # carry several joins, which a fixed two-segment model cannot express.
+    deaminase_segment_penalty_scale: float = 3.0
+    # Minimum informative positions on either side of a candidate change point.
+    deaminase_segment_min_observations: int = 3
+    # Reads per parallel segmentation batch. Batched within ragged shards, not
+    # per shard: raw stores are heavily skewed (one `251105` shard holds 72% of
+    # reads), so shard-level dispatch would cap the speedup near 1.4x.
+    deaminase_segment_batch_reads: int = 250
     deaminase_chimera_min_segment_purity: float = 0.9
     deaminase_chimera_max_single_strand_fraction: float = 0.8
     # Raw - emit per reference x barcode chimera-rate QC plot (deaminase modality only)

@@ -1056,6 +1056,22 @@ def execute_partitioned_preprocessing(
             ),
             cfg=cfg,
         )
+    deamination_outputs: dict[str, Path] = {}
+    from .partitioned_deamination import (
+        DEAMINATION_SUBDIR,
+        deamination_reporting_enabled,
+        execute_partitioned_deamination,
+    )
+
+    if deamination_reporting_enabled(cfg):
+        try:
+            deamination_outputs = execute_partitioned_deamination(spine_path, output_dir, cfg=cfg)
+        except Exception:
+            # Deamination evidence is diagnostic; a failure must not abort an
+            # otherwise complete generation. It is logged loudly rather than
+            # swallowed -- silent absence is what let `F13` and `F17` persist.
+            logger.exception("Deamination evidence failed; generation still published")
+
     obs_sidecar = write_read_qc_sidecar(spine, cfg, output_dir / PREPROCESS_OBS_SIDECAR)
     catalog_path = output_dir / PREPROCESS_PARTITION_CATALOG
     task_catalog = output_dir / PREPROCESS_TASK_CATALOG
@@ -1342,6 +1358,8 @@ def execute_partitioned_preprocessing(
     register_sidecar(manifest, "preprocess_task_catalog", task_catalog)
     register_sidecar(manifest, "preprocess_read_index", read_index_dir)
     register_sidecar(manifest, "preprocess_var", var_catalog)
+    if deamination_outputs:
+        register_sidecar(manifest, "preprocess_deamination", output_dir / DEAMINATION_SUBDIR)
     register_sidecar(manifest, "preprocess_obs", obs_sidecar)
     register_sidecar(manifest, "preprocess_stage_obs", stage_obs_path)
     register_sidecar(manifest, "preprocess_spine", output_spine)
