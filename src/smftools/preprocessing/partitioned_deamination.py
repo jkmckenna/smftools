@@ -68,6 +68,97 @@ def deamination_reporting_enabled(cfg) -> bool:
     )
 
 
+def _execute_deamination_batch(
+    rows: list[tuple[str, str, str, int, list]],
+    reference_strand: str,
+    reference_sequence: str,
+    experiment_uid: str,
+    excluded_positions: tuple[int, ...],
+    substitutions: tuple[DeaminationSubstitution, ...],
+    penalty_scale: float,
+    min_segment: int,
+) -> tuple[list[dict], list[dict], list[dict]]:
+    """Segment one batch of reads. Module-level and picklable for the pool.
+
+    Batches are cut *within* shards, not per shard. The `251105` raw store has
+    8 ragged shards and one holds 20,258 of 28,302 reads, so shard-level
+    dispatch would leave one worker doing 72% of the work and cap the speedup
+    near 1.4x regardless of core count.
+    """
+    events: list[dict] = []
+    segments: list[dict] = []
+    summaries: list[dict] = []
+    excluded = set(excluded_positions)
+    for read_id, molecule_uid, cigar, reference_start, sequence in rows:
+        observed = _observed_bases_from_parts(sequence, cigar, reference_start)
+        observations = observe_read_deamination(
+            reference_sequence, observed, substitutions, excluded_positions=excluded
+        )
+        read_segments, summary = segment_deamination(
+            observations, penalty_scale=penalty_scale, min_segment_size=min_segment
+        )
+        common = {
+            EXPERIMENT_UID_COLUMN: experiment_uid,
+            "read_id": read_id,
+            MOLECULE_UID_COLUMN: molecule_uid,
+            "reference": reference_strand,
+        }
+        for observation in observations:
+            events.append(
+                {
+                    **common,
+                    "position": observation.position,
+                    "strand": observation.strand,
+                    "converted": observation.converted,
+                }
+            )
+        for segment in read_segments:
+            segments.append(
+                {
+                    **common,
+                    "start": segment.start,
+                    "end": segment.end,
+                    "strand": segment.strand,
+                    "n_observations": segment.n_observations,
+                    "n_converted": segment.n_converted,
+                }
+            )
+        summaries.append(
+            {
+                **common,
+                "n_observations": summary.n_observations,
+                "efficiency": summary.efficiency,
+                "error_rate": summary.error_rate,
+                "segment_count": summary.segment_count,
+                "strands_present": ",".join(summary.strands_present),
+                "dominant_strand": summary.dominant_strand or "",
+                "switch_positions": ",".join(str(p) for p in summary.switch_positions),
+                CHIMERA_COLUMN: summary.is_chimeric,
+            }
+        )
+    return events, segments, summaries
+
+
+def _observed_bases_from_parts(sequence, cigar: str, reference_start: int) -> dict[int, str]:
+    """Reference-position -> observed base, from the ragged row's parts alone.
+
+    Takes the three fields rather than a Series so a batch ships only what the
+    walk needs; the full row carries quality, mismatch and signal columns that
+    would otherwise be pickled to every worker for nothing.
+    """
+    values = list(sequence)
+    observed: dict[int, str] = {}
+    for query_position, reference_position in iter_cigar_aligned_pairs(
+        str(cigar), int(reference_start)
+    ):
+        if query_position >= len(values):
+            raise ValueError("ragged sequence is shorter than its CIGAR query span")
+        base = _BASE_DECODER.get(int(values[query_position]), "N")
+        if base != "N":
+            observed[reference_position] = base
+    return observed
+
+
 def _observed_bases(row: pd.Series) -> dict[int, str]:
     """Reference-position -> observed base for one ragged row."""
     sequence = list(row[SEQUENCE])
@@ -134,17 +225,14 @@ def execute_partitioned_deamination(
     if missing:
         raise ValueError(f"raw spine lacks deamination identity columns: {sorted(missing)}")
 
-    event_rows: list[dict[str, object]] = []
-    segment_rows: list[dict[str, object]] = []
-    summary_rows: list[dict[str, object]] = []
+    batch_size = max(1, int(getattr(cfg, "deaminase_segment_batch_reads", 250) or 250))
+    batches: list[tuple] = []
 
     for group_path, shard_obs in obs.groupby("ragged_shard", sort=True, observed=True):
         reference_strands = shard_obs["Reference_strand"].astype(str).unique()
         if len(reference_strands) != 1:
             raise ValueError(f"raw shard {group_path!r} spans multiple references")
         reference_strand = str(reference_strands[0])
-        # `Reference_strand` is "<reference>_<top|bottom>"; the stored sequence
-        # is keyed by the bare reference name.
         reference = reference_strand.rsplit("_", 1)[0]
         sequence = references.get(reference)
         if sequence is None:
@@ -152,7 +240,9 @@ def execute_partitioned_deamination(
                 "No reference sequence for %s; skipping deamination evidence", reference_strand
             )
             continue
-        shard_excluded = excluded.get(reference_strand, excluded.get(reference, set()))
+        shard_excluded = tuple(
+            sorted(excluded.get(reference_strand, excluded.get(reference, set())))
+        )
         molecule_by_read = dict(
             zip(
                 shard_obs.get("read_id", pd.Series(shard_obs.index, index=shard_obs.index)).astype(
@@ -166,60 +256,52 @@ def execute_partitioned_deamination(
 
         frame = pd.read_parquet(spine_path.parent / str(group_path))
         frame[READ_ID] = frame[READ_ID].astype(str)
+        rows: list[tuple] = []
         for row in frame.sort_values(READ_ID, kind="stable").to_dict("records"):
             read_id = str(row[READ_ID])
-            if read_id not in molecule_by_read:
+            molecule_uid = molecule_by_read.get(read_id)
+            if molecule_uid is None:
                 continue
-            observations = observe_read_deamination(
-                sequence,
-                _observed_bases(pd.Series(row)),
-                substitutions,
-                excluded_positions=shard_excluded,
+            rows.append(
+                (read_id, molecule_uid, str(row[CIGAR]), int(row[REFERENCE_START]), row[SEQUENCE])
             )
-            segments, summary = segment_deamination(
-                observations,
-                penalty_scale=penalty_scale,
-                min_segment_size=min_segment,
-            )
-            common = {
-                EXPERIMENT_UID_COLUMN: experiment_uid,
-                "read_id": read_id,
-                MOLECULE_UID_COLUMN: molecule_by_read[read_id],
-                "reference": reference_strand,
-            }
-            for observation in observations:
-                event_rows.append(
-                    {
-                        **common,
-                        "position": observation.position,
-                        "strand": observation.strand,
-                        "converted": observation.converted,
-                    }
+        for offset in range(0, len(rows), batch_size):
+            batches.append(
+                (
+                    rows[offset : offset + batch_size],
+                    reference_strand,
+                    sequence,
+                    experiment_uid,
+                    shard_excluded,
+                    tuple(substitutions),
+                    penalty_scale,
+                    min_segment,
                 )
-            for segment in segments:
-                segment_rows.append(
-                    {
-                        **common,
-                        "start": segment.start,
-                        "end": segment.end,
-                        "strand": segment.strand,
-                        "n_observations": segment.n_observations,
-                        "n_converted": segment.n_converted,
-                    }
-                )
-            summary_rows.append(
-                {
-                    **common,
-                    "n_observations": summary.n_observations,
-                    "efficiency": summary.efficiency,
-                    "error_rate": summary.error_rate,
-                    "segment_count": summary.segment_count,
-                    "strands_present": ",".join(summary.strands_present),
-                    "dominant_strand": summary.dominant_strand or "",
-                    "switch_positions": ",".join(str(p) for p in summary.switch_positions),
-                    CHIMERA_COLUMN: summary.is_chimeric,
-                }
             )
+
+    if not batches:
+        results: list[tuple[list, list, list]] = []
+    elif len(batches) == 1 or getattr(cfg, "threads", 1) in (None, 1):
+        results = [_execute_deamination_batch(*batch) for batch in batches]
+    else:
+        from ..memory_guard import run_tasks_parallel
+
+        results = run_tasks_parallel(
+            _execute_deamination_batch,
+            batches,
+            cfg=cfg,
+            pool_label=f"deamination segmentation ({len(batches)} batches)",
+            per_item_memory_mb=max(1.0, batch_size * 0.5),
+            estimator="deamination_batch_peak",
+        )
+
+    event_rows: list[dict[str, object]] = []
+    segment_rows: list[dict[str, object]] = []
+    summary_rows: list[dict[str, object]] = []
+    for events, segments, summaries in results:
+        event_rows.extend(events)
+        segment_rows.extend(segments)
+        summary_rows.extend(summaries)
 
     root = output_dir / DEAMINATION_SUBDIR
     outputs = {
