@@ -228,6 +228,8 @@ force_redo_filter_reads_on_cigar_indels: True
 # single-switch two-segment model has purity >= min_segment_purity, and the read
 # is not more than max_single_strand_fraction one-sided.
 bypass_label_deaminase_pcr_chimeras: False
+deaminase_segment_penalty_scale: 3.0 # BIC-style cost per added change point in deamination segmentation; the number of switches is inferred from this
+deaminase_segment_min_observations: 3 # Minimum informative positions either side of a candidate deamination change point
 deaminase_chimera_min_events_per_span: 3
 deaminase_chimera_min_segment_purity: 0.9
 deaminase_chimera_max_single_strand_fraction: 0.8
