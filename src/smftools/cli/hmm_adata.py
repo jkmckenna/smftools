@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, List, Mapping, Optional, Sequence, Tuple,
 import numpy as np
 
 from smftools.constants import (
+    DEFAULT_CLUSTERMAP_MAX_READS_PER_PLOT,
     HMM_DIR,
     PARTITIONED_STAGE_NONEMPTY_DIRECTORIES,
     PARTITIONED_STAGE_REQUIRED_ARTIFACTS,
@@ -1510,7 +1511,9 @@ def hmm_adata_core(
                 adata,
                 sample_col=cfg.sample_name_col_for_plotting,
                 reference_col=cfg.reference_column,
-                max_reads_per_plot=getattr(cfg, "clustermap_max_reads_per_plot", 5000),
+                max_reads_per_plot=getattr(
+                    cfg, "clustermap_max_reads_per_plot", DEFAULT_CLUSTERMAP_MAX_READS_PER_PLOT
+                ),
                 cfg=cfg,
                 hmm_feature_layer=layer,
                 layer_gpc=cfg.layer_for_clustermap_plotting,
@@ -1580,7 +1583,9 @@ def hmm_adata_core(
                 adata,
                 sample_col=cfg.sample_name_col_for_plotting,
                 reference_col=cfg.reference_column,
-                max_reads_per_plot=getattr(cfg, "clustermap_max_reads_per_plot", 5000),
+                max_reads_per_plot=getattr(
+                    cfg, "clustermap_max_reads_per_plot", DEFAULT_CLUSTERMAP_MAX_READS_PER_PLOT
+                ),
                 cfg=cfg,
                 length_layer=layer,
                 layer_gpc=cfg.layer_for_clustermap_plotting,

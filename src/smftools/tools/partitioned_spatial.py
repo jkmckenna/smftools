@@ -8,7 +8,7 @@ from urllib.parse import quote
 import numpy as np
 import pandas as pd
 
-from smftools.constants import REFERENCE_STRAND
+from smftools.constants import DEFAULT_CLUSTERMAP_MAX_READS_PER_PLOT, REFERENCE_STRAND
 from smftools.logging_utils import get_logger
 
 from ..cli.stage_artifacts import (
@@ -772,7 +772,9 @@ def _plot_read_metric_clustermaps(records, output_dir: Path, layout, cfg) -> Non
         return
     from ..informatics.partition_query import query_derived_index, read_zarr_subset
 
-    max_reads_per_plot = getattr(cfg, "clustermap_max_reads_per_plot", 5000)
+    max_reads_per_plot = getattr(
+        cfg, "clustermap_max_reads_per_plot", DEFAULT_CLUSTERMAP_MAX_READS_PER_PLOT
+    )
     selection_seed = int(getattr(cfg, "plot_subsample_seed", 0))
     indexed = query_derived_index(output_dir / "read_index")
     selected_rows: dict[str, list[int]] = {}
@@ -934,7 +936,7 @@ def _plot_read_periodicity(records, output_dir: Path, layout, cfg) -> None:
         return
     from ..informatics.partition_query import query_derived_index, read_zarr_subset
 
-    max_reads = getattr(cfg, "clustermap_max_reads_per_plot", 5000)
+    max_reads = getattr(cfg, "clustermap_max_reads_per_plot", DEFAULT_CLUSTERMAP_MAX_READS_PER_PLOT)
     selection_seed = int(getattr(cfg, "plot_subsample_seed", 0))
     indexed = query_derived_index(output_dir / "read_index")
     selected_rows: dict[str, list[int]] = {}
@@ -1485,7 +1487,9 @@ def _generate_dense_region_products(
         selection = select_plot_reads(
             output_dir / "read_index",
             plan,
-            max_reads_per_barcode=getattr(cfg, "clustermap_max_reads_per_plot", 5000),
+            max_reads_per_barcode=getattr(
+                cfg, "clustermap_max_reads_per_plot", DEFAULT_CLUSTERMAP_MAX_READS_PER_PLOT
+            ),
             seed=selection_seed,
             eligible_read_ids=region_obs.index,
         )
@@ -1576,7 +1580,9 @@ def _generate_dense_region_products(
                 restrict_to_read_span=bool(
                     getattr(cfg, "spatial_clustermap_restrict_to_read_span", False)
                 ),
-                max_reads_per_plot=getattr(cfg, "clustermap_max_reads_per_plot", 5000),
+                max_reads_per_plot=getattr(
+                    cfg, "clustermap_max_reads_per_plot", DEFAULT_CLUSTERMAP_MAX_READS_PER_PLOT
+                ),
                 index_col_suffix=index_suffix,
                 cfg=cfg,
             )
@@ -1773,7 +1779,15 @@ def execute_partitioned_spatial(spine_path, cfg, output_dir) -> dict[str, Path]:
     require_memory_headroom(
         cfg,
         estimated_memory_mb=(
-            max(1, int(getattr(cfg, "clustermap_max_reads_per_plot", 5000) or 5000))
+            max(
+                1,
+                int(
+                    getattr(
+                        cfg, "clustermap_max_reads_per_plot", DEFAULT_CLUSTERMAP_MAX_READS_PER_PLOT
+                    )
+                    or DEFAULT_CLUSTERMAP_MAX_READS_PER_PLOT
+                ),
+            )
             * max(1, plot_group_count)
             * site_type_count
             * (max_lag + max_periods)

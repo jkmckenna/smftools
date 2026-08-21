@@ -6,6 +6,7 @@ from typing import Any, Mapping, Optional, Tuple
 import anndata as ad
 
 from smftools.constants import (
+    DEFAULT_CLUSTERMAP_MAX_READS_PER_PLOT,
     PARTITIONED_STAGE_NONEMPTY_DIRECTORIES,
     PARTITIONED_STAGE_REQUIRED_ARTIFACTS,
     SPATIAL_DIR,
@@ -407,7 +408,9 @@ def spatial_adata_core(
                     pp_adata,
                     sample_col=cfg.sample_name_col_for_plotting,
                     reference_col=cfg.reference_column,
-                    max_reads_per_plot=getattr(cfg, "clustermap_max_reads_per_plot", 5000),
+                    max_reads_per_plot=getattr(
+                        cfg, "clustermap_max_reads_per_plot", DEFAULT_CLUSTERMAP_MAX_READS_PER_PLOT
+                    ),
                     cfg=cfg,
                     mod_target_bases=cfg.mod_target_bases,
                     layer_c=cfg.layer_for_clustermap_plotting,
@@ -454,7 +457,9 @@ def spatial_adata_core(
             adata,
             sample_col=cfg.sample_name_col_for_plotting,
             reference_col=cfg.reference_column,
-            max_reads_per_plot=getattr(cfg, "clustermap_max_reads_per_plot", 5000),
+            max_reads_per_plot=getattr(
+                cfg, "clustermap_max_reads_per_plot", DEFAULT_CLUSTERMAP_MAX_READS_PER_PLOT
+            ),
             cfg=cfg,
             mod_target_bases=cfg.mod_target_bases,
             layer_c=cfg.layer_for_clustermap_plotting,

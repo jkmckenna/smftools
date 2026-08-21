@@ -26,7 +26,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from smftools.constants import REFERENCE_STRAND
+from smftools.constants import DEFAULT_CLUSTERMAP_MAX_READS_PER_PLOT, REFERENCE_STRAND
 from smftools.logging_utils import get_logger
 
 logger = get_logger(__name__)
@@ -156,7 +156,10 @@ def generate_deamination_segment_plots(
         logger.info("No analysed reads carry deamination segments; skipping.")
         return []
 
-    max_reads = int(getattr(cfg, "clustermap_max_reads_per_plot", 5000) or 5000)
+    max_reads = int(
+        getattr(cfg, "clustermap_max_reads_per_plot", DEFAULT_CLUSTERMAP_MAX_READS_PER_PLOT)
+        or DEFAULT_CLUSTERMAP_MAX_READS_PER_PLOT
+    )
     seed = int(getattr(cfg, "plot_subsample_seed", 0))
 
     results: list[dict] = []

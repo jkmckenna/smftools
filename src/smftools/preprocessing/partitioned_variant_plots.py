@@ -32,7 +32,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from smftools.constants import REFERENCE_STRAND
+from smftools.constants import DEFAULT_CLUSTERMAP_MAX_READS_PER_PLOT, REFERENCE_STRAND
 from smftools.logging_utils import get_logger
 
 logger = get_logger(__name__)
@@ -183,7 +183,10 @@ def generate_variant_segment_plots(
         logger.info("No QC-passing reads carry variant segments; skipping.")
         return []
 
-    max_reads = int(getattr(cfg, "clustermap_max_reads_per_plot", 5000) or 5000)
+    max_reads = int(
+        getattr(cfg, "clustermap_max_reads_per_plot", DEFAULT_CLUSTERMAP_MAX_READS_PER_PLOT)
+        or DEFAULT_CLUSTERMAP_MAX_READS_PER_PLOT
+    )
     obs = _select_reads(
         obs, sample_column, max_reads, seed=int(getattr(cfg, "plot_subsample_seed", 0))
     )
