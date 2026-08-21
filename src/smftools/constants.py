@@ -325,3 +325,13 @@ _private_conversion_base_substitutions: Dict[Tuple[str, str], Tuple[str, str]] =
 CONVERSION_BASE_SUBSTITUTIONS: Final[Mapping[Tuple[str, str], Tuple[str, str]]] = _deep_freeze(
     _private_conversion_base_substitutions
 )
+
+
+#: Default cap on reads rendered into a single clustermap panel.
+#:
+#: Mirrors ``ExperimentConfig.clustermap_max_reads_per_plot`` and the
+#: ``default.yaml`` entry. Call sites read the knob off ``cfg`` and fall back to
+#: this when the attribute is absent; keeping the fallback in one place stops
+#: the three copies drifting apart, which is how the CLI silently stayed on the
+#: old value once before (``F18``).
+DEFAULT_CLUSTERMAP_MAX_READS_PER_PLOT: Final[int] = 10000

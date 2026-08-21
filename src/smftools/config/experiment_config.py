@@ -1184,7 +1184,12 @@ class ExperimentConfig:
     # barcode spans there differ from the union by <2% of positions, which
     # does not justify losing a common x-axis across panels.
     spatial_clustermap_restrict_to_read_span: bool = True
-    clustermap_max_reads_per_plot: Optional[int] = 5000
+    # Reads drawn per (reference, sample) clustermap; larger groups are
+    # randomly subsampled with a seed. Raised to 10,000 (`EGL-27`) in the
+    # dataclass *and* `default.yaml` -- the YAML sits above the dataclass on the
+    # CLI path (`F18`), so changing only one leaves every real run on the old
+    # value, which is the trap `EGL-22` hit.
+    clustermap_max_reads_per_plot: Optional[int] = 10000
     spatial_position_matrix_max_width: int = 5000
     spatial_position_matrix_max_mb: int = 1024
     omit_chimeric_reads: bool = True
@@ -1394,6 +1399,12 @@ class ExperimentConfig:
     force_redo_calculate_read_modification_stats: bool = False
     bypass_filter_reads_on_modification_thresholds: bool = False
     force_redo_filter_reads_on_modification_thresholds: bool = False
+    # Skip PELT deamination segmentation. Distinct from the modality gate: a
+    # `direct` run has no deamination chemistry and already pays nothing, while
+    # this is for *having* the chemistry and declining the compute. The scalar
+    # `deaminase_PCR_chimera` column is still produced, so bypassing removes the
+    # expensive half rather than chimera detection entirely (`EGL-25`).
+    bypass_deamination_segmentation: bool = False
     bypass_flag_duplicate_reads: bool = False
     force_redo_flag_duplicate_reads: bool = False
     bypass_complexity_analysis: bool = False
@@ -2308,7 +2319,7 @@ class ExperimentConfig:
                 merged.get("spatial_clustermap_restrict_to_read_span", True)
             ),
             clustermap_max_reads_per_plot=_parse_numeric(
-                merged.get("clustermap_max_reads_per_plot", 5000), None
+                merged.get("clustermap_max_reads_per_plot", 10000), None
             ),
             spatial_position_matrix_max_width=int(
                 _parse_numeric(merged.get("spatial_position_matrix_max_width", 5000), 5000)
@@ -2705,6 +2716,9 @@ class ExperimentConfig:
             ),
             force_redo_filter_reads_on_modification_thresholds=merged.get(
                 "force_redo_filter_reads_on_modification_thresholds", False
+            ),
+            bypass_deamination_segmentation=_parse_bool(
+                merged.get("bypass_deamination_segmentation", False)
             ),
             bypass_flag_duplicate_reads=merged.get("bypass_flag_duplicate_reads", False),
             force_redo_flag_duplicate_reads=merged.get("force_redo_flag_duplicate_reads", False),

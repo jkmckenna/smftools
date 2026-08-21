@@ -9,7 +9,11 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from smftools.constants import COVERED_BASE_MASK, REFERENCE_STRAND
+from smftools.constants import (
+    COVERED_BASE_MASK,
+    DEFAULT_CLUSTERMAP_MAX_READS_PER_PLOT,
+    REFERENCE_STRAND,
+)
 from smftools.logging_utils import get_logger
 
 from ..cli.hmm_adata import (
@@ -967,7 +971,9 @@ def _plot_feature_clustermaps(
         allow_gaps=bool(getattr(cfg, "plot_allow_unanalyzed_gaps", False)),
     )
     read_index = output_dir / "read_index"
-    max_reads_per_plot = getattr(cfg, "clustermap_max_reads_per_plot", 5000)
+    max_reads_per_plot = getattr(
+        cfg, "clustermap_max_reads_per_plot", DEFAULT_CLUSTERMAP_MAX_READS_PER_PLOT
+    )
     selection_seed = int(getattr(cfg, "plot_subsample_seed", 0))
     for plan in plans:
         reference, core_start, core_end = plan.reference, plan.start, plan.end
@@ -1072,7 +1078,9 @@ def _plot_feature_clustermaps(
             # previously hardcoded to 1, leaving that dispatch unused.
             n_jobs=max(1, int(getattr(cfg, "threads", 1) or 1)),
             restrict_to_read_span=bool(getattr(cfg, "hmm_clustermap_restrict_to_read_span", False)),
-            max_reads_per_plot=getattr(cfg, "clustermap_max_reads_per_plot", 5000),
+            max_reads_per_plot=getattr(
+                cfg, "clustermap_max_reads_per_plot", DEFAULT_CLUSTERMAP_MAX_READS_PER_PLOT
+            ),
             cfg=cfg,
         )
         for layer in feature_layers:

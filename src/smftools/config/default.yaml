@@ -326,7 +326,7 @@ clustermap_cmap_cpg: "coolwarm"
 clustermap_cmap_a: "coolwarm"
 spatial_clustermap_sortby: "gpc"
 spatial_clustermap_restrict_to_read_span: True # Crop spatial clustermap x-axis to the observed read span (min reference_start to max reference_end) instead of the full reference
-clustermap_max_reads_per_plot: 5000 # Max reads drawn per (reference, sample) clustermap; larger groups are randomly subsampled to this (reproducible). Raise it to effectively disable.
+clustermap_max_reads_per_plot: 10000 # Max reads drawn per (reference, sample) clustermap; larger groups are randomly subsampled to this (reproducible). Raise it to effectively disable.
 spatial_position_matrix_max_width: 5000 # Hard maximum positions in a dense position-by-position product.
 spatial_position_matrix_max_mb: 1024 # Hard estimated-memory limit for all dense matrices retained for one plot region.
 omit_chimeric_reads: True
@@ -636,6 +636,7 @@ bypass_calculate_read_modification_stats: False # Whether to skip adding read le
 force_redo_calculate_read_modification_stats: False # Whether to force redo adding read level modification statistics.
 bypass_filter_reads_on_modification_thresholds: False # Whether to skip filtering reads based on read level modification statistics.
 force_redo_filter_reads_on_modification_thresholds: False # Whether to redo filtering reads based on read level modification statistics.
+bypass_deamination_segmentation: False # Skip PELT deamination segmentation; the scalar deaminase_PCR_chimera column is still produced
 bypass_flag_duplicate_reads: False # Whether to skip flagging duplicate reads based on modification similarity.
 force_redo_flag_duplicate_reads: False # Whether to redo flagging duplicate reads based on modification similarity.
 bypass_complexity_analysis: False # Whether to skip complexity analysis

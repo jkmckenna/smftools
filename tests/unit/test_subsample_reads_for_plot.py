@@ -45,11 +45,11 @@ def test_reproducible_across_calls():
     assert first == second
 
 
-def test_config_default_is_5000_and_int_override_applies():
+def test_config_default_is_10000_and_int_override_applies():
     from smftools.config.experiment_config import ExperimentConfig
 
     cfg, _ = ExperimentConfig.from_var_dict({})
-    assert cfg.clustermap_max_reads_per_plot == 5000
+    assert cfg.clustermap_max_reads_per_plot == 10000
     cfg_set, _ = ExperimentConfig.from_var_dict({"clustermap_max_reads_per_plot": "1200"})
     assert cfg_set.clustermap_max_reads_per_plot == 1200
 
