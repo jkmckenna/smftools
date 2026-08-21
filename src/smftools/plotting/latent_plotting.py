@@ -839,3 +839,160 @@ def plot_pca_explained_variance(
     logger.info("Saved PCA explained variance plot to %s.", out_file)
 
     return out_file
+
+
+# ---------------------------------------------------------------------------
+# Latent-ordered clustermaps (`EGL-28c`)
+# ---------------------------------------------------------------------------
+
+
+def plot_latent_ordered_clustermap(
+    panels,
+    *,
+    row_order,
+    blocks,
+    labels,
+    label_source=None,
+    position_labels=None,
+    title="",
+    save_path=None,
+    separator_color="black",
+    separator_width=0.8,
+    figure_width=18.0,
+    figure_height=9.0,
+    dpi=140,
+):
+    """Render several layers of the same molecules side by side in one figure.
+
+    ``panels`` is a sequence of mappings with ``name``, ``matrix``, ``cmap``,
+    optional ``vmin``/``vmax`` and optional ``positions``. Every matrix must
+    share the row axis; they are drawn in the order given, all reordered by
+    ``row_order``, so a row is the same molecule across all of them. Column
+    counts may differ -- the raw panel is restricted to modification sites
+    while the length layers span every position -- so each panel carries its
+    own axis labels, in the same coordinate system so they stay comparable by
+    value. That shared row is the point of the figure -- three separate figures
+    cannot be read against each other molecule by molecule, which is why this
+    departs from the reference analysis's directory-per-layer output.
+
+    ``blocks`` are the ``(label, start, stop)`` spans from ``latent_row_order``,
+    already in display order. They drive the separators and the cluster strip,
+    so the strip cannot drift out of step with the rows it labels.
+
+    ``label_source``, when given, adds a strip distinguishing fitted labels
+    from ones transferred by proximity. A figure that renders the two
+    identically invites reading a transferred block as evidence for the
+    clustering that produced it.
+    """
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import ListedColormap
+
+    row_order = np.asarray(row_order, dtype=int)
+    labels = np.asarray(labels, dtype=object).astype(str)[row_order]
+    n_panels = len(panels)
+    if n_panels == 0:
+        return None
+
+    strip_count = 1 + (1 if label_source is not None else 0)
+    figure = plt.figure(figsize=(figure_width, figure_height))
+    grid = figure.add_gridspec(
+        2,
+        n_panels + strip_count,
+        height_ratios=(1, 6),
+        width_ratios=[10] * n_panels + [0.35] * strip_count,
+        hspace=0.05,
+        wspace=0.08,
+    )
+
+    for index, panel in enumerate(panels):
+        name = str(panel["name"])
+        values = np.asarray(panel["matrix"], dtype=float)[row_order]
+        cmap = panel.get("cmap", "viridis")
+        vmin, vmax = panel.get("vmin"), panel.get("vmax")
+        panel_positions = panel.get("positions", position_labels)
+
+        # Mean-across-molecules trace above each panel, so a block of the
+        # heatmap can be read against the population profile at the same x.
+        trace_axis = figure.add_subplot(grid[0, index])
+        with np.errstate(invalid="ignore"):
+            column_mean = np.nanmean(values, axis=0)
+        trace_axis.plot(np.arange(values.shape[1]), column_mean, linewidth=0.7, color="#264653")
+        trace_axis.set_xlim(0, max(values.shape[1] - 1, 1))
+        trace_axis.set_title(name, fontsize=10)
+        trace_axis.tick_params(labelbottom=False, labelsize=7)
+        for spine in ("top", "right"):
+            trace_axis.spines[spine].set_visible(False)
+
+        heat_axis = figure.add_subplot(grid[1, index])
+        heat_axis.imshow(
+            values, aspect="auto", interpolation="nearest", cmap=cmap, vmin=vmin, vmax=vmax
+        )
+        # Separators are drawn from the reported spans rather than recomputed
+        # from the reordered labels: a span that disagrees with its rows still
+        # renders, silently, and this keeps one source of truth.
+        for _label, start, stop in blocks[1:]:
+            heat_axis.axhline(start - 0.5, color=separator_color, linewidth=separator_width)
+        heat_axis.set_xlabel("Position")
+        if index == 0:
+            heat_axis.set_ylabel(f"Molecules (n={values.shape[0]})")
+        else:
+            heat_axis.tick_params(labelleft=False)
+        if panel_positions is not None and len(panel_positions) == values.shape[1]:
+            ticks = np.linspace(0, values.shape[1] - 1, min(8, values.shape[1])).astype(int)
+            heat_axis.set_xticks(ticks)
+            heat_axis.set_xticklabels(
+                [str(panel_positions[tick]) for tick in ticks], rotation=90, fontsize=7
+            )
+
+    def _strip(column, values, name):
+        axis = figure.add_subplot(grid[1, n_panels + column])
+        categories = sorted(set(values))
+        lookup = {value: index for index, value in enumerate(categories)}
+        codes = np.array([[lookup[value]] for value in values])
+        palette = plt.get_cmap("tab20", max(len(categories), 1))
+        axis.imshow(
+            codes,
+            aspect="auto",
+            interpolation="nearest",
+            cmap=ListedColormap([palette(index) for index in range(len(categories))]),
+        )
+        axis.set_xticks([])
+        axis.tick_params(labelleft=False, length=0)
+        axis.set_xlabel(name, rotation=90, fontsize=7, labelpad=6)
+        return categories
+
+    cluster_categories = _strip(0, labels, "cluster")
+    # Label the clusters in place: with 4-10 blocks a legend is redundant, and
+    # an in-place label survives being cropped out of a legend-less thumbnail.
+    strip_axis = figure.axes[-1]
+    for label, start, stop in blocks:
+        strip_axis.text(
+            0,
+            (start + stop) / 2 - 0.5,
+            label,
+            ha="center",
+            va="center",
+            fontsize=6,
+            color="white",
+        )
+    if label_source is not None:
+        source_values = np.asarray(label_source, dtype=object).astype(str)[row_order]
+        _strip(1, source_values, "label source")
+
+    figure.suptitle(title, fontsize=11)
+    if save_path is None:
+        plt.close(figure)
+        return None
+    save_path = Path(save_path)
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    figure.savefig(save_path, dpi=dpi, bbox_inches="tight")
+    plt.close(figure)
+    return {
+        "output_path": str(save_path),
+        "n_molecules": int(len(row_order)),
+        "n_clusters": len(cluster_categories),
+        "panels": [str(panel["name"]) for panel in panels],
+    }

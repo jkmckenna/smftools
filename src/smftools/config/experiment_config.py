@@ -1385,6 +1385,7 @@ class ExperimentConfig:
     # which multiply as strategies x suffixes x references x regions. Defaults
     # to the pair the reference analysis used. Empty means every strategy.
     latent_clustermap_strategies: List[str] = field(default_factory=lambda: ["pca", "umap"])
+    latent_plot_clustermaps: bool = True
     latent_random_state: int = 0
     latent_max_fit_reads: int = 5000
     latent_transform_chunk_reads: int = 2000
@@ -2670,6 +2671,7 @@ class ExperimentConfig:
             latent_clustermap_strategies=_parse_list(
                 merged.get("latent_clustermap_strategies", ["pca", "umap"])
             ),
+            latent_plot_clustermaps=_parse_bool(merged.get("latent_plot_clustermaps", True)),
             latent_leiden_resolution=float(
                 _parse_numeric(merged.get("latent_leiden_resolution", 0.1), 0.1)
             ),

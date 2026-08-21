@@ -1264,6 +1264,60 @@ def _plot_task(result, record, cfg, layout) -> None:
             )
 
 
+def _plot_latent_clustermaps(result, record, cfg, layout, *, spine_path) -> None:
+    """Render `EGL-28c` clustermaps for one already-clustered unit.
+
+    Called with the in-memory plot subset rather than re-reading the unit: the
+    labels depend on which molecules were in the fit subset, so a second
+    clustering pass over a different selection would disagree with what was
+    published.
+    """
+    from .latent_clustermaps import (
+        load_unit_panels,
+        render_unit_clustermaps,
+        resolve_hmm_generation,
+    )
+
+    try:
+        spine = load_spine(spine_path, verbose=False)
+        run_root = Path(spine_path).parent.parent
+        hmm_generation = resolve_hmm_generation(spine, run_root)
+        read_ids = [str(name) for name in result.obs_names]
+        loaded = load_unit_panels(
+            reference=str(record["reference"]),
+            start=int(record["core_start"]),
+            end=int(record["core_end"]),
+            read_ids=read_ids,
+            spine_path=spine_path,
+            hmm_generation=hmm_generation,
+            cfg=cfg,
+        )
+        if loaded is None:
+            return
+        raw, positions, grids, layer_names = loaded
+        render_unit_clustermaps(
+            result,
+            reference=str(record["reference"]),
+            start=int(record["core_start"]),
+            end=int(record["core_end"]),
+            raw=raw,
+            positions=positions,
+            grids=grids,
+            layer_names=layer_names,
+            plot_layout=layout,
+            cfg=cfg,
+        )
+    except Exception:
+        # Additive: without these the stage still publishes coordinates,
+        # labels and embedding plots, which is what existing consumers read.
+        logger.exception(
+            "Latent clustermaps failed for %s:%s-%s; generation still published",
+            record.get("reference"),
+            record.get("core_start"),
+            record.get("core_end"),
+        )
+
+
 def _read_plot_subset(group_path: Path, *, max_reads: int, seed: int):
     """Lazily materialize only the deterministic rows admitted for plotting."""
     import anndata as ad
@@ -2093,6 +2147,8 @@ def execute_partitioned_latent(
                 seed=int(getattr(cfg, "plot_subsample_seed", 0)),
             )
             _plot_task(result, record, cfg, layout)
+            if bool(getattr(cfg, "latent_plot_clustermaps", True)):
+                _plot_latent_clustermaps(result, record, cfg, layout, spine_path=spine_path)
             record["measured_peak_bytes"] = max(
                 int(record["measured_peak_bytes"]),
                 _memory_sample_bytes(),
