@@ -60,6 +60,12 @@ def deamination_reporting_enabled(cfg) -> bool:
     -- which has no such chemistry and, in general, no chimeras -- pays nothing,
     and a modality that later gains a conversion map is picked up automatically.
     """
+    if bool(getattr(cfg, "bypass_deamination_segmentation", False)):
+        logger.info(
+            "Deamination segmentation bypassed by config; the scalar "
+            "deaminase_PCR_chimera column is unaffected"
+        )
+        return False
     return bool(
         deamination_substitutions(
             getattr(cfg, "smf_modality", None),

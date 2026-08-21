@@ -52,18 +52,38 @@ def _read_shards(variant_dir: Path, filename: str, columns: list[str]) -> pd.Dat
     return frame
 
 
-def _select_reads(obs: pd.DataFrame, sample_column: str, max_reads_per_panel: int) -> pd.DataFrame:
-    """Cap reads per (reference, sample) panel deterministically.
+def _select_reads(
+    obs: pd.DataFrame,
+    sample_column: str,
+    max_reads_per_panel: int,
+    *,
+    seed: int = 0,
+) -> pd.DataFrame:
+    """Cap reads per (reference, sample) panel by seeded random sampling.
 
-    Takes the first N in stable read-id order rather than sampling: a plot whose
-    composition changes between runs over unchanged data is not a diagnostic.
+    Reproducibility comes from the *seed*, not from taking the first N. The
+    original version took the head of a read-id sort, reasoning that a plot
+    whose composition changes between runs over unchanged data is not a
+    diagnostic. The reasoning holds; the implementation was the wrong way to get
+    it. Read ids are not randomly ordered with respect to anything, so first-N
+    is a biased slice of the population, while a seeded sample is both
+    reproducible and representative -- which is what `select_plot_reads` and
+    `subsample_reads_for_plot` already do elsewhere (`EGL-27`).
     """
     if not max_reads_per_panel or max_reads_per_panel <= 0:
         return obs
-    ordered = obs.sort_values([REFERENCE_STRAND, sample_column, "read_id"], kind="stable")
-    return ordered.groupby([REFERENCE_STRAND, sample_column], observed=True, sort=False).head(
-        int(max_reads_per_panel)
-    )
+    cap = int(max_reads_per_panel)
+    # Explicit loop rather than `groupby.apply`: the latter also operates on the
+    # grouping columns, which pandas deprecates, and the per-group short-circuit
+    # is clearer here than inside a lambda.
+    parts = [
+        group if len(group) <= cap else group.sample(n=cap, random_state=seed)
+        for _key, group in obs.groupby([REFERENCE_STRAND, sample_column], observed=True, sort=False)
+    ]
+    if not parts:
+        return obs
+    sampled = pd.concat(parts)
+    return sampled.sort_values([REFERENCE_STRAND, sample_column, "read_id"], kind="stable")
 
 
 def build_variant_segment_layers(
@@ -164,7 +184,9 @@ def generate_variant_segment_plots(
         return []
 
     max_reads = int(getattr(cfg, "clustermap_max_reads_per_plot", 5000) or 5000)
-    obs = _select_reads(obs, sample_column, max_reads)
+    obs = _select_reads(
+        obs, sample_column, max_reads, seed=int(getattr(cfg, "plot_subsample_seed", 0))
+    )
 
     references = list(getattr(cfg, "references_to_align_for_variant_annotation", []) or [])
     seq1_column = str(references[0]) if len(references) > 0 and references[0] else "member_1"
