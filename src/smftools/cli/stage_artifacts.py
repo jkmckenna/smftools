@@ -28,6 +28,9 @@ STAGE_PLOT_CATEGORIES = {
         # so its segment clustermaps land here rather than under the separate
         # (pre-partition) "variant" stage below.
         "variant_segments",
+        # Strand-chemistry segments from the deamination lane (`EGL-21`),
+        # alongside the allele-identity ones above.
+        "deamination_segments",
         "duplicate_qc",
         "library_complexity",
         "read_span_quality",

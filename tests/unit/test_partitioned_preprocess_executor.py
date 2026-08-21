@@ -804,6 +804,8 @@ def test_partitioned_executor_writes_derived_layers_context_and_reduced_coverage
         # Variant reporting runs inside preprocess in the partitioned pipeline,
         # so its segment clustermaps land under this stage.
         "variant_segments",
+        # Strand-chemistry segments from the deamination lane (`EGL-21`).
+        "deamination_segments",
         "duplicate_qc",
         "library_complexity",
         "read_span_quality",
