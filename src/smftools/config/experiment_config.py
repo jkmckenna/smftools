@@ -808,6 +808,9 @@ def load_defaults_with_inheritance(
 # -------------------------
 # ExperimentConfig dataclass
 # -------------------------
+_DEFAULT_LEIDEN_RESOLUTION_BY_STRATEGY = {"pca": 0.5, "umap": 0.01, "nmf": 0.01, "cp": 0.0005}
+
+
 @dataclass
 class ExperimentConfig:
     # Compute
@@ -1366,9 +1369,22 @@ class ExperimentConfig:
     # existing configs are unaffected. The right resolution for a 10-component
     # PCA and a 2-component UMAP are not the same number (`EGL-28a`).
     latent_knn_neighbors_by_strategy: Dict[str, int] = field(default_factory=dict)
-    latent_leiden_resolution_by_strategy: Dict[str, float] = field(default_factory=dict)
+    # Chosen 2026-08-21 to land each strategy near 4-10 clusters, measured by
+    # sweeping 13 resolutions across all 24 embeddings of the DAF and EMseq
+    # pilots. A single shared resolution cannot do this: at 0.1, PCA collapsed
+    # to 1-2 clusters while UMAP gave 10-18 and CP gave up to 150. `cp` is
+    # included for completeness but cannot reach the band at any resolution --
+    # its `non_mod_site` variants stay above 50 clusters throughout.
+    latent_leiden_resolution_by_strategy: Dict[str, float] = field(
+        default_factory=lambda: dict(_DEFAULT_LEIDEN_RESOLUTION_BY_STRATEGY)
+    )
     latent_knn_metric_by_strategy: Dict[str, str] = field(default_factory=dict)
     latent_cluster_embeddings: bool = True
+    # Which strategies get latent-ordered clustermaps (`EGL-28c`). Clustering
+    # itself still runs for every embedding; this bounds only the figures,
+    # which multiply as strategies x suffixes x references x regions. Defaults
+    # to the pair the reference analysis used. Empty means every strategy.
+    latent_clustermap_strategies: List[str] = field(default_factory=lambda: ["pca", "umap"])
     latent_random_state: int = 0
     latent_max_fit_reads: int = 5000
     latent_transform_chunk_reads: int = 2000
@@ -2646,11 +2662,14 @@ class ExperimentConfig:
             latent_knn_neighbors_by_strategy=merged.get("latent_knn_neighbors_by_strategy", {})
             or {},
             latent_leiden_resolution_by_strategy=merged.get(
-                "latent_leiden_resolution_by_strategy", {}
+                "latent_leiden_resolution_by_strategy", None
             )
-            or {},
+            or dict(_DEFAULT_LEIDEN_RESOLUTION_BY_STRATEGY),
             latent_knn_metric_by_strategy=merged.get("latent_knn_metric_by_strategy", {}) or {},
             latent_cluster_embeddings=_parse_bool(merged.get("latent_cluster_embeddings", True)),
+            latent_clustermap_strategies=_parse_list(
+                merged.get("latent_clustermap_strategies", ["pca", "umap"])
+            ),
             latent_leiden_resolution=float(
                 _parse_numeric(merged.get("latent_leiden_resolution", 0.1), 0.1)
             ),

@@ -245,7 +245,10 @@ def test_config_exposes_the_per_strategy_knobs():
     cfg = ExperimentConfig()
     assert cfg.latent_cluster_embeddings is True
     assert cfg.latent_knn_neighbors_by_strategy == {}
-    assert cfg.latent_leiden_resolution_by_strategy == {}
+    # Resolution ships populated -- measured per strategy against a 4-10
+    # cluster target; see `test_latent_resolution_defaults`. Neighbours and
+    # metric ship empty because no measurement justified splitting them.
+    assert set(cfg.latent_leiden_resolution_by_strategy) == {"pca", "umap", "nmf", "cp"}
 
 
 def test_resolution_choice_changes_the_answer():
