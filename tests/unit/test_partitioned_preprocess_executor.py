@@ -806,6 +806,8 @@ def test_partitioned_executor_writes_derived_layers_context_and_reduced_coverage
         "variant_segments",
         # Strand-chemistry segments from the deamination lane (`EGL-21`).
         "deamination_segments",
+        # Per-read sequence/mismatch panels (`EGL-26`).
+        "mismatch_clustermaps",
         "duplicate_qc",
         "library_complexity",
         "read_span_quality",

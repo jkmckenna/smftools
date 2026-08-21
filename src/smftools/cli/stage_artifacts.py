@@ -31,6 +31,10 @@ STAGE_PLOT_CATEGORIES = {
         # Strand-chemistry segments from the deamination lane (`EGL-21`),
         # alongside the allele-identity ones above.
         "deamination_segments",
+        # Per-read sequence/mismatch panels the pre-partition `variant` CLI
+        # produced (`EGL-26`); reference-error diagnostics rather than
+        # allele or chemistry calls, so they get their own category.
+        "mismatch_clustermaps",
         "duplicate_qc",
         "library_complexity",
         "read_span_quality",

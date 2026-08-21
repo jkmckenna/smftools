@@ -119,3 +119,49 @@ def test_plot_sequence_integer_encoding_clustermaps_reorders_for_inverted_refere
 
     assert "matrix" in captured
     np.testing.assert_array_equal(captured["matrix"][0], [3, 2, 1, 0])
+
+
+def _encoding_adata():
+    matplotlib.use("Agg")
+    matrix = np.array([[0, 1, 2, 3, 4], [1, 2, 3, 0, 4], [2, 3, 0, 1, 4], [3, 0, 1, 2, 4]])
+    adata = ad.AnnData(X=np.zeros((4, 5)))
+    adata.layers["sequence_integer_encoding"] = matrix
+    adata.obs["Sample"] = pd.Categorical(["S1", "S1", "S2", "S2"])
+    adata.obs["Reference_strand"] = pd.Categorical(["R1", "R2", "R1", "R2"])
+    adata.var_names = [f"pos{i}" for i in range(5)]
+    adata.uns["sequence_integer_decoding_map"] = {0: "A", 1: "C", 2: "G", 3: "T", 4: "N"}
+    return adata
+
+
+def test_filename_suffix_defaults_to_the_plotted_layer(tmp_path):
+    """`EGL-26` added the override; existing callers must be unaffected."""
+    adata = _encoding_adata()
+    plot_sequence_integer_encoding_clustermaps(
+        adata,
+        sample_col="Sample",
+        reference_col="Reference_strand",
+        min_quality=None,
+        min_length=None,
+        min_mapped_length_to_reference_length_ratio=None,
+        save_path=tmp_path,
+    )
+    names = [path.name for path in tmp_path.glob("*.png")]
+    assert names
+    assert all(name.endswith("__sequence_integer_encoding.png") for name in names)
+
+
+def test_filename_suffix_override_is_honoured(tmp_path):
+    adata = _encoding_adata()
+    plot_sequence_integer_encoding_clustermaps(
+        adata,
+        sample_col="Sample",
+        reference_col="Reference_strand",
+        min_quality=None,
+        min_length=None,
+        min_mapped_length_to_reference_length_ratio=None,
+        save_path=tmp_path,
+        filename_suffix="mismatch_no_mod_sites",
+    )
+    names = [path.name for path in tmp_path.glob("*.png")]
+    assert names
+    assert all(name.endswith("__mismatch_no_mod_sites.png") for name in names)
