@@ -1034,11 +1034,42 @@ def execute_partitioned_preprocessing(
     )
     spine = load_spine(spine_path)
     variant_outputs: dict[str, Path] = {}
+    deamination_outputs: dict[str, Path] = {}
+    from .partitioned_deamination import (
+        DEAMINATION_SUBDIR,
+        deamination_reporting_enabled,
+        execute_partitioned_deamination,
+    )
     from .variant_reporting import (
         VARIANT_REPORTING_SUBDIR,
         resolve_variant_reference_set,
+        variant_candidate_positions_by_reference,
         variant_reporting_enabled,
     )
+
+    # Order matters, and it is the reverse of what it was. Deamination
+    # segmentation runs *before* variant evidence so `EGL-20a` can take variant
+    # acceptance from the chemistry local to each position. The dependency is
+    # acyclic because the candidate site list is derived from the references
+    # alone: candidates -> deamination (excluding them) -> variant calls
+    # (consuming the segments). Nothing flows backwards.
+    candidate_positions: dict[str, set[int]] = {}
+    if variant_reporting_enabled(cfg):
+        candidate_positions = variant_candidate_positions_by_reference(spine_path, cfg)
+
+    if deamination_reporting_enabled(cfg):
+        try:
+            deamination_outputs = execute_partitioned_deamination(
+                spine_path,
+                output_dir,
+                cfg=cfg,
+                excluded_positions_by_reference=candidate_positions,
+            )
+        except Exception:
+            # Deamination evidence is diagnostic; a failure must not abort an
+            # otherwise complete generation. It is logged loudly rather than
+            # swallowed -- silent absence is what let `F13` and `F17` persist.
+            logger.exception("Deamination evidence failed; generation still published")
 
     if variant_reporting_enabled(cfg):
         from .partitioned_variant import execute_partitioned_variant_evidence
@@ -1056,21 +1087,6 @@ def execute_partitioned_preprocessing(
             ),
             cfg=cfg,
         )
-    deamination_outputs: dict[str, Path] = {}
-    from .partitioned_deamination import (
-        DEAMINATION_SUBDIR,
-        deamination_reporting_enabled,
-        execute_partitioned_deamination,
-    )
-
-    if deamination_reporting_enabled(cfg):
-        try:
-            deamination_outputs = execute_partitioned_deamination(spine_path, output_dir, cfg=cfg)
-        except Exception:
-            # Deamination evidence is diagnostic; a failure must not abort an
-            # otherwise complete generation. It is logged loudly rather than
-            # swallowed -- silent absence is what let `F13` and `F17` persist.
-            logger.exception("Deamination evidence failed; generation still published")
 
     obs_sidecar = write_read_qc_sidecar(spine, cfg, output_dir / PREPROCESS_OBS_SIDECAR)
     catalog_path = output_dir / PREPROCESS_PARTITION_CATALOG

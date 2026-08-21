@@ -8,7 +8,11 @@ from typing import Any, Iterable
 import pandas as pd
 
 from ..informatics.partition_read import load_spine, resolve_relative_path
-from .variant_reference import VariantReferenceSet, variant_reference_set_from_legacy
+from .variant_reference import (
+    VariantReferenceSet,
+    calculate_variant_informative_sites,
+    variant_reference_set_from_legacy,
+)
 
 VARIANT_REPORTING_SUBDIR = "variant"
 
@@ -123,6 +127,38 @@ def resolve_variant_reference_set(
     if reference_set is None:
         raise ValueError("variant reporting requires references_to_align_for_variant_annotation")
     return reference_set
+
+
+def variant_candidate_positions_by_reference(
+    spine_path: str | Path,
+    cfg: Any,
+) -> dict[str, set[int]]:
+    """Reference positions that carry allele identity, keyed by reference strand.
+
+    Computed from the *unconverted* catalog, so it is the full candidate set
+    before any chemistry excludes part of it, and -- crucially -- derived from
+    the references alone with no read data. That is what keeps the deamination
+    and variant lanes acyclic: deamination evidence excludes these positions,
+    then variant calling consumes the resulting segments, and nothing flows
+    backwards (`EGL-20a`).
+
+    Without the exclusion the two lanes explain each other. At a C/T informative
+    site a genuine reference difference is indistinguishable from a `C->T`
+    deamination event; on the `241213` pilot **20 of 22** informative sites
+    involve a C or G, so allele identity would masquerade as chemistry and
+    inflate the evidence a chimera call rests on.
+    """
+    reference_set = resolve_variant_reference_set(spine_path, cfg)
+    catalog = calculate_variant_informative_sites(reference_set)
+    by_reference: dict[str, set[int]] = {}
+    for member_index, member in enumerate(reference_set.members):
+        source_id = str(member.source_id or "")
+        reference_strand = source_id.removesuffix("_strand_FASTA_base")
+        if not reference_strand:
+            continue
+        positions = {int(site.member_positions[member_index]) for site in catalog.informative_sites}
+        by_reference[reference_strand] = positions
+    return by_reference
 
 
 def append_variant_reporting_annotations(
