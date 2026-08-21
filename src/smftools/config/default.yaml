@@ -603,6 +603,9 @@ latent_knn_metric: euclidean # Distance metric for the per-embedding KNN graph
 latent_cluster_embeddings: True # Cluster each latent embedding independently (KNN + Leiden in its own coordinates)
 latent_knn_neighbors_by_strategy: {} # Per-strategy neighbor overrides, e.g. {'umap': 15, 'pca': 30}; empty uses latent_knn_neighbors
 latent_leiden_resolution_by_strategy: {'pca': 0.5, 'umap': 0.01, 'nmf': 0.01, 'cp': 0.0005} # Per-strategy Leiden resolution, chosen to land near 4-10 clusters (measured across all 24 embeddings of the DAF and EMseq pilots). A single shared resolution cannot serve every strategy: at 0.1 PCA collapses to 1-2 clusters while UMAP gives 10-18. Empty falls back to latent_leiden_resolution.
+latent_plot_composition: True # Stacked barplots of Leiden cluster composition per group
+latent_composition_group_columns: [] # Obs columns to break composition down by; empty uses sample_name_col_for_plotting. Add a biorep column here once obs carries one.
+latent_composition_min_group_size: 10 # Groups with fewer molecules are omitted; a proportion over a handful of reads is not informative
 latent_plot_clustermaps: True # Render latent-ordered clustermaps (raw accessibility + footprint/accessible feature lengths, rows ordered by the latent clustering)
 latent_clustermap_strategies: ['pca', 'umap'] # Strategies given latent-ordered clustermaps; clustering still runs for every embedding. Empty means all.
 latent_knn_metric_by_strategy: {} # Per-strategy metric overrides; empty uses latent_knn_metric

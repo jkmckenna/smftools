@@ -1318,6 +1318,28 @@ def _plot_latent_clustermaps(result, record, cfg, layout, *, spine_path) -> None
         )
 
 
+def _plot_latent_composition(result, record, cfg, layout) -> None:
+    """Render `EGL-28d` composition barplots for one already-clustered unit."""
+    from .latent_clustermaps import render_unit_composition
+
+    try:
+        render_unit_composition(
+            result,
+            reference=str(record["reference"]),
+            start=int(record["core_start"]),
+            end=int(record["core_end"]),
+            plot_layout=layout,
+            cfg=cfg,
+        )
+    except Exception:
+        logger.exception(
+            "Composition barplots failed for %s:%s-%s; generation still published",
+            record.get("reference"),
+            record.get("core_start"),
+            record.get("core_end"),
+        )
+
+
 def _read_plot_subset(group_path: Path, *, max_reads: int, seed: int):
     """Lazily materialize only the deterministic rows admitted for plotting."""
     import anndata as ad
@@ -2149,6 +2171,8 @@ def execute_partitioned_latent(
             _plot_task(result, record, cfg, layout)
             if bool(getattr(cfg, "latent_plot_clustermaps", True)):
                 _plot_latent_clustermaps(result, record, cfg, layout, spine_path=spine_path)
+            if bool(getattr(cfg, "latent_plot_composition", True)):
+                _plot_latent_composition(result, record, cfg, layout)
             record["measured_peak_bytes"] = max(
                 int(record["measured_peak_bytes"]),
                 _memory_sample_bytes(),

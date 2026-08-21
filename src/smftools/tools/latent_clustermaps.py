@@ -37,6 +37,7 @@ from smftools.logging_utils import get_logger
 logger = get_logger(__name__)
 
 PLOT_TYPE = "latent_ordered_clustermap"
+COMPOSITION_PLOT_TYPE = "leiden_composition"
 RAW_PANEL = "raw accessibility"
 
 
@@ -180,6 +181,117 @@ def _panel_specs(raw_panel, grids, layer_names, positions):
             }
         )
     return panels
+
+
+def resolve_composition_groups(obs, cfg) -> list[str]:
+    """Which obs columns to break composition down by.
+
+    Configurable rather than fixed because there is no biorep column in the
+    store today -- neither the obs nor the config has any notion of one, so
+    hard-coding `biorep` would produce a plot that never renders. The default
+    is the plotting sample column; adding a biorep column to obs (or naming an
+    existing one here) makes the per-biorep breakdown appear with no code
+    change.
+
+    Columns with a single value across the unit are dropped: a stacked bar
+    chart with one bar is the cluster strip again, with more ink.
+    """
+    requested = [
+        str(name) for name in (getattr(cfg, "latent_composition_group_columns", None) or [])
+    ]
+    if not requested:
+        fallback = str(getattr(cfg, "sample_name_col_for_plotting", "Barcode"))
+        requested = [fallback]
+    usable = []
+    for column in requested:
+        if column not in obs.columns:
+            logger.info("Composition column %s absent from obs; skipping it.", column)
+            continue
+        if obs[column].astype(str).nunique() < 2:
+            logger.info(
+                "Composition column %s has a single value in this unit; skipping it.", column
+            )
+            continue
+        usable.append(column)
+    return usable
+
+
+def render_unit_composition(
+    unit,
+    *,
+    reference: str,
+    start: int,
+    end: int,
+    plot_layout,
+    cfg,
+    category: str = "clusters",
+) -> list[dict]:
+    """Stacked cluster-composition barplots per group, per embedding."""
+    from smftools.cli.stage_artifacts import register_plot_artifact
+    from smftools.plotting import cluster_color_map, plot_leiden_composition
+
+    from .latent_clustering import embedding_keys, parse_embedding_key
+
+    selected = [str(name) for name in (getattr(cfg, "latent_clustermap_strategies", None) or [])]
+    group_columns = resolve_composition_groups(unit.obs, cfg)
+    if not group_columns:
+        logger.info("No usable composition grouping for %s; skipping barplots.", reference)
+        return []
+    min_group_size = int(getattr(cfg, "latent_composition_min_group_size", 1))
+    save_root = Path(plot_layout.categories[category])
+
+    results: list[dict] = []
+    for key in embedding_keys(unit):
+        strategy, suffix = parse_embedding_key(key)
+        if selected and strategy not in selected:
+            continue
+        label_key = f"leiden_{strategy}_{suffix}"
+        if label_key not in unit.obs:
+            continue
+        labels = unit.obs[label_key].astype(str).to_numpy()
+        # One colour map per embedding, shared across its groupings *and* with
+        # the clustermap, so cluster 3 is the same colour everywhere it appears.
+        colors = cluster_color_map(labels)
+        for column in group_columns:
+            filename = f"{reference}__{start}-{end}__{key}__by_{column}.png".replace("/", "_")
+            rendered = plot_leiden_composition(
+                labels,
+                unit.obs[column].astype(str).to_numpy(),
+                group_name=column,
+                title=f"{reference} {start}-{end} \u2014 {key} by {column}",
+                save_path=save_root / filename,
+                min_group_size=min_group_size,
+                color_map=colors,
+            )
+            if rendered is None:
+                logger.info(
+                    "No %s group reached %d molecule(s) for %s; no barplot drawn.",
+                    column,
+                    min_group_size,
+                    reference,
+                )
+                continue
+            rendered.update({"reference": reference, "embedding": key, "group_column": column})
+            results.append(rendered)
+            register_plot_artifact(
+                plot_layout,
+                rendered["output_path"],
+                stage="latent",
+                category=category,
+                plot_type=COMPOSITION_PLOT_TYPE,
+                reference=reference,
+                core_start=start,
+                core_end=end,
+            )
+            logger.info(
+                "Composition barplot for %s %s by %s: %d group(s), %d cluster(s)",
+                reference,
+                key,
+                column,
+                rendered["n_groups"],
+                rendered["n_clusters"],
+            )
+    return results
 
 
 def render_unit_clustermaps(
