@@ -1006,6 +1006,7 @@ class ExperimentConfig:
     clustermap_demux_types_to_plot: List[str] = field(
         default_factory=lambda: ["single", "double", "already"]
     )
+    plot_mismatch_clustermaps: bool = True
     read_span_quality_clustermap_sort_method: str = "hierarchical"
     read_span_quality_clustermap_pca_n_components: Optional[int] = 20
     read_span_quality_clustermap_pca_sort_component: int = 0
@@ -2295,6 +2296,7 @@ class ExperimentConfig:
             reindexing_offsets=merged.get("reindexing_offsets", {}),
             reindexed_var_suffix=merged.get("reindexed_var_suffix", "reindexed"),
             reindexing_invert=merged.get("reindexing_invert", {}),
+            plot_mismatch_clustermaps=_parse_bool(merged.get("plot_mismatch_clustermaps", True)),
             clustermap_demux_types_to_plot=merged.get(
                 "clustermap_demux_types_to_plot", ["single", "double", "already"]
             ),

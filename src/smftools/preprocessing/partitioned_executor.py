@@ -1356,6 +1356,26 @@ def execute_partitioned_preprocessing(
             task_catalog=task_catalog,
             read_index=read_index_dir,
         )
+        # Before the `publication_dir` rebind below, like every other consumer
+        # that materializes slices (`EGL-14`): these read through the spine's
+        # artifact pointers, which still describe where the files actually are.
+        if bool(getattr(cfg, "plot_mismatch_clustermaps", True)):
+            from .partitioned_mismatch_plots import generate_mismatch_clustermaps
+
+            try:
+                generate_mismatch_clustermaps(
+                    output_spine,
+                    plot_layout,
+                    task_catalog,
+                    read_index_dir,
+                    cfg=cfg,
+                )
+            except Exception:
+                # A plot failure must not abort an otherwise publishable
+                # generation, but it must be visible -- the reason these were
+                # missing for months is that nothing said so.
+                logger.exception("Mismatch clustermaps failed; generation still published")
+
         if variant_outputs:
             from .variant_metrics import generate_variant_qc_plots
 

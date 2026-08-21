@@ -637,7 +637,8 @@ def _plot_seq_encoding_one_group(args: dict) -> dict:
 
     out_file = None
     if save_path is not None:
-        safe_name = f"{ref}__{sample}__{layer}".replace("=", "").replace(",", "_")
+        suffix = args.get("filename_suffix") or layer
+        safe_name = f"{ref}__{sample}__{suffix}".replace("=", "").replace(",", "_")
         out_file = Path(save_path) / f"{safe_name}.png"
         fig.savefig(out_file, dpi=300, bbox_inches="tight")
         _plt.close(fig)
@@ -1225,6 +1226,7 @@ def plot_sequence_integer_encoding_clustermaps(
     position_axis_tick_target: int = 25,
     n_jobs: int = 1,
     index_col_suffix: str | None = None,
+    filename_suffix: str | None = None,
 ):
     """Plot integer-encoded sequence clustermaps per sample/reference.
 
@@ -1480,6 +1482,7 @@ def plot_sequence_integer_encoding_clustermaps(
                     "xtick_step": xtick_step,
                     "show_numeric_colorbar": show_numeric_colorbar,
                     "save_path": str(save_path) if save_path is not None else None,
+                    "filename_suffix": filename_suffix,
                 }
 
     # ------------------------------------------------------------------

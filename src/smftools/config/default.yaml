@@ -615,6 +615,7 @@ spatial_matrix_min_reads: 2 # Minimum barcode reads required for dense region pr
 spatial_save_read_autocorrelation: True # Save per-read ACF and lag-pair counts in partitioned sidecars
 spatial_compute_read_lomb_scargle: True # Save direct-signal per-read Lomb-Scargle periodograms
 spatial_plot_read_lomb_scargle: True # Plot barcode summaries and mean periodogram heatmaps
+plot_mismatch_clustermaps: True # Plot per-read mismatch clustermaps during preprocess (modification sites excluded, so the panel shows sequence error rather than conversion chemistry)
 spatial_plot_read_metric_clustermaps: True # Plot per-read ACF and periodogram clustermaps by barcode
 spatial_lomb_scargle_period_range_bp: [80, 400] # Periodogram range in base pairs
 spatial_lomb_scargle_peak_range_bp: [150, 250] # Peak-search range in base pairs
