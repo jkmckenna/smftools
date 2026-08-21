@@ -19,6 +19,7 @@ from smftools.plotting.plotting_utils import (
     _layer_to_numpy_np,
     _methylation_fraction_for_layer,
     _ordered_columns,
+    chimera_filter_column,
     clean_barplot,
     coerce_bool_series,
     make_row_colors,
@@ -1083,7 +1084,9 @@ def combined_raw_clustermap(
                 else (lambda s: pd.Series(True, index=s.index)),
             )
             chimeric_mask = (
-                _mask_or_true("chimeric_variant_sites", lambda s: ~coerce_bool_series(s))
+                _mask_or_true(
+                    chimera_filter_column(adata.obs.columns), lambda s: ~coerce_bool_series(s)
+                )
                 if omit_chimeric_reads
                 else pd.Series(True, index=adata.obs.index)
             )

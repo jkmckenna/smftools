@@ -180,6 +180,58 @@ def _write_parquet(frame: pd.DataFrame, path: Path) -> Path:
     return path
 
 
+def append_deamination_annotations(obs_path, deamination_obs_path) -> "Path":
+    """Merge per-molecule deamination summaries into the preprocess obs sidecar.
+
+    Mirrors `variant_reporting.append_variant_reporting_annotations`. Carries the
+    chimera call plus the evidence behind it -- efficiency, error rate, segment
+    count, switch positions -- so a surprising classification can be checked
+    without recomputing the lane.
+    """
+    obs_path = Path(obs_path)
+    summary = pd.read_parquet(deamination_obs_path)
+    if summary.empty:
+        return obs_path
+    obs = pd.read_parquet(obs_path)
+    carried = [
+        "read_id",
+        "n_observations",
+        "efficiency",
+        "error_rate",
+        "segment_count",
+        "strands_present",
+        "dominant_strand",
+        "switch_positions",
+        CHIMERA_COLUMN,
+    ]
+    summary = summary[[column for column in carried if column in summary.columns]]
+    summary = summary.rename(
+        columns={
+            "n_observations": "deamination_observation_count",
+            "efficiency": "deamination_efficiency",
+            "error_rate": "deamination_error_rate",
+            "segment_count": "deamination_segment_count",
+            "strands_present": "deamination_strands_present",
+            "dominant_strand": "deamination_dominant_strand",
+            "switch_positions": "deamination_switch_positions",
+        }
+    )
+    summary["read_id"] = summary["read_id"].astype(str)
+    obs["read_id"] = obs["read_id"].astype(str)
+    merged = obs.merge(summary, on="read_id", how="left")
+    # A read the lane could not summarize is not "not chimeric" -- it is
+    # unmeasured. False is correct for the flag only because the composite
+    # column treats an absent *method* separately from an unmeasured read.
+    merged[CHIMERA_COLUMN] = merged[CHIMERA_COLUMN].fillna(False).astype(bool)
+    merged.to_parquet(obs_path, index=False)
+    logger.info(
+        "Merged deamination annotations for %d of %d read(s)",
+        int(summary["read_id"].isin(obs["read_id"]).sum()),
+        len(obs),
+    )
+    return obs_path
+
+
 def execute_partitioned_deamination(
     spine_path: str | Path,
     output_dir: str | Path,
