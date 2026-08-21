@@ -1386,6 +1386,13 @@ class ExperimentConfig:
     # to the pair the reference analysis used. Empty means every strategy.
     latent_clustermap_strategies: List[str] = field(default_factory=lambda: ["pca", "umap"])
     latent_plot_clustermaps: bool = True
+    latent_plot_composition: bool = True
+    # Obs columns to break Leiden composition down by. Empty falls back to
+    # `sample_name_col_for_plotting`. There is no biorep column in the store
+    # today, so naming one here (once it exists in obs) is how the per-biorep
+    # breakdown appears -- no code change needed.
+    latent_composition_group_columns: List[str] = field(default_factory=list)
+    latent_composition_min_group_size: int = 10
     latent_random_state: int = 0
     latent_max_fit_reads: int = 5000
     latent_transform_chunk_reads: int = 2000
@@ -2672,6 +2679,13 @@ class ExperimentConfig:
                 merged.get("latent_clustermap_strategies", ["pca", "umap"])
             ),
             latent_plot_clustermaps=_parse_bool(merged.get("latent_plot_clustermaps", True)),
+            latent_plot_composition=_parse_bool(merged.get("latent_plot_composition", True)),
+            latent_composition_group_columns=_parse_list(
+                merged.get("latent_composition_group_columns", [])
+            ),
+            latent_composition_min_group_size=int(
+                _parse_numeric(merged.get("latent_composition_min_group_size", 10), 10)
+            ),
             latent_leiden_resolution=float(
                 _parse_numeric(merged.get("latent_leiden_resolution", 0.1), 0.1)
             ),

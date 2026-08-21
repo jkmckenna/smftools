@@ -846,6 +846,133 @@ def plot_pca_explained_variance(
 # ---------------------------------------------------------------------------
 
 
+def cluster_color_map(labels):
+    """One colour per cluster, shared by the clustermap strip and the barplots.
+
+    The two figures are meant to be read together -- "which cluster is that
+    block" and "how much of each sample is that cluster" -- which only works if
+    a cluster is the same colour in both. Ordering is numeric-aware so `2` and
+    `10` land where a reader expects rather than where a string sort puts them.
+    """
+    import matplotlib.pyplot as plt
+
+    def _key(value):
+        text = str(value)
+        return (0, int(text), "") if text.lstrip("-").isdigit() else (1, 0, text)
+
+    categories = sorted({str(label) for label in labels}, key=_key)
+    palette = plt.get_cmap("tab20", max(len(categories), 1))
+    return {label: palette(index) for index, label in enumerate(categories)}
+
+
+def plot_leiden_composition(
+    labels,
+    groups,
+    *,
+    group_name="sample",
+    title="",
+    save_path=None,
+    normalize=True,
+    min_group_size=1,
+    figure_width=None,
+    figure_height=6.0,
+    dpi=140,
+    color_map=None,
+):
+    """Stacked composition of clusters per group.
+
+    ``normalize`` draws proportions; the per-group molecule count is annotated
+    above each bar regardless, because a proportion computed over eleven
+    molecules and one computed over two thousand look identical otherwise, and
+    that difference usually decides whether a shift is worth believing.
+    """
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    frame = pd.DataFrame(
+        {"label": [str(value) for value in labels], "group": [str(value) for value in groups]}
+    )
+    sizes = frame["group"].value_counts()
+    keep = sorted(sizes[sizes >= int(min_group_size)].index.tolist())
+    if not keep:
+        return None
+    frame = frame[frame["group"].isin(keep)]
+
+    counts = frame.groupby(["group", "label"], observed=True).size().unstack(fill_value=0)
+    colors = color_map or cluster_color_map(frame["label"])
+    ordered = [label for label in colors if label in counts.columns]
+    counts = counts[ordered]
+    values = counts.to_numpy(dtype=float)
+    totals = values.sum(axis=1, keepdims=True)
+    heights = (
+        np.divide(values, totals, out=np.zeros_like(values), where=totals > 0)
+        if normalize
+        else values
+    )
+
+    width = figure_width or max(6.0, 0.55 * len(counts.index) + 3.0)
+    figure, axis = plt.subplots(figsize=(width, figure_height))
+    bottom = np.zeros(len(counts.index))
+    for column, label in enumerate(ordered):
+        axis.bar(
+            np.arange(len(counts.index)),
+            heights[:, column],
+            bottom=bottom,
+            color=colors[label],
+            width=0.8,
+            label=label,
+            edgecolor="white",
+            linewidth=0.3,
+        )
+        bottom += heights[:, column]
+    for index, total in enumerate(totals.ravel()):
+        axis.text(
+            index,
+            bottom[index] + (0.01 if normalize else 0.01 * bottom.max()),
+            f"n={int(total)}",
+            ha="center",
+            va="bottom",
+            fontsize=6,
+            rotation=90,
+        )
+
+    axis.set_xticks(np.arange(len(counts.index)))
+    axis.set_xticklabels([str(value) for value in counts.index], rotation=90, fontsize=7)
+    axis.set_xlabel(group_name)
+    axis.set_ylabel("fraction of molecules" if normalize else "molecules")
+    axis.set_title(title, fontsize=10)
+    axis.set_xlim(-0.7, len(counts.index) - 0.3)
+    if normalize:
+        axis.set_ylim(0, 1.12)
+    axis.legend(
+        title="cluster",
+        bbox_to_anchor=(1.01, 1),
+        loc="upper left",
+        fontsize=7,
+        title_fontsize=8,
+        ncols=max(1, len(ordered) // 12 + 1),
+    )
+    for spine in ("top", "right"):
+        axis.spines[spine].set_visible(False)
+
+    if save_path is None:
+        plt.close(figure)
+        return None
+    save_path = Path(save_path)
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    figure.savefig(save_path, dpi=dpi, bbox_inches="tight")
+    plt.close(figure)
+    return {
+        "output_path": str(save_path),
+        "n_groups": int(len(counts.index)),
+        "n_clusters": int(len(ordered)),
+        "group_name": str(group_name),
+        "group_sizes": {str(k): int(v) for k, v in zip(counts.index, totals.ravel())},
+    }
+
+
 def plot_latent_ordered_clustermap(
     panels,
     *,
@@ -947,24 +1074,29 @@ def plot_latent_ordered_clustermap(
                 [str(panel_positions[tick]) for tick in ticks], rotation=90, fontsize=7
             )
 
-    def _strip(column, values, name):
+    def _strip(column, values, name, colors=None):
         axis = figure.add_subplot(grid[1, n_panels + column])
-        categories = sorted(set(values))
+        if colors is None:
+            categories = sorted(set(values))
+            palette = plt.get_cmap("tab20", max(len(categories), 1))
+            colors = {value: palette(index) for index, value in enumerate(categories)}
+        categories = list(colors)
         lookup = {value: index for index, value in enumerate(categories)}
-        codes = np.array([[lookup[value]] for value in values])
-        palette = plt.get_cmap("tab20", max(len(categories), 1))
+        codes = np.array([[lookup.get(value, 0)] for value in values])
         axis.imshow(
             codes,
             aspect="auto",
             interpolation="nearest",
-            cmap=ListedColormap([palette(index) for index in range(len(categories))]),
+            cmap=ListedColormap([colors[value] for value in categories]),
         )
         axis.set_xticks([])
         axis.tick_params(labelleft=False, length=0)
         axis.set_xlabel(name, rotation=90, fontsize=7, labelpad=6)
         return categories
 
-    cluster_categories = _strip(0, labels, "cluster")
+    # Shared with `plot_leiden_composition` so a cluster is the same colour in
+    # both figures -- they are meant to be read together.
+    cluster_categories = _strip(0, labels, "cluster", colors=cluster_color_map(labels))
     # Label the clusters in place: with 4-10 blocks a legend is redundant, and
     # an in-place label survives being cropped out of a legend-less thumbnail.
     strip_axis = figure.axes[-1]
