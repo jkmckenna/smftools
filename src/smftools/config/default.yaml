@@ -28,6 +28,9 @@ fasta_regions_of_interest: null # Deprecated alias for alignment_regions_bed
 fastq_barcode_map: null # For FASTQ files, an optional map of file paths to barcodes can be provided. Default is autodetecting barcodes.
 fastq_auto_pairing: True # For FASTQ files, attempt to find read pair files automatically.
 input_already_demuxed: False # If the input files are already demultiplexed.
+use_sequencing_summary_demux_status: True # Use dorado/MinKNOW sequencing_summary.txt for demux status when present
+sequencing_summary_path: # Explicit path to sequencing_summary.txt; blank auto-discovers beside the input
+barcode_end_score_threshold: 62.0 # Per-end barcode score above which an end counts as barcoded (scores are bimodal with a valley near 60-65)
 derive_demux_status_from_sequence: False # Re-scan sequences for barcodes on an already-demuxed input to recover single vs double ended status. The assigned barcode stays authoritative; adds demux_type and a barcode_agreement column.
 barcode_disagreement_warn_fraction: 0.01 # Warn when more than this fraction of comparable reads disagree between the assigned and re-derived barcode
 
