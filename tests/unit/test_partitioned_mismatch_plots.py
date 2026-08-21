@@ -59,7 +59,9 @@ def test_ambiguous_column_is_not_required():
 
 def test_no_mod_target_bases_skips_entirely():
     """With nothing to exclude the panel would be chemistry, not error."""
-    assert generate_mismatch_clustermaps(None, None, None, None, cfg=_cfg(mod_target_bases=[])) == []
+    assert (
+        generate_mismatch_clustermaps(None, None, None, None, cfg=_cfg(mod_target_bases=[])) == []
+    )
 
 
 # --- gating, with the store stubbed out --------------------------------------
