@@ -31,7 +31,10 @@ def test_union_of_two_methods():
         }
     )
     assert list(append_composite_chimera_column(obs)[COMPOSITE_COLUMN]) == [
-        True, True, False, False
+        True,
+        True,
+        False,
+        False,
     ]
 
 
@@ -66,17 +69,13 @@ def test_all_three_methods_union():
             "deaminase_segment_chimera": [False, False, True, False],
         }
     )
-    assert list(append_composite_chimera_column(obs)[COMPOSITE_COLUMN]) == [
-        True, True, True, False
-    ]
+    assert list(append_composite_chimera_column(obs)[COMPOSITE_COLUMN]) == [True, True, True, False]
 
 
 def test_method_columns_survive_the_union():
     """Decomposability: the union must not replace its inputs."""
     obs = append_composite_chimera_column(
-        pd.DataFrame(
-            {"chimeric_variant_sites": [True], "deaminase_segment_chimera": [False]}
-        )
+        pd.DataFrame({"chimeric_variant_sites": [True], "deaminase_segment_chimera": [False]})
     )
     assert "chimeric_variant_sites" in obs.columns
     assert "deaminase_segment_chimera" in obs.columns

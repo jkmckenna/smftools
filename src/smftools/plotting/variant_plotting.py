@@ -900,7 +900,9 @@ def _plot_variant_segment_one_group(args: dict) -> dict:
 
     out_file = None
     if save_path is not None:
-        safe_name = f"{ref}__{sample}__variant_segments".replace("=", "").replace(",", "_")
+        safe_name = f"{ref}__{sample}__{args.get('filename_suffix') or 'variant_segments'}".replace(
+            "=", ""
+        ).replace(",", "_")
         out_file = Path(save_path) / f"{safe_name}.png"
         fig.savefig(out_file, dpi=300, bbox_inches="tight")
         _plt.close(fig)
@@ -1176,7 +1178,9 @@ def _plot_variant_segment_multi_obs_one_group(args: dict) -> dict:
 
     out_file = None
     if save_path is not None:
-        safe_name = f"{ref}__{sample}__variant_segments".replace("=", "").replace(",", "_")
+        safe_name = f"{ref}__{sample}__{args.get('filename_suffix') or 'variant_segments'}".replace(
+            "=", ""
+        ).replace(",", "_")
         out_file = Path(save_path) / f"{safe_name}.png"
         fig.savefig(out_file, dpi=300, bbox_inches="tight")
         _plt.close(fig)
@@ -1529,6 +1533,7 @@ def plot_variant_segment_clustermaps(
     mismatch_type_legend_prefix: str = "Mismatch type",
     n_jobs: int = 1,
     index_col_suffix: str | None = None,
+    filename_suffix: str = "variant_segments",
 ) -> List[Dict[str, Any]]:
     """Plot variant segment heatmaps with variant call and breakpoint overlays.
 
@@ -1687,6 +1692,7 @@ def plot_variant_segment_clustermaps(
                     "mismatch_type_legend_prefix": mismatch_type_legend_prefix,
                     "sort_by": sort_by,
                     "save_path": str(save_path) if save_path is not None else None,
+                    "filename_suffix": filename_suffix,
                 }
 
     # ------------------------------------------------------------------
