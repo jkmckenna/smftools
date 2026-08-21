@@ -536,6 +536,10 @@ def load_adata_core(
     from ..informatics.basecalling import canoncall, modcall
     from ..informatics.bed_functions import aligned_BAM_to_bed
     from ..informatics.converted_BAM_to_adata import converted_BAM_to_adata
+    from ..informatics.demux_agreement import (
+        report_barcode_agreement,
+        should_derive_demux_status,
+    )
     from ..informatics.fasta_functions import (
         generate_converted_FASTA,
         get_chromosome_lengths,
@@ -2409,16 +2413,28 @@ def load_adata_core(
         expand_bi_tag_columns(raw_adata, bi_column="bi")
 
     # Derive demux_type from BM tag when using smftools or dorado single-pass backend
-    _derive_bm = False
-    if demux_backend == "smftools" and cfg.barcode_kit and not cfg.input_already_demuxed:
-        _derive_bm = True
-    elif demux_backend == "dorado" and cfg.barcode_kit and not cfg.input_already_demuxed:
+    # `EGL-29a`: an already-demuxed FASTQ tree carries the barcode in its
+    # directory names but not the end reason, so the status can be re-derived
+    # from sequence even though no demultiplexing is wanted.
+    _dorado_supports = False
+    if demux_backend == "dorado":
         dorado_ver = _get_dorado_version()
-        if dorado_ver is not None and dorado_ver >= (1, 3, 1):
-            _derive_bm = True
+        _dorado_supports = dorado_ver is not None and dorado_ver >= (1, 3, 1)
+    _derive_bm = should_derive_demux_status(cfg, demux_backend, dorado_supports=_dorado_supports)
     if _derive_bm:
         logger.info("Deriving demux_type from BM tag")
         add_demux_type_from_bm_tag(raw_adata, bm_column="BM")
+
+    # `EGL-29b`: both a directory-assigned and a sequence-re-derived barcode are
+    # now on obs. Report where they differ rather than silently preferring
+    # either -- systematic disagreement means the assignment, the kit, or the
+    # extraction parameters are wrong, and none of those announce themselves.
+    barcode_agreement_summary = report_barcode_agreement(
+        raw_adata.obs,
+        warn_above=float(getattr(cfg, "barcode_disagreement_warn_fraction", 0.01)),
+    )
+    if barcode_agreement_summary is not None:
+        raw_adata.uns["barcode_agreement"] = dict(barcode_agreement_summary)
 
     if getattr(cfg, "annotate_secondary_supplementary", False):
         logger.info("Annotating secondary/supplementary alignments from aligned BAM")
