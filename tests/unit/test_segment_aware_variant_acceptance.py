@@ -134,9 +134,32 @@ def test_default_strand_applies_where_no_segment_covers():
 
 
 def test_absent_observation_is_a_no_call():
+    """Only *readable* sites can be no-calls.
+
+    Under bottom chemistry one of the two sites is unreadable, so it is not a
+    candidate for this read at all -- one no-call, not two.
+    """
     _calls, summary = _call(lambda position: "bottom", observed={})
     assert summary.callable_site_count == 0
-    assert summary.no_call_count == 2
+    assert summary.no_call_count == 1
+
+
+def test_denominator_counts_only_locally_readable_sites():
+    """`variant_callable_fraction` must stay comparable across calling paths.
+
+    The merged index carries every candidate site, but a site the covering
+    chemistry cannot read is not informative *for this read*. Counting all of
+    them inflates the denominator without touching the numerator: measured on
+    `251105`, 16 -> 22 per read, a ~27% drop in callable fraction that
+    `variant_qc_min_callable_fraction` would act on for a reason unrelated to
+    the read's evidence.
+    """
+    _calls, uniform = _call(lambda position: "top")
+    assert uniform.informative_site_count == 1
+
+    _calls, mixed = _call(lambda position: "bottom" if position < 5 else "top")
+    assert mixed.informative_site_count == 2
+    assert mixed.callable_site_count == 2
 
 
 def test_rejects_an_invalid_member_index():
