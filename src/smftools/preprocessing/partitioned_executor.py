@@ -1086,6 +1086,9 @@ def execute_partitioned_preprocessing(
                 * max(1, int(getattr(cfg, "threads", 1) or 1)),
             ),
             cfg=cfg,
+            deamination_segments_path=(
+                deamination_outputs.get("segments") if deamination_outputs else None
+            ),
         )
 
     obs_sidecar = write_read_qc_sidecar(spine, cfg, output_dir / PREPROCESS_OBS_SIDECAR)

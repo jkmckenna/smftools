@@ -7,7 +7,7 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Iterable, Mapping, Sequence
+from typing import Callable, Iterable, Mapping, Sequence
 from uuid import uuid4
 
 import numpy as np
@@ -37,7 +37,9 @@ from ..informatics.sidecar_manifest import register_sidecar, sidecar_manifest_pa
 from ..logging_utils import get_logger
 from ..readwrite import atomic_write_json
 from .variant_evidence import (
+    build_segment_aware_site_index,
     call_observed_variant_sites,
+    call_observed_variant_sites_by_segment,
     segment_sparse_variant_calls,
 )
 from .variant_reference import (
@@ -184,6 +186,53 @@ def _write_parquet(frame: pd.DataFrame, path: Path) -> Path:
     return path
 
 
+def load_deamination_strand_lookup(
+    segments_path: Path | None,
+    reference: str,
+) -> dict[str, tuple[tuple[int, int, str], ...]]:
+    """Per-read deamination segments for one reference, as sorted spans.
+
+    Returns ``{read_id: ((start, end, strand), ...)}``. Absent file, absent
+    reference, or an empty frame all yield ``{}``, so a run without the
+    deamination lane simply falls back to per-read acceptance rather than
+    failing -- the lane is optional and can be bypassed (`EGL-25`).
+    """
+    if segments_path is None or not Path(segments_path).exists():
+        return {}
+    frame = pd.read_parquet(segments_path)
+    if frame.empty:
+        return {}
+    if "reference" in frame.columns:
+        frame = frame[frame["reference"].astype(str) == str(reference)]
+    if frame.empty:
+        return {}
+    lookup: dict[str, list[tuple[int, int, str]]] = {}
+    for row in frame.itertuples(index=False):
+        lookup.setdefault(str(row.read_id), []).append(
+            (int(row.start), int(row.end), str(row.strand))
+        )
+    return {read_id: tuple(sorted(spans)) for read_id, spans in lookup.items()}
+
+
+def strand_resolver_for_read(
+    spans: tuple[tuple[int, int, str], ...],
+) -> "Callable[[int], str | None]":
+    """Resolve which deamination chemistry covers a reference position.
+
+    Segments are half-open and non-overlapping by construction, so a linear
+    scan is correct; reads carry few segments (median 1 on `251105`), which is
+    why this is not worth a bisect.
+    """
+
+    def resolve(position: int) -> str | None:
+        for start, end, strand in spans:
+            if start <= position <= end:
+                return strand
+        return None
+
+    return resolve
+
+
 def strand_of_reference(reference: str) -> str:
     """Strand context for a reference-strand label such as ``6B6_top``.
 
@@ -221,6 +270,8 @@ def _execute_variant_task(
     task: VariantEvidenceTask,
     catalog: VariantInformativeSiteCatalog,
     min_adjacent_sites: int = 1,
+    segment_site_index: tuple | None = None,
+    deamination_segments_path: Path | None = None,
 ) -> dict[str, object]:
     task_root = (
         output_dir
@@ -242,6 +293,14 @@ def _execute_variant_task(
     event_rows: list[dict[str, object]] = []
 
     if task.input_status == EVIDENCE_COMPLETE:
+        # Per-read deamination spans for this reference, loaded once per task.
+        # Empty when the lane did not run, in which case calling falls back to
+        # the per-read catalog below.
+        strand_spans = (
+            load_deamination_strand_lookup(deamination_segments_path, task.reference)
+            if segment_site_index
+            else {}
+        )
         frame = pd.read_parquet(spine_path.parent / task.group_path)
         frame[READ_ID] = frame[READ_ID].astype(str)
         if set(frame[READ_ID]) != set(identity_by_read):
@@ -250,11 +309,25 @@ def _execute_variant_task(
             read_id = str(row[READ_ID])
             molecule_uid = identity_by_read[read_id]
             observed = _observed_bases(pd.Series(row))
-            calls, summary = call_observed_variant_sites(
-                observed,
-                aligned_member_index=task.aligned_member_index,
-                catalog=catalog,
-            )
+            spans = strand_spans.get(read_id)
+            if segment_site_index and spans:
+                # `EGL-20a`: acceptance follows the chemistry local to each
+                # position. Only taken when this read actually has segments --
+                # a read the deamination lane could not segment keeps the
+                # per-read catalog rather than being silently dropped.
+                calls, summary = call_observed_variant_sites_by_segment(
+                    observed,
+                    aligned_member_index=task.aligned_member_index,
+                    site_index=segment_site_index,
+                    strand_at_position=strand_resolver_for_read(spans),
+                    default_strand=strand_of_reference(task.reference),
+                )
+            else:
+                calls, summary = call_observed_variant_sites(
+                    observed,
+                    aligned_member_index=task.aligned_member_index,
+                    catalog=catalog,
+                )
             span_start = int(row[REFERENCE_START])
             from ..informatics.ragged_store import cigar_reference_length
 
@@ -531,6 +604,7 @@ def execute_partitioned_variant_evidence(
     max_workers: int = 1,
     memory_budget_mb: int = 512,
     cfg=None,
+    deamination_segments_path: str | Path | None = None,
 ) -> dict[str, Path]:
     """Compute and index all-molecule variant evidence without monolithic AnnData."""
     if max_workers <= 0 or memory_budget_mb <= 0:
@@ -577,6 +651,16 @@ def execute_partitioned_variant_evidence(
     modality = getattr(cfg, "smf_modality", None)
     conversion_types = list(getattr(cfg, "conversion_types", []) or [])
     task_strands = {strand_of_reference(task.reference) for task in task_list}
+    # With deamination segments in play, build *both* strand catalogs even when
+    # every task aligned to one strand. A deaminase molecule aligned to a top
+    # reference can still carry bottom chemistry over part of its length -- that
+    # is what makes it a chimera -- so the catalog it needs is not determined by
+    # the strand its alignment landed on. Deriving the set from `task_list`
+    # alone silently limited segment-aware acceptance to a single chemistry and
+    # made `EGL-20a` a no-op on the `251105` pilot, where every variant task is
+    # `_top`.
+    if deamination_segments_path is not None and Path(deamination_segments_path).exists():
+        task_strands |= {"top", "bottom"}
     catalogs = {}
     for identity, reference_set in sets_by_id.items():
         for strand in sorted(task_strands):
@@ -600,6 +684,27 @@ def execute_partitioned_variant_evidence(
     maximum_task_bytes = max(task.estimated_memory_bytes for task in task_list)
     memory_workers = max(1, int(memory_budget_mb * 1024**2) // maximum_task_bytes)
     bounded_workers = min(max_workers, memory_workers, len(task_list))
+    # `EGL-20a`: when deamination segments exist, acceptance is resolved per
+    # position from the covering segment rather than per read from the strand.
+    # The index merges the per-strand catalogs so both chemistries are
+    # available at every candidate site; built once and shared by every task.
+    segment_indexes: dict[str, tuple] = {}
+    segments_path = Path(deamination_segments_path) if deamination_segments_path else None
+    if segments_path is not None and segments_path.exists():
+        for identity in sorted(sets_by_id):
+            by_strand = {
+                strand: catalogs[(identity, strand)]
+                for (catalog_identity, strand) in catalogs
+                if catalog_identity == identity
+            }
+            segment_indexes[identity] = build_segment_aware_site_index(by_strand)
+            logger.info(
+                "Segment-aware variant acceptance for %s: %d candidate site(s) across %s",
+                identity,
+                len(segment_indexes[identity]),
+                sorted(by_strand),
+            )
+
     arguments = [
         (
             spine_path,
@@ -607,6 +712,8 @@ def execute_partitioned_variant_evidence(
             task,
             catalogs[(task.variant_reference_set_id, strand_of_reference(task.reference))],
             minimum_chimera_sites,
+            segment_indexes.get(task.variant_reference_set_id),
+            segments_path,
         )
         for task in task_list
     ]

@@ -317,22 +317,32 @@ def call_observed_variant_sites_by_segment(
     calls: list[SparseVariantCall] = []
     member_counts = [0, 0]
     no_call_count = 0
+    readable_site_count = 0
     for positions, by_strand, site_id in site_index:
         position = int(positions[aligned_member_index])
         observed = observed_bases.get(position)
         strand = strand_at_position(position) or default_strand
         accepted = by_strand.get(str(strand))
         call = NO_CALL
-        if observed is not None and accepted is not None:
-            base = str(observed).upper()
-            matches = [
-                member_index for member_index, allowed in enumerate(accepted) if base in allowed
-            ]
-            if len(matches) == 1:
-                call = matches[0] + 1
-                member_counts[matches[0]] += 1
-        if call == NO_CALL:
-            no_call_count += 1
+        if accepted is not None:
+            # Informative *for this read*. A site the covering chemistry cannot
+            # read is not a candidate here, and counting it as one deflates
+            # `variant_callable_fraction` -- which `variant_qc_min_callable
+            # _fraction` gates on -- for a reason unrelated to the read's
+            # evidence. Measured on `251105`: counting every candidate raised
+            # the denominator from 16 to 22 per read while leaving the numerator
+            # unchanged, a ~27% drop in callable fraction across the board.
+            readable_site_count += 1
+            if observed is not None:
+                base = str(observed).upper()
+                matches = [
+                    member_index for member_index, allowed in enumerate(accepted) if base in allowed
+                ]
+                if len(matches) == 1:
+                    call = matches[0] + 1
+                    member_counts[matches[0]] += 1
+            if call == NO_CALL:
+                no_call_count += 1
         calls.append(
             SparseVariantCall(
                 site_id=site_id,
@@ -343,7 +353,7 @@ def call_observed_variant_sites_by_segment(
         )
     summary = ReadVariantCalls(
         calls=np.asarray([call.call for call in calls], dtype=np.int8),
-        informative_site_count=len(calls),
+        informative_site_count=readable_site_count,
         callable_site_count=sum(member_counts),
         no_call_count=no_call_count,
         member_call_counts=(member_counts[0], member_counts[1]),
