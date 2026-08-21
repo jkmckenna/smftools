@@ -1360,6 +1360,15 @@ class ExperimentConfig:
     latent_nmf_max_iter: int = 500
     latent_knn_neighbors: int = 15
     latent_leiden_resolution: float = 0.1
+    latent_knn_metric: str = "euclidean"
+    # Per-strategy overrides, keyed by strategy name (`pca`, `umap`, `nmf`,
+    # `cp`). Empty means every strategy uses the shared knobs above, so
+    # existing configs are unaffected. The right resolution for a 10-component
+    # PCA and a 2-component UMAP are not the same number (`EGL-28a`).
+    latent_knn_neighbors_by_strategy: Dict[str, int] = field(default_factory=dict)
+    latent_leiden_resolution_by_strategy: Dict[str, float] = field(default_factory=dict)
+    latent_knn_metric_by_strategy: Dict[str, str] = field(default_factory=dict)
+    latent_cluster_embeddings: bool = True
     latent_random_state: int = 0
     latent_max_fit_reads: int = 5000
     latent_transform_chunk_reads: int = 2000
@@ -2633,6 +2642,15 @@ class ExperimentConfig:
             latent_nmf_components=int(_parse_numeric(merged.get("latent_nmf_components", 2), 2)),
             latent_nmf_max_iter=int(_parse_numeric(merged.get("latent_nmf_max_iter", 500), 500)),
             latent_knn_neighbors=int(_parse_numeric(merged.get("latent_knn_neighbors", 15), 15)),
+            latent_knn_metric=str(merged.get("latent_knn_metric", "euclidean")),
+            latent_knn_neighbors_by_strategy=merged.get("latent_knn_neighbors_by_strategy", {})
+            or {},
+            latent_leiden_resolution_by_strategy=merged.get(
+                "latent_leiden_resolution_by_strategy", {}
+            )
+            or {},
+            latent_knn_metric_by_strategy=merged.get("latent_knn_metric_by_strategy", {}) or {},
+            latent_cluster_embeddings=_parse_bool(merged.get("latent_cluster_embeddings", True)),
             latent_leiden_resolution=float(
                 _parse_numeric(merged.get("latent_leiden_resolution", 0.1), 0.1)
             ),

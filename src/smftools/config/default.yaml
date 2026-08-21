@@ -599,6 +599,11 @@ latent_nmf_components: 2 # NMF components per latent analysis unit
 latent_nmf_max_iter: 500 # Maximum NMF iterations
 latent_knn_neighbors: 15 # Neighbors used for UMAP and Leiden graph construction
 latent_leiden_resolution: 0.1 # Leiden resolution for latent clusters
+latent_knn_metric: euclidean # Distance metric for the per-embedding KNN graph
+latent_cluster_embeddings: True # Cluster each latent embedding independently (KNN + Leiden in its own coordinates)
+latent_knn_neighbors_by_strategy: {} # Per-strategy neighbor overrides, e.g. {'umap': 15, 'pca': 30}; empty uses latent_knn_neighbors
+latent_leiden_resolution_by_strategy: {} # Per-strategy resolution overrides; empty uses latent_leiden_resolution
+latent_knn_metric_by_strategy: {} # Per-strategy metric overrides; empty uses latent_knn_metric
 latent_random_state: 0 # Reproducible fit/read-sampling seed
 latent_max_fit_reads: 5000 # Maximum reads used to fit one reference/core latent space; remaining reads are transformed
 latent_transform_chunk_reads: 2000 # Reads materialized per out-of-sample transform chunk

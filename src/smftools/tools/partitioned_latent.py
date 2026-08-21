@@ -1719,6 +1719,39 @@ def execute_latent_unit(spine_path, unit, cfg, output_dir) -> dict[str, object] 
         for key in label_keys:
             adata.obs.loc[fit_adata.obs_names, key] = fit_adata.obs[key].astype(str).to_numpy()
 
+    # `EGL-28a`: cluster each embedding in its *own* coordinates. Placed here,
+    # after the three assembly branches converge, because only now does `adata`
+    # hold every molecule's coordinates -- the fit subset plus the transformed
+    # remainder -- which is the population the clustermaps draw.
+    if bool(getattr(cfg, "latent_cluster_embeddings", True)):
+        from .latent_clustering import cluster_all_embeddings
+
+        result_rows = {str(name): index for index, name in enumerate(adata.obs_names)}
+        cluster_fit_indices = np.asarray(
+            [result_rows[str(name)] for name in fit_adata.obs_names if str(name) in result_rows],
+            dtype=np.int64,
+        )
+        try:
+            cluster_records = cluster_all_embeddings(
+                adata, fit_indices=cluster_fit_indices, cfg=cfg
+            )
+            # Keyed by embedding rather than a list: zarr cannot write a list of
+            # dicts to `uns`, and the mapping is the more useful shape anyway --
+            # a consumer holding a `leiden_<strategy>_<suffix>` column can look
+            # up how it was produced directly.
+            adata.uns["latent_cluster_records"] = {
+                str(record["embedding"]): dict(record) for record in cluster_records
+            }
+        except Exception:
+            # Clustering is additive: without it the stage still publishes
+            # coordinates, which is what every existing consumer reads.
+            logger.exception(
+                "Per-embedding clustering failed for %s:%d-%d; coordinates still published",
+                reference,
+                start,
+                end,
+            )
+
     adata.uns["latent_coordinate_scope"] = {
         "reference": reference,
         "core_start": start,
