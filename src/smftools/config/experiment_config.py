@@ -1191,6 +1191,8 @@ class ExperimentConfig:
     # CLI path (`F18`), so changing only one leaves every real run on the old
     # value, which is the trap `EGL-22` hit.
     clustermap_max_reads_per_plot: Optional[int] = 10000
+    spatial_position_matrix_max_reads: int = 1000
+    spatial_position_matrix_min_count_for_pairwise: int = 10
     spatial_position_matrix_max_width: int = 5000
     spatial_position_matrix_max_mb: int = 1024
     omit_chimeric_reads: bool = True
@@ -2322,6 +2324,12 @@ class ExperimentConfig:
             ),
             clustermap_max_reads_per_plot=_parse_numeric(
                 merged.get("clustermap_max_reads_per_plot", 10000), None
+            ),
+            spatial_position_matrix_max_reads=int(
+                _parse_numeric(merged.get("spatial_position_matrix_max_reads", 1000), 1000)
+            ),
+            spatial_position_matrix_min_count_for_pairwise=int(
+                _parse_numeric(merged.get("spatial_position_matrix_min_count_for_pairwise", 10), 10)
             ),
             spatial_position_matrix_max_width=int(
                 _parse_numeric(merged.get("spatial_position_matrix_max_width", 5000), 5000)

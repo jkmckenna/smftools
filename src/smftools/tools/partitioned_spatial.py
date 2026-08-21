@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from urllib.parse import quote
 
@@ -1344,7 +1345,53 @@ def _validate_position_matrix_budget(
     return estimated_bytes
 
 
-def _write_position_matrix_sidecars(adata, output_dir: Path, region, output_key: str) -> list[Path]:
+def _cap_reads_per_group(adata, sample_column: str, max_reads: int | None, *, seed: int = 0):
+    """Subsample to at most ``max_reads`` reads per (reference, sample) group.
+
+    Per group, not globally: a global cap lets a large barcode squeeze small
+    ones out entirely, and the correlation matrices are computed and read one
+    barcode at a time, so a barcode reduced to a handful of reads is worse than
+    one that is merely capped.
+
+    Reproducibility comes from the seed and kept rows stay in their original
+    order, matching ``subsample_reads_for_plot`` -- a matrix whose composition
+    changes between runs over unchanged data is not a diagnostic (`EGL-17`).
+    Returns ``adata`` unchanged when the cap is falsy or every group fits, so
+    the common small-dataset case copies nothing.
+    """
+    if not max_reads or int(max_reads) <= 0:
+        return adata
+    cap = int(max_reads)
+    frame = adata.obs
+    if sample_column not in frame.columns:
+        return adata
+    rng = np.random.default_rng(seed)
+    keep: list[np.ndarray] = []
+    capped = False
+    for _key, positions in (
+        frame.reset_index(drop=True)
+        .groupby([REFERENCE_STRAND, sample_column], observed=True, sort=False)
+        .indices.items()
+    ):
+        if len(positions) > cap:
+            positions = rng.choice(positions, size=cap, replace=False)
+            capped = True
+        keep.append(np.asarray(positions, dtype=np.int64))
+    if not capped:
+        return adata
+    return adata[np.sort(np.concatenate(keep)), :].copy()
+
+
+def _write_position_matrix_sidecars(
+    adata, output_dir: Path, region, output_key: str, *, provenance: dict | None = None
+) -> list[Path]:
+    """Write each barcode's matrix, plus the selection that produced it.
+
+    The provenance sidecar exists so a surprising matrix can be traced to its
+    input without a recompute: how many reads were available, how many were
+    used, the seed that chose them, and the pairwise floor below which cells
+    are NaN. Same reason `EGL-19`'s summary carries efficiency and error.
+    """
     paths = []
     reference = str(region["reference"])
     region_dir = (
@@ -1362,6 +1409,13 @@ def _write_position_matrix_sidecars(adata, output_dir: Path, region, output_key:
             path.parent.mkdir(parents=True, exist_ok=True)
             matrix.rename_axis(index="position", columns=None).to_parquet(path)
             paths.append(path)
+    if provenance is not None and paths:
+        manifest = region_dir / "selection.json"
+        manifest.write_text(
+            json.dumps({"output_key": output_key, **provenance}, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        paths.append(manifest)
     return paths
 
 
@@ -1613,8 +1667,36 @@ def _generate_dense_region_products(
         if bool(getattr(cfg, "spatial_generate_position_matrices", True)):
             output_key = f"positionwise_{reference}_{start}_{end}"
             methods = list(getattr(cfg, "correlation_matrix_types", ["pearson"]))
+            # Cap the correlation input independently of the clustermap cap
+            # (`EGL-24`). Pairwise correlation over every read in a group is the
+            # one automated spatial output with no bound at all, and it is
+            # quadratic in positions on top of linear in reads. The cap lives
+            # here rather than inside `compute_positionwise_statistics` so a
+            # library or notebook caller keeps the permissive behaviour and can
+            # still reproduce existing generations (decided 2026-08-20).
+            matrix_seed = int(getattr(cfg, "plot_subsample_seed", 0))
+            matrix_max_reads = getattr(cfg, "spatial_position_matrix_max_reads", 1000)
+            matrix_adata = _cap_reads_per_group(
+                adata, sample_column, matrix_max_reads, seed=matrix_seed
+            )
+            min_count_for_pairwise = int(
+                getattr(cfg, "spatial_position_matrix_min_count_for_pairwise", 10)
+            )
+            if matrix_adata is not adata:
+                logger.info(
+                    "Position matrices for %s:%d-%d capped to %d read(s) per barcode: "
+                    "%d of %d read(s) retained (seed=%d, min_count_for_pairwise=%d)",
+                    reference,
+                    start,
+                    end,
+                    int(matrix_max_reads),
+                    matrix_adata.n_obs,
+                    adata.n_obs,
+                    matrix_seed,
+                    min_count_for_pairwise,
+                )
             compute_positionwise_statistics(
-                adata,
+                matrix_adata,
                 layer="nan0_0minus1",
                 methods=methods,
                 sample_col=sample_column,
@@ -1623,15 +1705,27 @@ def _generate_dense_region_products(
                 site_types=list(getattr(cfg, "correlation_matrix_site_types", ["GpC_site"])),
                 encoding="signed",
                 max_threads=max(1, int(getattr(cfg, "threads", 1) or 1)),
-                min_count_for_pairwise=10,
+                min_count_for_pairwise=min_count_for_pairwise,
                 min_position_valid_fraction=None,
                 index_col_suffix=index_suffix,
             )
             matrix_paths.extend(
-                _write_position_matrix_sidecars(adata, output_dir, region, output_key)
+                _write_position_matrix_sidecars(
+                    matrix_adata,
+                    output_dir,
+                    region,
+                    output_key,
+                    provenance={
+                        "reads_used": int(matrix_adata.n_obs),
+                        "reads_available": int(adata.n_obs),
+                        "max_reads_per_barcode": int(matrix_max_reads or 0),
+                        "selection_seed": matrix_seed,
+                        "min_count_for_pairwise": min_count_for_pairwise,
+                    },
+                )
             )
             matrix_plots = _plot_position_matrix_sidecars(
-                adata,
+                matrix_adata,
                 output_key,
                 region,
                 layout.categories["position_correlation"],
