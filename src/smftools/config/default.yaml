@@ -327,6 +327,8 @@ clustermap_cmap_a: "coolwarm"
 spatial_clustermap_sortby: "gpc"
 spatial_clustermap_restrict_to_read_span: True # Crop spatial clustermap x-axis to the observed read span (min reference_start to max reference_end) instead of the full reference
 clustermap_max_reads_per_plot: 10000 # Max reads drawn per (reference, sample) clustermap; larger groups are randomly subsampled to this (reproducible). Raise it to effectively disable.
+spatial_position_matrix_max_reads: 1000 # Max reads per barcode fed to the automated position-correlation matrices; larger groups are randomly subsampled (reproducible). Library callers of compute_positionwise_statistics are unaffected.
+spatial_position_matrix_min_count_for_pairwise: 10 # Min co-observed reads for a position pair; pairs below this are NaN. Interacts with the read cap above -- fewer reads means more pairs fall below the floor.
 spatial_position_matrix_max_width: 5000 # Hard maximum positions in a dense position-by-position product.
 spatial_position_matrix_max_mb: 1024 # Hard estimated-memory limit for all dense matrices retained for one plot region.
 omit_chimeric_reads: True
