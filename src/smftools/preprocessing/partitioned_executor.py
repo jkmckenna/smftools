@@ -1207,6 +1207,10 @@ def execute_partitioned_preprocessing(
     )
     obs_sidecar = reduce_read_modification_stats(catalog_path, var_catalog, obs_sidecar)
     obs_sidecar = append_modification_qc_mask(obs_sidecar, cfg)
+    if deamination_outputs:
+        from .partitioned_deamination import append_deamination_annotations
+
+        obs_sidecar = append_deamination_annotations(obs_sidecar, deamination_outputs["obs"])
     if variant_outputs:
         from .variant_reporting import append_variant_reporting_annotations
 
@@ -1215,6 +1219,14 @@ def execute_partitioned_preprocessing(
             variant_outputs["obs"],
             cfg,
         )
+
+    # After every chimera method has had its chance to contribute a column, so
+    # the union reflects what actually ran rather than what was configured.
+    from .chimera_classes import append_composite_chimera_column
+
+    composite_obs = pd.read_parquet(obs_sidecar)
+    composite_obs = append_composite_chimera_column(composite_obs)
+    composite_obs.to_parquet(obs_sidecar, index=False)
 
     derived_spine = spine.copy()
     # Stored relative to the run's output_directory (not output_dir itself), so

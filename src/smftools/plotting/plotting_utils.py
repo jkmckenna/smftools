@@ -16,6 +16,23 @@ if TYPE_CHECKING:
 _TRUTHY_STRINGS = frozenset({"1", "true", "t", "yes", "y", "on"})
 
 
+def chimera_filter_column(obs_columns) -> str:
+    """Which obs column `omit_chimeric_reads` should filter on.
+
+    Prefers the composite union of every chimera method that ran
+    (`EGL-20`), falling back to the variant column for generations published
+    before it existed. Falling back rather than requiring the composite keeps
+    older generations plottable; preferring it means a deaminase-detected
+    chimera is excluded even though it carries no allele switch.
+    """
+    from smftools.preprocessing.chimera_classes import (
+        COMPOSITE_COLUMN,
+        VARIANT_CHIMERA_COLUMN,
+    )
+
+    return COMPOSITE_COLUMN if COMPOSITE_COLUMN in set(obs_columns) else VARIANT_CHIMERA_COLUMN
+
+
 def coerce_bool_series(series: "pd.Series") -> "pd.Series":
     """Interpret an obs column as booleans, including string-valued ones.
 
