@@ -786,6 +786,7 @@ def load_adata_core(
                 progress=False,
                 auto_pair=False,
                 samtools_backend=cfg.samtools_backend,
+                threads=cfg.threads,
             )
 
             logger.info(f"Found the following barcodes in FASTQ inputs: {summary['barcodes']}")
