@@ -13,8 +13,11 @@ from typing import Any, Iterable, Mapping, Sequence
 
 import pandas as pd
 
+from ..logging_utils import get_logger
 from ..readwrite import atomic_write_json
 from .molecule_identity import alignment_segment_id
+
+logger = get_logger(__name__)
 
 BARCODE_IDENTITY_SCHEMA_VERSION = 1
 BARCODE_IDENTITY_REPORT_SUFFIX = ".identity_report.json"
@@ -153,11 +156,27 @@ def _classifier_records(
     return records, conflicts
 
 
+#: Reads between progress lines while reconciling identity (`F23`).
+_IDENTITY_PROGRESS_INTERVAL = 250_000
+
+
 def _bam_records(bam_path: str | Path) -> dict[str, dict[str, Any]]:
+    """Collect per-read identity evidence from a BAM.
+
+    Emits progress periodically: this is a single-threaded pass over every read
+    and took **27.7 minutes** on a 1.75M-read run, during which it previously
+    logged nothing at all. A silent half-hour is indistinguishable from a hang,
+    and both neighbouring phases report progress (`F23`).
+    """
+    import time
+
     from .bam_functions import _require_pysam
 
     pysam = _require_pysam()
     records: dict[str, dict[str, Any]] = {}
+    scanned = 0
+    started = time.perf_counter()
+    logger.info("Reconciling read identity from %s", Path(bam_path).name)
     with pysam.AlignmentFile(str(bam_path), "rb", check_sq=False) as bam:
         header = bam.header.to_dict()
         read_groups = {
@@ -166,6 +185,17 @@ def _bam_records(bam_path: str | Path) -> dict[str, dict[str, Any]]:
             if record.get("ID") is not None
         }
         for read in bam.fetch(until_eof=True):
+            scanned += 1
+            if scanned % _IDENTITY_PROGRESS_INTERVAL == 0:
+                elapsed = time.perf_counter() - started
+                logger.info(
+                    "Identity reconciliation: %s reads scanned, %s retained, %.0f reads/s "
+                    "(%.1f min elapsed)",
+                    f"{scanned:,}",
+                    f"{len(records):,}",
+                    scanned / max(elapsed, 1e-9),
+                    elapsed / 60.0,
+                )
             if read.is_secondary or read.is_supplementary:
                 continue
             read_group = _value(read.get_tag("RG")) if read.has_tag("RG") else ""
@@ -188,6 +218,15 @@ def _bam_records(bam_path: str | Path) -> dict[str, dict[str, Any]]:
                 existing["bam_record_conflict"] = True
                 continue
             records.setdefault(segment_id, record)
+    elapsed = time.perf_counter() - started
+    logger.info(
+        "Identity reconciliation complete: %s reads scanned, %s segments retained in %.1f min "
+        "(%.0f reads/s)",
+        f"{scanned:,}",
+        f"{len(records):,}",
+        elapsed / 60.0,
+        scanned / max(elapsed, 1e-9),
+    )
     return records
 
 
