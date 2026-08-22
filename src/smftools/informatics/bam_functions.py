@@ -2882,6 +2882,7 @@ def concatenate_fastqs_to_bam(
     auto_pair: bool = True,
     gzip_suffixes: Tuple[str, ...] = (".gz", ".gzip"),
     samtools_backend: str | None = "auto",
+    threads: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
     Concatenate FASTQ(s) into an **unaligned** BAM. Supports single-end and paired-end.
@@ -2912,6 +2913,12 @@ def concatenate_fastqs_to_bam(
         Suffixes treated as gzip-compressed FASTQ files.
     samtools_backend : str | None
         Backend selection for samtools-compatible operations (auto|python|cli).
+    threads : int | None
+        BGZF compression threads for the samtools CLI backend (``-@``). BAM
+        compression is the dominant cost of this step on a large FASTQ tree and
+        parallelizes well; without it samtools compresses on a single core
+        regardless of how many are available. Ignored by the python backend,
+        which writes through pysam.
 
     Returns
     -------
@@ -2954,6 +2961,19 @@ def concatenate_fastqs_to_bam(
         casava = re.fullmatch(r"(?i)(.+?)_S\d+_L\d{3}_R[12]_\d{3}", stem)
         if casava:
             return casava.group(1)
+        # An explicit `barcodeNN` token wins over positional guessing (`F21`).
+        # MinKNOW names files `<flowcell>_pass_<barcode>_<runid>_<chunk>`, so
+        # the last underscore token is the *chunk index*, not the barcode --
+        # which silently merged every barcode's chunk 0 into a "barcode" called
+        # "0", and so on for each chunk number.
+        explicit = re.search(r"(?i)(barcode[0-9A-Za-z-]+)", stem)
+        if explicit:
+            return explicit.group(1)
+        # MinKNOW also files reads under `fastq_pass/<barcode>/`, so the parent
+        # directory is authoritative when the name itself carries nothing.
+        parent = re.fullmatch(r"(?i)(barcode[0-9A-Za-z-]+|unclassified)", p.parent.name)
+        if parent:
+            return parent.group(1)
         stem = re.sub(r"(?i)(?:[._-](?:R|read)?[12])(?:_\d{3})?$", "", stem)
         if "_" in stem:
             token = stem.split("_")[-1]
@@ -3289,6 +3309,13 @@ def concatenate_fastqs_to_bam(
         bam_out_ctx = pysam_mod.AlignmentFile(str(output_bam), "wb", header=header)
     else:
         cmd = ["samtools", "view", "-b", "-o", str(output_bam), "-"]
+        # `-@` sets *additional* compression threads. Capped at 8: BGZF
+        # compression stops scaling well beyond that, and the producer here is
+        # a single Python loop generating SAM text, so more threads only wait
+        # on it sooner.
+        compression_threads = max(0, min(int(threads or 1) - 1, 8))
+        if compression_threads:
+            cmd += ["-@", str(compression_threads)]
         logger.debug("Writing BAM using samtools: %s", " ".join(cmd))
         bam_out_ctx = subprocess.Popen(
             cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True

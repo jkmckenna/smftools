@@ -606,8 +606,42 @@ def _fastq_stem(path: Path) -> str:
     return path.stem
 
 
-def _infer_fastq_metadata(path: Path) -> tuple[dict[str, str], tuple[str, ...]]:
+_NUMERIC_SUFFIX_RE = re.compile(r"^(?P<prefix>.+?)[._-](?P<index>\d+)$")
+
+
+def _chunked_fastq_prefixes(paths: Iterable[Path]) -> frozenset[str]:
+    """Prefixes whose trailing number is a chunk index, not a mate number.
+
+    MinKNOW writes one FASTQ per barcode *per chunk*, numbered `_0`, `_1`, ...
+    `_16`. The generic mate pattern matches a bare trailing `_1` or `_2`, so
+    without this chunk 1 is read as mate R1 and chunk 2 as mate R2 -- which
+    fails outright on a two-chunk barcode and, worse, silently pairs two chunks
+    of the *same* barcode when there are three or more (`F20`).
+
+    The discriminator is positive evidence rather than a guess: a genuine R1/R2
+    pair uses exactly the indices {1, 2}. A family containing `_0`, or any index
+    of 3 or more, cannot be mate numbering. Families that are exactly {1} or
+    {1, 2} stay ambiguous and keep the existing pairing behaviour, so real
+    Illumina pairs named `sample_1`/`sample_2` are unaffected.
+    """
+    families: dict[str, set[int]] = {}
+    for path in paths:
+        match = _NUMERIC_SUFFIX_RE.match(_fastq_stem(Path(path)))
+        if match:
+            families.setdefault(match.group("prefix"), set()).add(int(match.group("index")))
+    return frozenset(prefix for prefix, indices in families.items() if not indices <= {1, 2})
+
+
+def _infer_fastq_metadata(
+    path: Path, chunked_prefixes: frozenset[str] = frozenset()
+) -> tuple[dict[str, str], tuple[str, ...]]:
     stem = _fastq_stem(path)
+    numeric = _NUMERIC_SUFFIX_RE.match(stem)
+    if numeric and numeric.group("prefix") in chunked_prefixes:
+        # Chunk of a multi-part FASTQ, not a mate. Returning "unpaired" here
+        # also skips the ambiguity guard below, which would otherwise reject
+        # these files rather than accept them as the single-end reads they are.
+        return ({"mate": "unpaired"}, ("mate",))
     illumina = _ILLUMINA_RE.match(stem)
     if illumina:
         match = illumina.groupdict()
@@ -638,6 +672,7 @@ def _normalized_row(
     modality: str,
     barcode_map: Mapping[str, str],
     auto_pair: bool,
+    chunked_prefixes: frozenset[str] = frozenset(),
 ) -> InputManifestRow:
     values = declaration.values
     kind = _source_kind(declaration.path, values.get("source_kind", ""))
@@ -647,7 +682,7 @@ def _normalized_row(
         inferred.append("source_kind")
     metadata = {key: values.get(key, "") for key in _CANONICAL_COLUMNS}
     if kind == "fastq" and auto_pair and not (metadata["pair_id"] and metadata["mate"]):
-        inferred_values, inferred_names = _infer_fastq_metadata(declaration.path)
+        inferred_values, inferred_names = _infer_fastq_metadata(declaration.path, chunked_prefixes)
         for name in inferred_names:
             if not metadata[name]:
                 metadata[name] = inferred_values[name]
@@ -818,6 +853,11 @@ def resolve_input_manifest(
     )
     rows: list[InputManifestRow] = []
     hits = misses = 0
+    chunked_prefixes = (
+        _chunked_fastq_prefixes(declaration.path for declaration in declarations)
+        if auto_pair
+        else frozenset()
+    )
     with sqlite3.connect(cache_path) as connection:
         _initialize_cache(connection)
         for declaration in declarations:
@@ -833,6 +873,7 @@ def resolve_input_manifest(
                     modality=str(modality or "").strip().lower(),
                     barcode_map=barcode_map or {},
                     auto_pair=auto_pair,
+                    chunked_prefixes=chunked_prefixes,
                 )
             )
         connection.commit()
