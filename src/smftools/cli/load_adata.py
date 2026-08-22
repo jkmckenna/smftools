@@ -536,6 +536,10 @@ def load_adata_core(
     from ..informatics.basecalling import canoncall, modcall
     from ..informatics.bed_functions import aligned_BAM_to_bed
     from ..informatics.converted_BAM_to_adata import converted_BAM_to_adata
+    from ..informatics.demux_agreement import (
+        report_barcode_agreement,
+        should_derive_demux_status,
+    )
     from ..informatics.fasta_functions import (
         generate_converted_FASTA,
         get_chromosome_lengths,
@@ -573,6 +577,11 @@ def load_adata_core(
         write_region_catalogs,
     )
     from ..informatics.run_multiqc import run_multiqc
+    from ..informatics.sequencing_summary import (
+        attach_demux_status,
+        find_sequencing_summary,
+        read_demux_status,
+    )
     from ..informatics.sidecar_manifest import (
         register_sidecar,
         resolve_sidecar,
@@ -640,6 +649,10 @@ def load_adata_core(
     )
     full_input_manifest = resolved_input_manifest
     cfg.input_manifest_digest = full_input_manifest.digest
+    # Captured before the FASTQ branch replaces `input_data_path` with the
+    # generated BAM: sequencing-summary discovery (`EGL-29c`) has to search
+    # where the reads came from, not where they were normalized to.
+    original_input_data_path = cfg.input_data_path
     append_source_ids = tuple(getattr(cfg, "_raw_append_source_ids", ()))
     if append_source_ids:
         resolved_input_manifest = subset_input_manifest(
@@ -2409,16 +2422,61 @@ def load_adata_core(
         expand_bi_tag_columns(raw_adata, bi_column="bi")
 
     # Derive demux_type from BM tag when using smftools or dorado single-pass backend
-    _derive_bm = False
-    if demux_backend == "smftools" and cfg.barcode_kit and not cfg.input_already_demuxed:
-        _derive_bm = True
-    elif demux_backend == "dorado" and cfg.barcode_kit and not cfg.input_already_demuxed:
+    # `EGL-29a`: an already-demuxed FASTQ tree carries the barcode in its
+    # directory names but not the end reason, so the status can be re-derived
+    # from sequence even though no demultiplexing is wanted.
+    _dorado_supports = False
+    if demux_backend == "dorado":
         dorado_ver = _get_dorado_version()
-        if dorado_ver is not None and dorado_ver >= (1, 3, 1):
-            _derive_bm = True
+        _dorado_supports = dorado_ver is not None and dorado_ver >= (1, 3, 1)
+    _derive_bm = should_derive_demux_status(cfg, demux_backend, dorado_supports=_dorado_supports)
     if _derive_bm:
         logger.info("Deriving demux_type from BM tag")
         add_demux_type_from_bm_tag(raw_adata, bm_column="BM")
+
+    # `EGL-29c`: fill demux_type from the basecaller's sequencing summary when
+    # one exists. Runs *after* the BM derivation and does not overwrite it: BM
+    # is a classifier assertion while this is a score threshold, so where both
+    # are available the assertion is the better evidence. The provenance column
+    # records which produced each value, so a mixed column stays interpretable.
+    if bool(getattr(cfg, "use_sequencing_summary_demux_status", True)):
+        try:
+            summary_path = getattr(cfg, "sequencing_summary_path", None)
+            if summary_path:
+                summary_path = Path(summary_path)
+            else:
+                search_root = Path(original_input_data_path or cfg.input_data_path)
+                summary_path = find_sequencing_summary(search_root)
+            if summary_path is not None and Path(summary_path).is_file():
+                status = read_demux_status(
+                    summary_path,
+                    threshold=float(getattr(cfg, "barcode_end_score_threshold", 62.0)),
+                )
+                filled = attach_demux_status(raw_adata.obs, status)
+                logger.info(
+                    "Applied sequencing-summary demux status to %d of %d read(s) from %s",
+                    filled,
+                    raw_adata.n_obs,
+                    Path(summary_path).name,
+                )
+            else:
+                logger.debug("No sequencing summary found; demux status left as derived.")
+        except Exception:
+            # Supplementary evidence: a missing or malformed summary must not
+            # fail ingestion, but it must be visible rather than looking like
+            # there was simply nothing to apply.
+            logger.exception("Could not apply sequencing-summary demux status; continuing")
+
+    # `EGL-29b`: both a directory-assigned and a sequence-re-derived barcode are
+    # now on obs. Report where they differ rather than silently preferring
+    # either -- systematic disagreement means the assignment, the kit, or the
+    # extraction parameters are wrong, and none of those announce themselves.
+    barcode_agreement_summary = report_barcode_agreement(
+        raw_adata.obs,
+        warn_above=float(getattr(cfg, "barcode_disagreement_warn_fraction", 0.01)),
+    )
+    if barcode_agreement_summary is not None:
+        raw_adata.uns["barcode_agreement"] = dict(barcode_agreement_summary)
 
     if getattr(cfg, "annotate_secondary_supplementary", False):
         logger.info("Annotating secondary/supplementary alignments from aligned BAM")

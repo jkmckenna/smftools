@@ -859,6 +859,26 @@ class ExperimentConfig:
     experiment_id: Optional[str] = None
     experiment_name: Optional[str] = None
     input_already_demuxed: bool = False
+    # Re-scan read sequences for barcodes even when the input is already
+    # demultiplexed, purely to recover the single- vs double-ended status that
+    # a demuxed FASTQ tree does not carry (`EGL-29a`). The assigned barcode
+    # stays authoritative -- this only adds `demux_type`, plus a
+    # `barcode_agreement` column reporting where the re-derived call differs.
+    # Separate from `input_already_demuxed`, whose meaning ("do not demux") is
+    # correct as it stands and should not be overloaded.
+    derive_demux_status_from_sequence: bool = False
+    # Use dorado/MinKNOW's `sequencing_summary.txt` for demux status when one is
+    # present (`EGL-29c`). Free when available, absent often enough that the
+    # sequence scanner above stays the primary route. None auto-discovers beside
+    # the input.
+    use_sequencing_summary_demux_status: bool = True
+    sequencing_summary_path: Optional[str] = None
+    # Per-end barcode score above which an end counts as barcoded. The scores
+    # are bimodal with a valley near 60-65; the split moves ~4 points across
+    # thresholds from 55 to 70, so this is not a delicate choice.
+    barcode_end_score_threshold: float = 62.0
+    # Warn when more than this fraction of comparable reads disagree.
+    barcode_disagreement_warn_fraction: float = 0.01
     summary_file: Optional[Path] = None
 
     # FASTQ input specific
@@ -2249,6 +2269,19 @@ class ExperimentConfig:
             umi_kit=merged.get("umi_kit", None),
             umi_yaml=merged.get("umi_yaml", None),
             input_already_demuxed=merged.get("input_already_demuxed", False),
+            derive_demux_status_from_sequence=_parse_bool(
+                merged.get("derive_demux_status_from_sequence", False)
+            ),
+            use_sequencing_summary_demux_status=_parse_bool(
+                merged.get("use_sequencing_summary_demux_status", True)
+            ),
+            sequencing_summary_path=merged.get("sequencing_summary_path"),
+            barcode_end_score_threshold=float(
+                _parse_numeric(merged.get("barcode_end_score_threshold", 62.0), 62.0)
+            ),
+            barcode_disagreement_warn_fraction=float(
+                _parse_numeric(merged.get("barcode_disagreement_warn_fraction", 0.01), 0.01)
+            ),
             threads=merged.get("threads"),
             plot_threads_fraction=float(merged.get("plot_threads_fraction", 0.5)),
             emit_log_file=merged.get("emit_log_file", True),
