@@ -217,14 +217,61 @@ def _build_segment_obs(
     return obs
 
 
+def _bool_column(frame: pd.DataFrame, column: str) -> pd.Series:
+    """A boolean view of ``column``, or all-False when it is absent."""
+    if column not in frame:
+        return pd.Series(False, index=frame.index)
+    return frame[column].astype(bool)
+
+
+def _collapse_single_segment_obs(frame: pd.DataFrame) -> pd.DataFrame:
+    """Vectorized collapse for molecules with exactly one segment (`F24`).
+
+    Every long read is its own molecule, so on nanopore data *every* group has
+    size one and the general path below spends ~1,060 us per molecule running
+    group-aggregation machinery over a single row -- 22.6 minutes for the 1.28M
+    molecules of one real run. Each per-group computation degenerates here:
+    the minimum and maximum over one value are that value, `iloc[0]` is the row
+    itself, and `segment_count` is 1.
+
+    The conflict checks the general path performs -- multiple templates per
+    molecule, conflicting sample/barcode/read_group, mixed references -- are
+    *structurally impossible* within a single row, which is why skipping them
+    is safe rather than merely faster. Anything with more than one segment
+    still goes through the general path.
+    """
+    obs = frame.copy()
+    obs["read_id"] = obs[TEMPLATE_ID_COLUMN].astype(str)
+    obs["segment_count"] = 1
+    # With one segment, `paired` alone decides: a paired read whose mate is
+    # absent from this molecule is a singleton, and an unpaired one is single.
+    obs["pair_state"] = np.where(_bool_column(obs, "paired"), "singleton", "single")
+    obs["outer_fragment_start"] = obs["reference_start"].astype(int)
+    obs["outer_fragment_end"] = obs["reference_end"].astype(int)
+    obs["group_path"] = obs["ragged_shard"]
+    obs["group_row"] = obs["ragged_row"].astype(int)
+    return obs
+
+
 def _collapse_segment_obs(segment_obs: pd.DataFrame) -> pd.DataFrame:
     """Collapse lossless segment metadata into one molecule-spine row per template."""
     if segment_obs.empty:
         return segment_obs
+
+    # Split by segment count so the common single-segment case avoids the
+    # per-group Python loop entirely (`F24`).
+    counts = segment_obs.groupby(MOLECULE_UID_COLUMN, sort=False, observed=True)[
+        MOLECULE_UID_COLUMN
+    ].transform("size")
+    singles = segment_obs.loc[counts == 1]
+    multi = segment_obs.loc[counts > 1]
+
+    frames: list[pd.DataFrame] = []
+    if not singles.empty:
+        frames.append(_collapse_single_segment_obs(singles))
+
     rows: list[pd.Series] = []
-    for this_molecule_uid, group in segment_obs.groupby(
-        MOLECULE_UID_COLUMN, sort=False, observed=True
-    ):
+    for this_molecule_uid, group in multi.groupby(MOLECULE_UID_COLUMN, sort=False, observed=True):
         template_values = group[TEMPLATE_ID_COLUMN].astype(str).unique()
         if len(template_values) != 1:
             raise ValueError(f"molecule_uid {this_molecule_uid!r} maps to multiple templates")
@@ -268,7 +315,23 @@ def _collapse_segment_obs(segment_obs: pd.DataFrame) -> pd.DataFrame:
         row["group_row"] = int(row["ragged_row"])
         rows.append(row)
 
-    obs = pd.DataFrame(rows)
+    if rows:
+        frames.append(pd.DataFrame(rows))
+    if not frames:
+        return segment_obs.iloc[0:0]
+    obs = pd.concat(frames) if len(frames) > 1 else frames[0]
+    # Restore the input's molecule order, which the split above disturbed.
+    if len(frames) > 1:
+        order = {
+            uid: position
+            for position, uid in enumerate(
+                segment_obs[MOLECULE_UID_COLUMN].drop_duplicates().tolist()
+            )
+        }
+        obs = obs.assign(_molecule_order=obs[MOLECULE_UID_COLUMN].map(order)).sort_values(
+            "_molecule_order", kind="stable"
+        )
+        obs = obs.drop(columns="_molecule_order")
     obs.index = pd.Index(obs["read_id"].astype(str), name=None)
     obs.drop(
         columns=[
