@@ -1277,10 +1277,12 @@ def _dense_product_regions(spine, bed_regions: pd.DataFrame) -> pd.DataFrame:
         for reference, plan in plans.items()
         if str(plan["analysis_mode"]) == "locus"
     ]
+    covered = {record["reference"] for record in records}
     for region in bed_regions.to_dict("records"):
         reference = str(region["reference"])
         if str(plans[reference]["analysis_mode"]) != "genome":
             continue
+        covered.add(reference)
         records.append(
             {
                 "reference": reference,
@@ -1290,6 +1292,26 @@ def _dense_product_regions(spine, bed_regions: pd.DataFrame) -> pd.DataFrame:
                 "source": str(region.get("source", "bed")),
             }
         )
+    # `F27a`: a genome-mode reference draws its regions *only* from the BED
+    # file, so without one it silently ends up with none -- and a reference with
+    # no regions produces no plot plans and therefore no dense products at all.
+    # On the run that found this, the two references with the most reads
+    # (622k and 466k, both 4 kb amplicons promoted to genome mode on raw read
+    # count) vanished from every spatial clustermap with nothing logged, while
+    # references holding 1 and 5 reads plotted normally.
+    unregioned = sorted(
+        reference
+        for reference, plan in plans.items()
+        if str(plan["analysis_mode"]) == "genome" and reference not in covered
+    )
+    if unregioned:
+        logger.warning(
+            "No dense-product regions for genome-mode reference(s): %s. These produce no "
+            "clustermaps or position matrices. Genome-mode references take regions only from "
+            "a BED file; supply one, or set analysis_mode=locus if these are amplicons.",
+            ", ".join(unregioned),
+        )
+
     regions = pd.DataFrame(
         {
             column: pd.Series(
