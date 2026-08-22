@@ -270,6 +270,36 @@ def publish_barcode_identity_sidecar(
     output_rows: list[dict[str, Any]] = []
     filename_authority_used = False
 
+    # Manifest resolution depends only on the three observed identity values, and
+    # `rows` is fixed for the whole loop -- so it is memoized rather than redone
+    # per read. Uncached this is O(reads x manifest rows): on a MinKNOW FASTQ
+    # tree that is 1.75M reads x 575 files ~= 1e9 row comparisons, plus four
+    # more passes for the `_common_manifest_value` calls, which measured **27.7
+    # minutes** of silence. The distinct key count is the number of barcodes
+    # (~41 here), so the cache turns it into a few dozen computations.
+    manifest_cache: dict[tuple[str, str, str], tuple[Any, ...]] = {}
+
+    def _resolve_manifest(bam_barcode: str, read_group: str, classifier_barcode: str):
+        key = (bam_barcode, read_group, classifier_barcode)
+        cached = manifest_cache.get(key)
+        if cached is None:
+            matched = _matching_manifest_rows(
+                rows,
+                bam_barcode=bam_barcode,
+                read_group=read_group,
+                classifier_barcode=classifier_barcode,
+            )
+            cached = (
+                matched,
+                _common_manifest_value(rows, matched, "barcode"),
+                _common_manifest_value(rows, matched, "sample"),
+                _common_manifest_value(rows, matched, "read_group"),
+                _common_manifest_value(rows, matched, "namespace"),
+                tuple(row for row in matched if _row_value(row, "source_kind") == "fastq"),
+            )
+            manifest_cache[key] = cached
+        return cached
+
     for read_name, bam_record in bam_records.items():
         classifier = classifier_records.get(read_name, {})
         classifier_barcode = _value(classifier.get("barcode", classifier.get("BC", "")))
@@ -279,17 +309,18 @@ def publish_barcode_identity_sidecar(
             and classifier_source.startswith("sequence")
         ):
             classifier_barcode = "unclassified"
-        matched = _matching_manifest_rows(
-            rows,
-            bam_barcode=_value(bam_record.get("bam_barcode")),
-            read_group=_value(bam_record.get("read_group")),
-            classifier_barcode=classifier_barcode,
+        (
+            matched,
+            manifest_barcodes,
+            manifest_samples,
+            manifest_read_groups,
+            manifest_namespaces,
+            matched_fastq_rows,
+        ) = _resolve_manifest(
+            _value(bam_record.get("bam_barcode")),
+            _value(bam_record.get("read_group")),
+            classifier_barcode,
         )
-        manifest_barcodes = _common_manifest_value(rows, matched, "barcode")
-        manifest_samples = _common_manifest_value(rows, matched, "sample")
-        manifest_read_groups = _common_manifest_value(rows, matched, "read_group")
-        manifest_namespaces = _common_manifest_value(rows, matched, "namespace")
-        matched_fastq_rows = [row for row in matched if _row_value(row, "source_kind") == "fastq"]
         bam_barcode_evidence = _value(bam_record.get("bam_barcode"))
         bam_read_group_evidence = _value(bam_record.get("read_group"))
         if matched_fastq_rows:
