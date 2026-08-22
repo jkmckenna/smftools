@@ -106,6 +106,7 @@ def _attach_obs_metadata(
     every call rather than re-scanning the whole BAM once per reference.
     """
     from ..informatics.barcode_sidecar import read_barcode_identity_sidecar
+    from ..informatics.demux_agreement import report_barcode_agreement
     from ..informatics.ragged_store import cigar_max_indel_runs
 
     frame = frame.set_index("read_id", drop=False)
@@ -116,6 +117,13 @@ def _attach_obs_metadata(
         for column in barcode_frame.columns:
             if column != "read_name":
                 frame[column] = barcode_frame[column].reindex(frame.index)
+        # `EGL-29b`: both the assigned barcode and the sequence-re-derived one
+        # are now on the frame, so report where they disagree. This lives here
+        # rather than beside the dense-path attach in `load_adata`, because the
+        # ragged path returns before reaching it -- wiring it there meant the
+        # reporting never ran for the partitioned pipeline, which is the path
+        # every current run takes.
+        report_barcode_agreement(frame)
     for sidecar in (_load_read_sidecar(umi_sidecar),):
         if sidecar is not None:
             for column in sidecar.columns:
