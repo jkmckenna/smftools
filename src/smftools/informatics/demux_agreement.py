@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
+import numpy as np
 import pandas as pd
 
 from smftools.logging_utils import get_logger
@@ -183,3 +184,53 @@ def should_derive_demux_status(cfg, demux_backend: str, *, dorado_supports: bool
         # scanner can -- there is no second pass to attach it to.
         return dorado_supports and not getattr(cfg, "input_already_demuxed", False)
     return False
+
+
+#: `BM` values that mean a barcode was found at both ends.
+_BM_DOUBLE = frozenset({"both"})
+#: `BM` values that mean exactly one end carried a recognizable barcode.
+_BM_SINGLE = frozenset({"left_only", "right_only", "read_start_only", "read_end_only"})
+
+BM_SOURCE = "bm_tag"
+
+
+def derive_demux_type_from_bm(frame: pd.DataFrame, *, bm_column: str = "BM") -> int:
+    """Write `demux_type` (+ provenance) onto a ragged read frame from `BM`.
+
+    The equivalent dense-path helper (`add_demux_type_from_bm_tag`) operates on
+    an AnnData and is only reachable from a branch the partitioned pipeline
+    never takes, so `demux_type` never reached the partitioned obs at all --
+    leaving the single- vs double-ended status that `EGL-29` exists to recover
+    unavailable to every consumer, and silently disabling
+    `duplicate_detection_demux_types_to_use`, which is guarded on the column
+    being present (`F31`).
+
+    Returns the number of rows labelled. The mapping matches the dense helper
+    exactly so the two paths cannot drift.
+    """
+    if bm_column not in frame.columns:
+        logger.debug("No %r column; demux_type not derived on this frame.", bm_column)
+        return 0
+
+    values = frame[bm_column].astype(str).str.strip().str.lower()
+    demux_type = np.where(
+        values.isin(_BM_DOUBLE),
+        "double",
+        np.where(values.isin(_BM_SINGLE), "single", "unclassified"),
+    )
+    frame["demux_type"] = demux_type
+    frame["demux_type_source"] = BM_SOURCE
+    # `BM` is a classifier assertion rather than a score, so confidence is 1.0
+    # where it made a call and 0.0 where it did not -- keeping the column shape
+    # identical to the sequencing-summary route, which reports a real fraction.
+    frame["demux_type_confidence"] = np.where(demux_type == "unclassified", 0.0, 1.0)
+
+    counts = pd.Series(demux_type).value_counts().to_dict()
+    logger.info(
+        "Derived demux_type from %s: double=%d, single=%d, unclassified=%d",
+        bm_column,
+        counts.get("double", 0),
+        counts.get("single", 0),
+        counts.get("unclassified", 0),
+    )
+    return int(len(frame))

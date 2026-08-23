@@ -106,7 +106,10 @@ def _attach_obs_metadata(
     every call rather than re-scanning the whole BAM once per reference.
     """
     from ..informatics.barcode_sidecar import read_barcode_identity_sidecar
-    from ..informatics.demux_agreement import report_barcode_agreement
+    from ..informatics.demux_agreement import (
+        derive_demux_type_from_bm,
+        report_barcode_agreement,
+    )
     from ..informatics.ragged_store import cigar_max_indel_runs
 
     frame = frame.set_index("read_id", drop=False)
@@ -123,6 +126,12 @@ def _attach_obs_metadata(
         # ragged path returns before reaching it -- wiring it there meant the
         # reporting never ran for the partitioned pipeline, which is the path
         # every current run takes.
+        # `F31`: derive the single- vs double-ended status here too. The dense
+        # helper that normally does this is only reachable from a branch the
+        # partitioned pipeline never takes, so without this `demux_type` never
+        # reaches obs -- and `duplicate_detection_demux_types_to_use`, which is
+        # guarded on the column existing, silently does nothing.
+        derive_demux_type_from_bm(frame)
         report_barcode_agreement(frame)
     for sidecar in (_load_read_sidecar(umi_sidecar),):
         if sidecar is not None:
