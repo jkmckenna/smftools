@@ -58,7 +58,11 @@ _STAGE_OUTPUT_SCHEMA_VERSIONS = {
 # across all experiments, and cascades to downstream stages.
 _STAGE_ALGORITHM_VERSIONS = {
     # 2: chunked-FASTQ pairing (F20), barcode-from-filename (F21), ragged obs
-    #    collapse (F24), and demux status carried into obs (F25, F31).
+    #    collapse (F24), demux status carried into obs (F25, F31), and the
+    #    directory/re-derived barcode split (F35). F35 lands on 2 rather than
+    #    bumping to 3 because no generation had yet been produced at 2 -- had
+    #    one existed, conflating it with post-F35 output would be exactly what
+    #    this field exists to prevent.
     "raw": "2",
     # 2: mismatch integer-encoding clustermaps added to the stage output
     #    (EGL-26).
