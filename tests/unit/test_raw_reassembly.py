@@ -220,3 +220,34 @@ def test_reassembled_generation_publishes_and_shares_its_parent_shards(tmp_path)
 
     for relative in shard_relative_paths(rebuilt):
         assert (rebuilt / relative).stat().st_ino == (parent / relative).stat().st_ino
+
+
+# --- `F37`: the longest phase must not run silent -----------------------------
+
+
+def test_extraction_progress_reports_at_intervals_and_on_completion(caplog):
+    """An hour of silence is where a stall and a wrong result both hide.
+
+    `F23` fixed this for identity reconciliation and stopped there; raw
+    extraction is longer still and reported nothing at all.
+    """
+    from smftools.cli.raw_adata import _log_extraction_progress
+
+    with caplog.at_level("INFO", logger="smftools.cli.raw_adata"):
+        for completed in range(1, 21):
+            _log_extraction_progress(completed, 20, 0.0, "raw extraction", in_flight=3)
+
+    messages = [record.message for record in caplog.records]
+    # Every 5% of 20 buckets is every bucket, so the final one must be present
+    # whatever the interval arithmetic does.
+    assert any("20/20" in message for message in messages)
+    assert all("in flight" in message for message in messages)
+
+
+def test_extraction_progress_is_silent_for_an_empty_pool(caplog):
+    from smftools.cli.raw_adata import _log_extraction_progress
+
+    with caplog.at_level("INFO", logger="smftools.cli.raw_adata"):
+        _log_extraction_progress(0, 0, 0.0, None, in_flight=0)
+
+    assert caplog.records == []
