@@ -874,6 +874,7 @@ def _map_references_parallel(
             next_item = next(items_iter, exhausted)
             submitted_at = {}
             completed = 0
+            started_at = time.monotonic()
             while next_item is not exhausted and len(future_to_args) < max_workers:
                 index, args = next_item
                 future = pool.submit(worker, *args, **worker_kwargs)
@@ -900,6 +901,13 @@ def _map_references_parallel(
                     index, args = future_to_args.pop(future)
                     result = future.result()
                     completed += 1
+                    _log_extraction_progress(
+                        completed,
+                        len(items),
+                        started_at,
+                        pool_label,
+                        in_flight=len(future_to_args),
+                    )
                     if perf is not None:
                         rows, bases = _raw_result_work_counts(result)
                         perf.task_complete(
@@ -931,6 +939,52 @@ def _map_references_parallel(
             stop_watchdog()
             if perf is not None:
                 perf.pool_end(pool_id, final_max_workers=max_workers, n_retries=0)
+
+
+#: How often the extraction pool reports progress, as a fraction of its buckets.
+_EXTRACTION_PROGRESS_FRACTION = 0.05
+
+
+def _log_extraction_progress(
+    completed: int,
+    total: int,
+    started_at: float,
+    pool_label: str | None,
+    *,
+    in_flight: int,
+) -> None:
+    """Report extraction progress, with a projected finish.
+
+    Raw extraction is the longest phase of the pipeline -- around an hour on a
+    real run -- and it used to emit nothing at all between "Extracting
+    read-relative raw records" and completion. `F23` fixed exactly this for
+    identity reconciliation and stopped there; an hour of silence is where a
+    wrong result hides, and it is also what makes a stall indistinguishable
+    from work (`F37`).
+
+    `in_flight` is reported because buckets are very uneven -- a few references
+    hold nearly all the reads -- so the pool spends its tail running a handful
+    of large buckets with most workers idle. A falling `in_flight` against a
+    slow-moving count is that tail, not a hang.
+    """
+    if total <= 0:
+        return
+    step = max(1, int(total * _EXTRACTION_PROGRESS_FRACTION))
+    if completed % step and completed != total:
+        return
+    elapsed = time.monotonic() - started_at
+    rate = completed / elapsed if elapsed > 0 else 0.0
+    remaining = (total - completed) / rate if rate > 0 else float("nan")
+    logger.info(
+        "%s: %d/%d buckets (%.0f%%), %d in flight, %.1f min elapsed, ~%.1f min remaining",
+        pool_label or "raw extraction",
+        completed,
+        total,
+        100.0 * completed / total,
+        in_flight,
+        elapsed / 60.0,
+        remaining / 60.0,
+    )
 
 
 def _raw_result_work_counts(result) -> tuple[int, int]:
