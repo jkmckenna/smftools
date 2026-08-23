@@ -10,8 +10,11 @@ from typing import Iterable, Mapping
 import numpy as np
 import pandas as pd
 
+from ..logging_utils import get_logger
 from .partition_query import query_derived_index
 from .partition_read import resolve_relative_path
+
+logger = get_logger(__name__)
 
 PLOT_REGION_PLANNER_VERSION = 1
 DEFAULT_PLOT_SELECTION_SEED = 0
@@ -302,6 +305,18 @@ def resolve_plot_region_plans(
             # zero passing reads in this experiment) -- nothing to stitch, so skip
             # it rather than treating "never analyzed" the same as "partially
             # analyzed", which is the actual data-integrity signal below.
+            #
+            # `F27a`: skipping is right, silence is not. A region was *requested*
+            # for this reference, so producing nothing for it is worth saying --
+            # the alternative is a plot directory that is simply missing entries
+            # and no way to tell whether that means "no data" or "never ran".
+            logger.warning(
+                "No analyzed coverage for requested plot region %s:%d-%d; it will produce no "
+                "plots. Expected when the reference has no passing reads.",
+                reference,
+                start,
+                end,
+            )
             continue
         gaps = _coverage_gaps(start, end, coverage)
         if gaps and not allow_gaps:
