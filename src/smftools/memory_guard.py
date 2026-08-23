@@ -504,6 +504,76 @@ def resolve_pool_budget(
     )
 
 
+#: How long to keep re-polling for headroom before declaring a task
+#: unadmittable (`F26a`). Headroom is a *live* quantity: on the run that
+#: motivated this, deamination segmentation was refused on a momentary dip to
+#: 60.6 MiB and the same machine had 53.9 GB free forty seconds later.
+ADMISSION_RETRY_ATTEMPTS = 8
+ADMISSION_RETRY_INITIAL_DELAY_S = 2.0
+ADMISSION_RETRY_MAX_DELAY_S = 30.0
+
+
+def wait_for_task_admission(
+    cfg,
+    n_items: int,
+    *,
+    per_item_memory_mb=None,
+    estimator=None,
+    pool_label: str | None = None,
+    attempts: int = ADMISSION_RETRY_ATTEMPTS,
+    initial_delay: float = ADMISSION_RETRY_INITIAL_DELAY_S,
+    max_delay: float = ADMISSION_RETRY_MAX_DELAY_S,
+) -> "PoolBudget":
+    """Re-poll the live budget until one task fits, or attempts are exhausted.
+
+    Admission was previously decided on a *single instantaneous sample* of
+    usable headroom. That is a reasonable guard against genuinely impossible
+    work, but a poor sole gate on a pool about to run thousands of batches: the
+    caller treats the resulting error as fatal for that lane, so a momentary dip
+    silently removed an entire analysis from a published generation (`F26`).
+
+    Waiting costs seconds against work measured in hours, and headroom recovers
+    as other stages release memory -- so poll with backoff first, and only then
+    let the caller raise. Returns the last budget resolved; the caller decides
+    whether it is admissible.
+    """
+    budget = resolve_pool_budget(
+        cfg, n_items, per_item_memory_mb=per_item_memory_mb, estimator=estimator
+    )
+    if budget.max_in_flight > 0 or attempts <= 1:
+        return budget
+
+    label = f" for {pool_label}" if pool_label else ""
+    delay = float(initial_delay)
+    waited = 0.0
+    for attempt in range(2, int(attempts) + 1):
+        logger.warning(
+            "Cannot admit one task%s yet: needs %.1f MiB, %.1f MiB usable headroom. "
+            "Waiting %.1fs for headroom (attempt %d/%d).",
+            label,
+            budget.per_item_memory_bytes / (1024**2),
+            budget.usable_headroom_bytes / (1024**2),
+            delay,
+            attempt,
+            int(attempts),
+        )
+        time.sleep(delay)
+        waited += delay
+        delay = min(delay * 2.0, float(max_delay))
+        budget = resolve_pool_budget(
+            cfg, n_items, per_item_memory_mb=per_item_memory_mb, estimator=estimator
+        )
+        if budget.max_in_flight > 0:
+            logger.info(
+                "Admitted%s after waiting %.1fs (%.1f MiB usable headroom).",
+                label,
+                waited,
+                budget.usable_headroom_bytes / (1024**2),
+            )
+            return budget
+    return budget
+
+
 def require_task_admission(budget: PoolBudget, *, pool_label: str | None = None) -> None:
     """Raise a clear error when a live budget cannot admit one task."""
     if budget.n_items <= 0 or budget.max_in_flight > 0:
@@ -1149,7 +1219,18 @@ def run_tasks_parallel(
                             future_to_index[future] = index
                             submitted_at[future] = time.monotonic()
                         if not future_to_index:
+                            # `F26a`: headroom is live, so poll with backoff
+                            # before treating this as fatal. On success, loop
+                            # round and let the normal submission path run.
+                            refill_budget = wait_for_task_admission(
+                                cfg,
+                                len(queued_indices) + len(future_to_index),
+                                per_item_memory_mb=per_item_memory_mb,
+                                estimator=estimator,
+                                pool_label=pool_label,
+                            )
                             require_task_admission(refill_budget, pool_label=pool_label)
+                            continue
                         done, _ = wait(future_to_index, return_when=FIRST_COMPLETED)
                         for future in done:
                             index = future_to_index.pop(future)
