@@ -515,3 +515,61 @@ def test_sequence_call_wins_when_the_tree_is_not_authoritative(tmp_path):
     assert row["barcode_source"] == "sequence:smftools"
     # Even when it loses, the directory assignment is still recorded.
     assert row["barcode_assigned"] == "11"
+
+
+# --- `F36`: unclassified is an assignment, not a missing one -------------------
+
+
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        # MinKNOW: the marker is in both the directory and the filename.
+        ("fastq_pass/unclassified/FBF_pass_unclassified_run_hash_0.fastq.gz", "unclassified"),
+        ("fastq_pass/barcode21/FBF_pass_barcode21_run_hash_3.fastq.gz", "21"),
+        # The directory is consulted even when the filename does not repeat it.
+        ("fastq_pass/unclassified/part_0.fastq.gz", "unclassified"),
+        # Layouts whose filename really is the label still work.
+        ("sample_R1.fastq.gz", "sample"),
+        ("bc01.fastq.gz", "bc01"),
+    ],
+)
+def test_filename_barcode_recognises_unclassified_without_eating_real_labels(path, expected):
+    """A MinKNOW unclassified filename must not become a barcode.
+
+    The stem fallback used to return the whole name, so 163,232 unclassified
+    reads were handed 16 filename-shaped "barcodes" -- one per chunk file. That
+    was invisible while this tier always lost to the classifier; `F35` made it
+    authoritative and the garbage won, which also erased the unclassified
+    population that a contamination denominator depends on (`F36`).
+    """
+    from smftools.informatics.barcode_sidecar import _legacy_filename_barcode
+
+    assert _legacy_filename_barcode(path) == expected
+
+
+def test_unclassified_reads_stay_unassigned_but_keep_their_re_derived_call(tmp_path):
+    """The denominator case: no barcode assigned, sequence call still recorded."""
+    directory = tmp_path / "fastq_pass" / "unclassified"
+    directory.mkdir(parents=True)
+    fastq = directory / "FBF_pass_unclassified_run_hash_0.fastq.gz"
+    fastq.write_bytes(b"")
+    bam = _bam(tmp_path / "reads.bam", [("read-1", {})])
+    classifier = tmp_path / "classifier.parquet"
+    pd.DataFrame({"read_name": ["read-1"], "BC": ["NB47"], "BM": ["read_start_only"]}).to_parquet(
+        classifier, index=False
+    )
+
+    sidecar, _report = publish_barcode_identity_sidecar(
+        bam,
+        tmp_path / "identity.parquet",
+        input_manifest=[_manifest_row(fastq)],
+        classifier_sidecar=classifier,
+        classifier_source="sequence:smftools",
+        directory_authoritative=True,
+    )
+
+    row = pd.read_parquet(sidecar).iloc[0]
+    assert row["barcode_assigned"] == "unclassified"
+    assert row["identity_status"] == "unclassified"
+    # The sequence call is what makes this read measurable as contamination.
+    assert row["barcode_rederived"] == "NB47"
