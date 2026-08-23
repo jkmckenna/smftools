@@ -24,9 +24,19 @@ pytestmark = pytest.mark.unit
 
 
 def test_the_ragged_attach_calls_the_agreement_report():
-    """A direct check that the call exists on the path that actually runs."""
-    source = inspect.getsource(raw_adata._attach_obs_metadata)
-    assert "report_barcode_agreement" in source
+    """A direct check that the call exists on the path that actually runs.
+
+    The attach reaches the report through `annotate_demux_obs`, which `F34`
+    introduced so the live path and the shard-replay path share one definition
+    of this annotation. The chain is followed rather than assumed: an attach
+    that stopped calling the helper, or a helper that stopped reporting, must
+    both fail here.
+    """
+    from smftools.informatics.demux_agreement import annotate_demux_obs
+
+    attach_source = inspect.getsource(raw_adata._attach_obs_metadata)
+    assert "annotate_demux_obs" in attach_source
+    assert "report_barcode_agreement" in inspect.getsource(annotate_demux_obs)
 
 
 def test_agreement_runs_where_the_sidecar_is_attached(tmp_path, caplog):
