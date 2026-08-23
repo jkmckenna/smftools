@@ -240,6 +240,7 @@ def _publish_canonical_barcode_identity(
 ) -> tuple[Path, Path]:
     """Publish or reuse the canonical barcode/sample identity intermediate."""
     from ..informatics.barcode_sidecar import (
+        BARCODE_IDENTITY_RESOLVER_VERSION,
         BARCODE_IDENTITY_SCHEMA_VERSION,
         publish_barcode_identity_sidecar,
     )
@@ -269,6 +270,10 @@ def _publish_canonical_barcode_identity(
             # sidecar resolved under the other precedence (`F35`).
             "directory_authoritative": bool(directory_authoritative),
             "schema_version": BARCODE_IDENTITY_SCHEMA_VERSION,
+            # The schema version tracks the output's shape and stays put when
+            # only the resolution changes, so a behavioural fix would otherwise
+            # reuse a sidecar resolved by the code it replaced (`F38`).
+            "resolver_version": BARCODE_IDENTITY_RESOLVER_VERSION,
         },
     )
     workspace = prepare_intermediate(

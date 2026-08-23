@@ -573,3 +573,42 @@ def test_unclassified_reads_stay_unassigned_but_keep_their_re_derived_call(tmp_p
     assert row["identity_status"] == "unclassified"
     # The sequence call is what makes this read measurable as contamination.
     assert row["barcode_rederived"] == "NB47"
+
+
+# --- `F38`: a resolver change must not reuse the old sidecar -------------------
+
+
+def test_resolver_version_is_part_of_the_identity_reuse_key(tmp_path, monkeypatch):
+    """A behavioural fix to resolution must invalidate the cached sidecar.
+
+    The key is (inputs + operation config). `F36` changed which barcode is
+    resolved without changing either, so the very run meant to verify the fix
+    would have silently reused the sidecar written by the code it replaced.
+    """
+    from smftools.informatics import barcode_sidecar as sidecar_module
+
+    bam = _bam(tmp_path / "reads.bam", [("read-1", {"BC": "NB01"})])
+    manifest = SimpleNamespace(rows=(_manifest_row(bam),), digest="manifest-1")
+    sidecar_manifest = tmp_path / "raw_outputs" / "sidecar_manifest.json"
+
+    def publish():
+        return _publish_canonical_barcode_identity(
+            output_directory=tmp_path,
+            aligned_bam=bam,
+            resolved_input_manifest=manifest,
+            route_sidecar=None,
+            classifier_source="filename",
+            directory_authoritative=False,
+            sidecar_manifest=sidecar_manifest,
+            force_redo=False,
+        )
+
+    first = publish()
+    assert publish()[0] == first[0], "identical inputs and config should reuse"
+
+    monkeypatch.setattr(
+        sidecar_module,
+        "BARCODE_IDENTITY_RESOLVER_VERSION",
+        sidecar_module.BARCODE_IDENTITY_RESOLVER_VERSION + 1,
+    )
+    assert publish()[0] != first[0], "a resolver bump must not reuse the old sidecar"

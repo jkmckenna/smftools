@@ -20,6 +20,19 @@ from .molecule_identity import alignment_segment_id
 logger = get_logger(__name__)
 
 BARCODE_IDENTITY_SCHEMA_VERSION = 2
+#: Version of the *resolution logic*, as distinct from the schema it writes.
+#:
+#: BUMP POLICY: increment whenever a change alters which barcode this module
+#: resolves for unchanged inputs -- authority ordering, token normalization,
+#: what counts as an assignment. The schema version above tracks the shape of
+#: the output and does not move for these; without a separate signal the
+#: canonical identity intermediate is reused across a behavioural fix, because
+#: its cache key is (inputs + operation config) and neither notices that the
+#: resolver changed (`F38`).
+#:
+#: 2: `F36` -- an `unclassified` directory resolves to `"unclassified"` rather
+#:    than to the filename stem, and the parent directory is consulted.
+BARCODE_IDENTITY_RESOLVER_VERSION = 2
 BARCODE_IDENTITY_REPORT_SUFFIX = ".identity_report.json"
 BARCODE_IDENTITY_COLUMNS = (
     "identity_schema_version",
