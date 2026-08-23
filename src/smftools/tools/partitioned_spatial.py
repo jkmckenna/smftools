@@ -1454,6 +1454,36 @@ def _cap_reads_per_group(adata, sample_column: str, max_reads: int | None, *, se
     return adata[np.sort(np.concatenate(keep)), :].copy()
 
 
+def _write_position_matrix_provenance(
+    output_dir: Path,
+    region,
+    output_key: str,
+    *,
+    written,
+    provenance: dict | None = None,
+) -> list[Path]:
+    """Record the selection that produced a region's streamed matrices.
+
+    The matrices themselves are written by `_position_matrix_sink` as they
+    complete; only the provenance sidecar is written here, so a surprising
+    matrix can still be traced to its input without a recompute (`EGL-24`).
+    """
+    if provenance is None or not written:
+        return []
+    region_dir = _position_matrix_region_dir(output_dir, region)
+    region_dir.mkdir(parents=True, exist_ok=True)
+    manifest = region_dir / "selection.json"
+    manifest.write_text(
+        json.dumps(
+            {"output_key": output_key, "matrices": len(written), **provenance},
+            indent=2,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    return [manifest]
+
+
 def _write_position_matrix_sidecars(
     adata, output_dir: Path, region, output_key: str, *, provenance: dict | None = None
 ) -> list[Path]:
@@ -1491,10 +1521,50 @@ def _write_position_matrix_sidecars(
     return paths
 
 
-def _plot_position_matrix_sidecars(
-    adata, output_key: str, region, plot_dir: Path, cfg
-) -> list[tuple[Path, str]]:
-    """Render each stored barcode matrix independently for one bounded region."""
+def _position_matrix_region_dir(output_dir: Path, region) -> Path:
+    """Where one region's matrix sidecars live."""
+    return (
+        Path(output_dir)
+        / SPATIAL_MATRIX_SUBDIR
+        / f"reference={_component(str(region['reference']))}"
+        / f"region={int(region['start']):012d}-{int(region['end']):012d}"
+    )
+
+
+def _position_matrix_sink(output_dir: Path, region):
+    """Write each matrix to parquet as it completes and keep only its path.
+
+    A P-by-P matrix is 168 MiB at a 4,690 bp locus. Retaining one per barcode
+    made peak memory scale with barcode count -- 41 barcodes estimated 41 GB and
+    the budget guard refused the run outright. Writing and releasing each keeps
+    the peak at a single matrix however many barcodes there are.
+
+    Returns ``(sink, written)`` where ``written`` accumulates
+    ``(method, barcode, path)`` for the plotting pass, which re-reads one
+    matrix at a time.
+    """
+    region_dir = _position_matrix_region_dir(output_dir, region)
+    written: list[tuple[str, str, Path]] = []
+
+    def sink(method: str, label, frame, n_reads: int) -> None:
+        if not isinstance(frame, pd.DataFrame) or frame.empty:
+            return
+        barcode = str(label[0] if isinstance(label, tuple) else label)
+        path = region_dir / f"method={_component(str(method))}" / f"{_component(barcode)}.parquet"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        frame.rename_axis(index="position", columns=None).to_parquet(path)
+        written.append((str(method), barcode, path))
+
+    return sink, written
+
+
+def _plot_position_matrix_sidecars(written, region, plot_dir: Path, cfg) -> list[tuple[Path, str]]:
+    """Render each barcode matrix independently, reading one at a time.
+
+    Takes the ``(method, barcode, path)`` records produced by
+    ``_position_matrix_sink`` rather than a populated ``adata.uns``, so no more
+    than one matrix is resident while plotting.
+    """
     import matplotlib.pyplot as plt
 
     reference = str(region["reference"])
@@ -1507,59 +1577,59 @@ def _plot_position_matrix_sidecars(
     tick_rotation = float(getattr(cfg, "correlation_matrix_tick_rotation", 90))
     plotted = []
 
-    for method_index, method in enumerate(methods):
-        method_name = str(method).lower()
-        method_store = adata.uns.get(output_key, {}).get(method_name, {})
-        cmap = cmaps[method_index % len(cmaps)]
+    cmap_by_method = {
+        str(method).lower(): cmaps[index % len(cmaps)] for index, method in enumerate(methods)
+    }
+    for method_name, barcode, matrix_path in written:
+        method_name = str(method_name).lower()
+        cmap = cmap_by_method.get(method_name, cmaps[0])
         vmin, vmax = (-1.0, 1.0) if method_name == "pearson" else (0.0, 1.0)
-        for key, matrix in method_store.items():
-            if not isinstance(matrix, pd.DataFrame) or matrix.empty:
-                continue
-            barcode = str(key[0] if isinstance(key, tuple) else key)
-            values = matrix.to_numpy(dtype=float)
-            figure, axis = plt.subplots(figsize=(7, 6), dpi=150)
-            image = axis.imshow(
-                values,
-                origin="upper" if flip_axes else "lower",
-                aspect="auto",
-                cmap=cmap,
-                vmin=vmin,
-                vmax=vmax,
-            )
-            positions = np.asarray(matrix.columns)
-            tick_indices = (
-                np.arange(len(positions))
-                if len(positions) <= n_ticks
-                else np.unique(np.round(np.linspace(0, len(positions) - 1, n_ticks)).astype(int))
-            )
-            tick_labels = []
-            for value in positions[tick_indices]:
-                try:
-                    numeric = float(value)
-                    tick_labels.append(str(int(numeric)) if numeric.is_integer() else str(value))
-                except (TypeError, ValueError):
-                    tick_labels.append(str(value))
-            axis.set_xticks(
-                tick_indices, tick_labels, rotation=tick_rotation, fontsize=tick_fontsize
-            )
-            axis.set_yticks(tick_indices, tick_labels, fontsize=tick_fontsize)
-            axis.set_xlabel("Reference position")
-            axis.set_ylabel("Reference position")
-            axis.set_title(f"{barcode} | {reference}:{start}-{end} | {method_name}")
-            figure.colorbar(image, ax=axis, fraction=0.046, pad=0.04)
-            figure.tight_layout()
+        matrix = pd.read_parquet(matrix_path)
+        if matrix.empty:
+            continue
+        values = matrix.to_numpy(dtype=float)
+        figure, axis = plt.subplots(figsize=(7, 6), dpi=150)
+        image = axis.imshow(
+            values,
+            origin="upper" if flip_axes else "lower",
+            aspect="auto",
+            cmap=cmap,
+            vmin=vmin,
+            vmax=vmax,
+        )
+        positions = np.asarray(matrix.columns)
+        tick_indices = (
+            np.arange(len(positions))
+            if len(positions) <= n_ticks
+            else np.unique(np.round(np.linspace(0, len(positions) - 1, n_ticks)).astype(int))
+        )
+        tick_labels = []
+        for value in positions[tick_indices]:
+            try:
+                numeric = float(value)
+                tick_labels.append(str(int(numeric)) if numeric.is_integer() else str(value))
+            except (TypeError, ValueError):
+                tick_labels.append(str(value))
+        axis.set_xticks(tick_indices, tick_labels, rotation=tick_rotation, fontsize=tick_fontsize)
+        axis.set_yticks(tick_indices, tick_labels, fontsize=tick_fontsize)
+        axis.set_xlabel("Reference position")
+        axis.set_ylabel("Reference position")
+        axis.set_title(f"{barcode} | {reference}:{start}-{end} | {method_name}")
+        figure.colorbar(image, ax=axis, fraction=0.046, pad=0.04)
+        figure.tight_layout()
 
-            path = (
-                plot_dir
-                / f"reference={_component(reference)}"
-                / f"region={start:012d}-{end:012d}"
-                / f"method={_component(method_name)}"
-                / f"{_component(barcode)}.png"
-            )
-            path.parent.mkdir(parents=True, exist_ok=True)
-            figure.savefig(path, bbox_inches="tight")
-            plt.close(figure)
-            plotted.append((path, barcode))
+        path = (
+            plot_dir
+            / f"reference={_component(reference)}"
+            / f"region={start:012d}-{end:012d}"
+            / f"method={_component(method_name)}"
+            / f"{_component(barcode)}.png"
+        )
+        path.parent.mkdir(parents=True, exist_ok=True)
+        figure.savefig(path, bbox_inches="tight")
+        plt.close(figure)
+        plotted.append((path, barcode))
+        del matrix, values
     return plotted
 
 
@@ -1623,15 +1693,17 @@ def _generate_dense_region_products(
             continue
         if bool(getattr(cfg, "spatial_generate_position_matrices", True)):
             methods = list(getattr(cfg, "correlation_matrix_types", ["pearson"]))
-            # compute_positionwise_statistics retains every method/barcode DataFrame
-            # in adata.uns until sidecars are published. Count three float64-sized
-            # buffers per matrix for the result plus correlation/covariance work arrays.
+            # Matrices are streamed to parquet and released as each barcode
+            # completes, so peak memory is one matrix plus its work arrays --
+            # not one per barcode. Previously the budget scaled with barcode
+            # count and a 41-barcode run at a 4,690 bp locus estimated 41 GB,
+            # which the guard refused outright.
             estimated_matrix_bytes = _validate_position_matrix_budget(
                 reference,
                 start,
                 end,
                 n_methods=len(methods),
-                n_barcodes=len(keep_samples),
+                n_barcodes=1,
                 max_width=matrix_max_width,
                 max_bytes=matrix_max_bytes,
             )
@@ -1767,6 +1839,7 @@ def _generate_dense_region_products(
                     matrix_seed,
                     min_count_for_pairwise,
                 )
+            matrix_sink, matrix_written = _position_matrix_sink(output_dir, region)
             compute_positionwise_statistics(
                 matrix_adata,
                 layer="nan0_0minus1",
@@ -1780,13 +1853,15 @@ def _generate_dense_region_products(
                 min_count_for_pairwise=min_count_for_pairwise,
                 min_position_valid_fraction=None,
                 index_col_suffix=index_suffix,
+                on_result=matrix_sink,
             )
+            matrix_paths.extend(path for _method, _barcode, path in matrix_written)
             matrix_paths.extend(
-                _write_position_matrix_sidecars(
-                    matrix_adata,
+                _write_position_matrix_provenance(
                     output_dir,
                     region,
                     output_key,
+                    written=matrix_written,
                     provenance={
                         "reads_used": int(matrix_adata.n_obs),
                         "reads_available": int(adata.n_obs),
@@ -1797,8 +1872,7 @@ def _generate_dense_region_products(
                 )
             )
             matrix_plots = _plot_position_matrix_sidecars(
-                matrix_adata,
-                output_key,
+                matrix_written,
                 region,
                 layout.categories["position_correlation"],
                 cfg,
