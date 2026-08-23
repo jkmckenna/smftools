@@ -122,8 +122,16 @@ def test_spatial_bed_replaces_genome_tiles_but_preserves_full_locus(tmp_path):
 
 
 def test_genome_without_spatial_bed_has_portable_empty_dense_region_catalog(tmp_path):
+    """The empty-catalog path now requires a genuinely unplottable reference.
+
+    `F27b` gives short genome-mode references a fallback locus region, so this
+    fixture is enlarged to a chromosome-scale length -- which is the case genome
+    mode exists for, and the one where an empty catalog is still correct.
+    """
     spine = _spine()
     spine.uns["reference_plans"].pop("locus_top")
+    spine.uns["reference_plans"]["chr1_top"]["reference_length"] = 61_000_000
+    spine.uns["reference_plans"]["chr1_top"]["n_reads"] = 500_000
     bed_regions = pd.DataFrame(columns=["reference", "start", "end", "name", "bed_chrom"])
 
     dense_regions = _dense_product_regions(spine, bed_regions)
