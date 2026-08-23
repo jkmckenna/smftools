@@ -1346,6 +1346,25 @@ def execute_partitioned_preprocessing(
     safe_write_h5ad(derived_spine, output_spine, backup=False, verbose=False)
     if refresh_experiment_spine:
         write_experiment_spine(run_root)
+
+    # Barcode contamination QC (`EGL-31`). Deliberately outside the
+    # `emit_automated_plots` guard below: this is a measurement, not a picture,
+    # and it is the only record of how much cross-library mis-barcoding the run
+    # carries. It self-skips when the run declares no spike-in and when the
+    # store predates the identity split (`F35`), so it is safe to run always.
+    from .barcode_contamination_qc import write_barcode_contamination_qc
+
+    try:
+        write_barcode_contamination_qc(
+            derived_spine.obs,
+            output_dir,
+            spike_in_references=getattr(cfg, "spike_in_references", None) or [],
+        )
+    except Exception:
+        # A QC failure must not abort an otherwise publishable generation, but
+        # it must be visible.
+        logger.exception("Barcode contamination QC failed; generation still published")
+
     if bool(getattr(cfg, "emit_automated_plots", True)):
         generate_preprocess_summary_plots(
             obs_sidecar,
