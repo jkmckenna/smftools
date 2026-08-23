@@ -41,7 +41,10 @@ def test_the_ragged_attach_calls_the_agreement_report():
 
 def test_agreement_runs_where_the_sidecar_is_attached(tmp_path, caplog):
     """End to end through `_attach_obs_metadata` with a real sidecar."""
-    from smftools.informatics.barcode_sidecar import BARCODE_IDENTITY_COLUMNS
+    from smftools.informatics.barcode_sidecar import (
+        BARCODE_IDENTITY_COLUMNS,
+        BARCODE_IDENTITY_SCHEMA_VERSION,
+    )
 
     reads = [f"read{index}" for index in range(6)]
     sidecar = pd.DataFrame(
@@ -49,10 +52,11 @@ def test_agreement_runs_where_the_sidecar_is_attached(tmp_path, caplog):
             **{column: "" for column in BARCODE_IDENTITY_COLUMNS},
             "read_name": reads,
             "barcode": ["bc01"] * 6,
-            "BC": ["bc01"] * 4 + ["bc02"] * 2,
+            "barcode_assigned": ["bc01"] * 6,
+            "barcode_rederived": ["bc01"] * 4 + ["bc02"] * 2,
         }
     )
-    sidecar["identity_schema_version"] = 1
+    sidecar["identity_schema_version"] = BARCODE_IDENTITY_SCHEMA_VERSION
     path = tmp_path / "identity.parquet"
     sidecar.to_parquet(path, index=False)
 
@@ -76,7 +80,10 @@ def test_agreement_runs_where_the_sidecar_is_attached(tmp_path, caplog):
 
 def test_disagreements_are_visible_on_the_ragged_path(tmp_path, caplog):
     """The point of the wiring: a wrong kit or assignment must surface here."""
-    from smftools.informatics.barcode_sidecar import BARCODE_IDENTITY_COLUMNS
+    from smftools.informatics.barcode_sidecar import (
+        BARCODE_IDENTITY_COLUMNS,
+        BARCODE_IDENTITY_SCHEMA_VERSION,
+    )
 
     reads = [f"read{index}" for index in range(10)]
     sidecar = pd.DataFrame(
@@ -84,10 +91,11 @@ def test_disagreements_are_visible_on_the_ragged_path(tmp_path, caplog):
             **{column: "" for column in BARCODE_IDENTITY_COLUMNS},
             "read_name": reads,
             "barcode": ["bc01"] * 10,
-            "BC": ["bc02"] * 10,
+            "barcode_assigned": ["bc01"] * 10,
+            "barcode_rederived": ["bc02"] * 10,
         }
     )
-    sidecar["identity_schema_version"] = 1
+    sidecar["identity_schema_version"] = BARCODE_IDENTITY_SCHEMA_VERSION
     path = tmp_path / "identity.parquet"
     sidecar.to_parquet(path, index=False)
 

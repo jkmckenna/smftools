@@ -867,6 +867,14 @@ class ExperimentConfig:
     # Separate from `input_already_demuxed`, whose meaning ("do not demux") is
     # correct as it stands and should not be overloaded.
     derive_demux_status_from_sequence: bool = False
+    # Reference name(s) of an unbarcoded spike-in amplicon carried through the
+    # prep (`F35`). Because it is pooled without a barcode of its own, its true
+    # assignment is known for every read, so any barcode observed on one is a
+    # mis-barcoding event by construction -- a direct count of known errors
+    # rather than an inferred rate. Named explicitly rather than guessed at:
+    # inferring "the unbarcoded reference" would silently pick the wrong
+    # amplicon on a run that has none.
+    spike_in_references: List[str] = field(default_factory=list)
     # Use dorado/MinKNOW's `sequencing_summary.txt` for demux status when one is
     # present (`EGL-29c`). Free when available, absent often enough that the
     # sequence scanner above stays the primary route. None auto-discovers beside
@@ -2272,6 +2280,7 @@ class ExperimentConfig:
             derive_demux_status_from_sequence=_parse_bool(
                 merged.get("derive_demux_status_from_sequence", False)
             ),
+            spike_in_references=_parse_list(merged.get("spike_in_references", [])),
             use_sequencing_summary_demux_status=_parse_bool(
                 merged.get("use_sequencing_summary_demux_status", True)
             ),

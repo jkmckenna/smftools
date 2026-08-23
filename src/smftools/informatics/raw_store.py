@@ -84,6 +84,12 @@ _RAW_SCALAR_OBS_COLUMNS = (
     "demux_type_source",
     "demux_type_confidence",
     "barcode_agreement",
+    # `F35`: the two independent assignments plus the per-end calls. Without
+    # these names the columns reach the frame and are dropped here.
+    "barcode_assigned",
+    "barcode_rederived",
+    "barcode_front",
+    "barcode_rear",
     "barcode_source",
     "barcode_confidence",
     "sample_source",

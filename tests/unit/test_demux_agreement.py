@@ -116,7 +116,9 @@ def test_perfect_agreement_reports_no_confusions():
 
 
 def test_report_adds_the_column_and_returns_a_summary():
-    obs = pd.DataFrame({"barcode": ["bc01", "bc01"], "BC": ["bc01", "bc02"]})
+    obs = pd.DataFrame(
+        {"barcode_assigned": ["bc01", "bc01"], "barcode_rederived": ["bc01", "bc02"]}
+    )
     summary = report_barcode_agreement(obs)
 
     assert AGREEMENT_COLUMN in obs.columns
@@ -125,28 +127,28 @@ def test_report_adds_the_column_and_returns_a_summary():
 
 def test_report_does_not_change_the_assigned_barcode():
     """Disagreement is reported, never resolved -- the assignment is authoritative."""
-    obs = pd.DataFrame({"barcode": ["bc01"], "BC": ["bc02"]})
+    obs = pd.DataFrame({"barcode_assigned": ["bc01"], "barcode_rederived": ["bc02"]})
     report_barcode_agreement(obs)
-    assert list(obs["barcode"]) == ["bc01"]
+    assert list(obs["barcode_assigned"]) == ["bc01"]
 
 
 def test_no_second_assignment_is_not_an_error():
     """The normal case for input that was never re-demultiplexed."""
-    obs = pd.DataFrame({"barcode": ["bc01"]})
+    obs = pd.DataFrame({"barcode_assigned": ["bc01"]})
     assert report_barcode_agreement(obs) is None
     assert AGREEMENT_COLUMN not in obs.columns
 
 
 def test_high_disagreement_warns(caplog):
     """A high rate means every downstream per-sample number is suspect."""
-    obs = pd.DataFrame({"barcode": ["bc01"] * 10, "BC": ["bc02"] * 10})
+    obs = pd.DataFrame({"barcode_assigned": ["bc01"] * 10, "barcode_rederived": ["bc02"] * 10})
     with caplog.at_level("WARNING"):
         report_barcode_agreement(obs, warn_above=0.01)
     assert any("disagree" in record.message for record in caplog.records)
 
 
 def test_agreement_below_the_threshold_does_not_warn(caplog):
-    obs = pd.DataFrame({"barcode": ["bc01"] * 10, "BC": ["bc01"] * 10})
+    obs = pd.DataFrame({"barcode_assigned": ["bc01"] * 10, "barcode_rederived": ["bc01"] * 10})
     with caplog.at_level("WARNING"):
         report_barcode_agreement(obs, warn_above=0.01)
     assert not [record for record in caplog.records if record.levelname == "WARNING"]
