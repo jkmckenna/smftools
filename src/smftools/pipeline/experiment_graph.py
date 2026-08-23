@@ -63,7 +63,11 @@ _STAGE_ALGORITHM_VERSIONS = {
     #    bumping to 3 because no generation had yet been produced at 2 -- had
     #    one existed, conflating it with post-F35 output would be exactly what
     #    this field exists to prevent.
-    "raw": "2",
+    # 3: `F39`/`F40` -- agreement compares normalized barcodes, and unassigned
+    #    reads on a spike-in reference are retained rather than filtered. Both
+    #    change what raw publishes, and generation 45b4aefa already exists at
+    #    "2", so this bumps rather than amending the note above.
+    "raw": "3",
     # 2: mismatch integer-encoding clustermaps added to the stage output
     #    (EGL-26).
     "preprocess": "2",
