@@ -55,6 +55,31 @@ _NON_SEMANTIC_STAGE_CONFIG_KEYS = {
     "max_memory_percent",
     "target_task_memory_mb",
 }
+#: Settings that only change how results are *displayed*, never what is
+#: computed (`F30`). `reindex_references_adata` adds a `<reference>_reindexed`
+#: var column and its docstring is explicit that it "never touches
+#: X/layers/var_names -- it is purely a reinterpretation of the reindexed
+#: coordinate value". Correcting a TSS offset previously invalidated the raw
+#: stage, forcing a full rebuild from FASTQ to relabel a plot axis.
+_DISPLAY_ONLY_CONFIG_KEYS = {
+    "reindexing_offsets",
+    "reindexing_invert",
+    "reindexed_var_suffix",
+}
+
+#: Stage order, used to keep a stage from being invalidated by settings that
+#: belong to stages running after it (`F30`). Turning on a spatial plot
+#: previously marked the raw store stale.
+_STAGE_ORDER = ("raw", "preprocess", "spatial", "hmm", "latent")
+
+
+def _downstream_config_prefixes(stage: str) -> tuple[str, ...]:
+    """Config-key prefixes owned by stages that run after ``stage``."""
+    if stage not in _STAGE_ORDER:
+        return ()
+    return tuple(f"{name}_" for name in _STAGE_ORDER[_STAGE_ORDER.index(stage) + 1 :])
+
+
 _STAGE_NON_SEMANTIC_CONFIG_KEYS = {
     stage: {"plot_regions_bed", "plot_allow_unanalyzed_gaps", "plot_subsample_seed"}
     for stage in ("preprocess", "spatial", "hmm", "latent", "full")
@@ -189,15 +214,24 @@ def resolved_stage_config(cfg, stage: str | None = None) -> dict[str, Any]:
         values = dict(cfg.to_dict())
     else:
         values = dict(vars(cfg))
-    ignored = _NON_SEMANTIC_STAGE_CONFIG_KEYS | _STAGE_NON_SEMANTIC_CONFIG_KEYS.get(
-        str(stage), set()
+    ignored = (
+        _NON_SEMANTIC_STAGE_CONFIG_KEYS
+        | _STAGE_NON_SEMANTIC_CONFIG_KEYS.get(str(stage), set())
+        | _DISPLAY_ONLY_CONFIG_KEYS
     )
+    # A stage cannot be affected by settings belonging to stages that run after
+    # it, so those must not invalidate it (`F30`). Subtracting known-irrelevant
+    # keys rather than enumerating relevant ones is deliberate: an allowlist
+    # that is too narrow silently reuses a stage that should have been
+    # recomputed, which is far worse than recomputing one too often.
+    downstream = _downstream_config_prefixes(str(stage))
     resolved = {
         key: value
         for key, value in values.items()
         if key not in ignored
         and not key.startswith("force_redo_")
         and not key.endswith("_max_workers")
+        and not (downstream and key.startswith(downstream))
     }
     selected = _STAGE_SEMANTIC_CONFIG_KEYS.get(str(stage))
     if selected is not None:
