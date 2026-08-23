@@ -1,5 +1,9 @@
 """Warn when a reference will produce no dense products (`F27a`).
 
+Since `F27b`, short genome-mode references get a fallback locus region, so the
+warning is reserved for references that genuinely cannot be rendered whole --
+which is why these fixtures are chromosome-scale.
+
 A genome-mode reference draws its regions only from a BED file. Without one it
 ends up with no regions, produces no plot plans, and therefore no clustermaps or
 position matrices -- previously with nothing logged anywhere.
@@ -26,43 +30,61 @@ def _spine(plans):
     return SimpleNamespace(uns={"reference_plans": plans})
 
 
+def _cfg():
+    return SimpleNamespace(clustermap_max_reads_per_plot=10_000, max_full_matrix_gb=8.0)
+
+
 def _no_bed():
     return pd.DataFrame(columns=["reference", "start", "end", "name", "source"])
 
 
 def test_genome_mode_reference_without_regions_warns(caplog):
     plans = {
-        "6B6_top": {"analysis_mode": "genome", "reference_length": 4690},
+        "chr19_top": {
+            "analysis_mode": "genome",
+            "reference_length": 61_000_000,
+            "n_reads": 500_000,
+        },
         "6B6_bottom": {"analysis_mode": "locus", "reference_length": 4690},
     }
 
     with caplog.at_level("WARNING", logger="smftools.tools.partitioned_spatial"):
-        regions = _dense_product_regions(_spine(plans), _no_bed())
+        regions = _dense_product_regions(_spine(plans), _no_bed(), _cfg())
 
     assert list(regions["reference"]) == ["6B6_bottom"]
     warnings = [r.message for r in caplog.records if r.levelname == "WARNING"]
-    assert any("6B6_top" in message for message in warnings)
+    assert any("chr19_top" in message for message in warnings)
 
 
 def test_the_warning_names_every_affected_reference(caplog):
     plans = {
-        "6B6_top": {"analysis_mode": "genome", "reference_length": 4690},
-        "6B6_enh_del_top": {"analysis_mode": "genome", "reference_length": 4168},
+        "chr19_top": {
+            "analysis_mode": "genome",
+            "reference_length": 61_000_000,
+            "n_reads": 500_000,
+        },
+        "chr18_top": {
+            "analysis_mode": "genome",
+            "reference_length": 48_000_000,
+            "n_reads": 500_000,
+        },
     }
 
     with caplog.at_level("WARNING", logger="smftools.tools.partitioned_spatial"):
-        _dense_product_regions(_spine(plans), _no_bed())
+        _dense_product_regions(_spine(plans), _no_bed(), _cfg())
 
     joined = " ".join(r.getMessage() for r in caplog.records)
-    assert "6B6_top" in joined and "6B6_enh_del_top" in joined
+    assert "chr19_top" in joined and "chr18_top" in joined
 
 
 def test_the_warning_suggests_both_remedies(caplog):
     """A warning that does not say what to do is only marginally better."""
-    plans = {"6B6_top": {"analysis_mode": "genome", "reference_length": 4690}}
+    plans = {
+        "chr19_top": {"analysis_mode": "genome", "reference_length": 61_000_000, "n_reads": 500_000}
+    }
 
     with caplog.at_level("WARNING", logger="smftools.tools.partitioned_spatial"):
-        _dense_product_regions(_spine(plans), _no_bed())
+        _dense_product_regions(_spine(plans), _no_bed(), _cfg())
 
     joined = " ".join(r.getMessage() for r in caplog.records).lower()
     assert "bed" in joined
@@ -70,13 +92,15 @@ def test_the_warning_suggests_both_remedies(caplog):
 
 
 def test_genome_mode_reference_with_bed_regions_does_not_warn(caplog):
-    plans = {"6B6_top": {"analysis_mode": "genome", "reference_length": 4690}}
+    plans = {
+        "chr19_top": {"analysis_mode": "genome", "reference_length": 61_000_000, "n_reads": 500_000}
+    }
     bed = pd.DataFrame(
-        [{"reference": "6B6_top", "start": 0, "end": 4690, "name": "r1", "source": "bed"}]
+        [{"reference": "chr19_top", "start": 0, "end": 4690, "name": "r1", "source": "bed"}]
     )
 
     with caplog.at_level("WARNING", logger="smftools.tools.partitioned_spatial"):
-        regions = _dense_product_regions(_spine(plans), bed)
+        regions = _dense_product_regions(_spine(plans), bed, _cfg())
 
     assert len(regions) == 1
     assert not [r for r in caplog.records if r.levelname == "WARNING"]
@@ -90,7 +114,7 @@ def test_locus_mode_references_never_warn(caplog):
     }
 
     with caplog.at_level("WARNING", logger="smftools.tools.partitioned_spatial"):
-        regions = _dense_product_regions(_spine(plans), _no_bed())
+        regions = _dense_product_regions(_spine(plans), _no_bed(), _cfg())
 
     assert len(regions) == 2
     assert not [r for r in caplog.records if r.levelname == "WARNING"]

@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Mapping
 from urllib.parse import quote
 
 import numpy as np
 import pandas as pd
 
 from smftools.constants import DEFAULT_CLUSTERMAP_MAX_READS_PER_PLOT, REFERENCE_STRAND
+from smftools.informatics.storage_planner import BYTES_PER_DENSE_POSITION
 from smftools.logging_utils import get_logger
 
 from ..cli.stage_artifacts import (
@@ -1263,9 +1265,38 @@ def _plot_position_profiles(records, output_dir: Path, layout) -> None:
             )
 
 
-def _dense_product_regions(spine, bed_regions: pd.DataFrame) -> pd.DataFrame:
+def _plottable_as_locus(
+    plan: Mapping[str, object], *, plot_read_cap: int, max_bytes: float
+) -> bool:
+    """Whether a whole reference is small enough to render as one dense product.
+
+    `analysis_mode` answers a *storage* question -- can every read for this
+    reference be held in one dense matrix -- and `auto` correctly says no for a
+    reference with hundreds of thousands of reads. But plots never draw every
+    read: they draw at most `clustermap_max_reads_per_plot` of them. Judging
+    plot feasibility on the full read count conflated the two, and left short
+    references with many reads unable to produce any dense product at all
+    (`F27`/`F27b`).
+
+    So estimate against the *plotted* population instead. On the run that found
+    this, a 4,168 bp amplicon estimated 19.3 GB across all 622,281 reads --
+    genome mode, no plots -- but 0.33 GB across the 10,000 a plot would draw.
+    A real genome contig still fails this test on length alone, which is the
+    case genome mode exists for.
+    """
+    length = int(plan["reference_length"])
+    n_reads = min(int(plan.get("n_reads", plot_read_cap) or plot_read_cap), int(plot_read_cap))
+    return float(n_reads) * float(length) * float(BYTES_PER_DENSE_POSITION) <= float(max_bytes)
+
+
+def _dense_product_regions(spine, bed_regions: pd.DataFrame, cfg=None) -> pd.DataFrame:
     """Build the portable catalog of regions eligible for dense products."""
     plans = {str(key): dict(value) for key, value in spine.uns["reference_plans"].items()}
+    plot_read_cap = int(
+        getattr(cfg, "clustermap_max_reads_per_plot", DEFAULT_CLUSTERMAP_MAX_READS_PER_PLOT)
+        or DEFAULT_CLUSTERMAP_MAX_READS_PER_PLOT
+    )
+    max_bytes = float(getattr(cfg, "max_full_matrix_gb", 8.0) or 8.0) * 1024**3
     records = [
         {
             "reference": reference,
@@ -1292,6 +1323,25 @@ def _dense_product_regions(spine, bed_regions: pd.DataFrame) -> pd.DataFrame:
                 "source": str(region.get("source", "bed")),
             }
         )
+
+    # `F27b`: a genome-mode reference short enough to render whole gets the
+    # whole reference as a *fallback* -- only when no BED region already covers
+    # it. A supplied BED is the user stating which regions they want; adding a
+    # whole-locus region on top would override that rather than supplement it.
+    for reference, plan in plans.items():
+        if reference in covered or str(plan["analysis_mode"]) != "genome":
+            continue
+        if _plottable_as_locus(plan, plot_read_cap=plot_read_cap, max_bytes=max_bytes):
+            covered.add(reference)
+            records.append(
+                {
+                    "reference": reference,
+                    "start": 0,
+                    "end": int(plan["reference_length"]),
+                    "name": reference,
+                    "source": "locus",
+                }
+            )
     # `F27a`: a genome-mode reference draws its regions *only* from the BED
     # file, so without one it silently ends up with none -- and a reference with
     # no regions produces no plot plans and therefore no dense products at all.
@@ -1859,7 +1909,7 @@ def execute_partitioned_spatial(spine_path, cfg, output_dir) -> dict[str, Path]:
     )
     read_autocorrelation_axis, read_periodogram_axis = _write_read_metric_axes(output_dir, cfg)
     metrics_path, autocorrelation_path = _reduce_metrics(records, output_dir)
-    legacy_dense_regions = _dense_product_regions(spine, bed_regions)
+    legacy_dense_regions = _dense_product_regions(spine, bed_regions, cfg)
     plot_plans = resolve_plot_region_plans(
         spine,
         record_frame,

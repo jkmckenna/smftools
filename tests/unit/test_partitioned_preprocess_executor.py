@@ -1017,7 +1017,19 @@ def test_genome_derived_layers_stitch_across_cores_with_absent_read_fill(tmp_pat
     assert derived.layers["nan_half"][1].tolist() == [0.5, 0.5, 0.0, 1.0, 1.0, 0.0]
 
 
-def test_genome_spatial_without_regions_bed_publishes_empty_region_catalog(tmp_path):
+def test_genome_spatial_without_regions_bed_publishes_a_portable_region_catalog(tmp_path):
+    """`F27b` changed this contract deliberately.
+
+    A genome-mode reference short enough to render whole now receives a
+    fallback locus region instead of nothing. This fixture's reference is 12 bp,
+    so it is trivially plottable and now gets one -- which is the intended
+    behaviour, not a regression: judging plot feasibility on total read count
+    left real 4 kb amplicons unable to produce any dense product.
+
+    What this test actually guards is that the catalog stays *portable* --
+    correct columns and dtypes, round-tripping through parquet -- which is
+    unchanged.
+    """
     raw = write_raw_store(
         _frame(),
         tmp_path / "raw_outputs",
@@ -1046,9 +1058,9 @@ def test_genome_spatial_without_regions_bed_publishes_empty_region_catalog(tmp_p
 
     assert not tasks.empty
     assert set(tasks["analysis_mode"]) == {"genome"}
-    assert regions.empty
     assert list(regions.columns) == ["reference", "start", "end", "name", "source"]
-    assert not list(spatial["matrix_store"].rglob("*.parquet"))
+    assert set(regions["reference"]) == {"ref_top"}, "short genome-mode refs get a fallback region"
+    assert list(regions["source"]) == ["locus"]
     assert spatial["manifest"].is_file()
     assert spatial_spine.uns["spatial_region_catalog"] == relative_uns_path(
         spatial["region_catalog"], tmp_path
