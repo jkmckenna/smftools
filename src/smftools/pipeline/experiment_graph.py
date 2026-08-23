@@ -44,7 +44,33 @@ _STAGE_OUTPUT_SCHEMA_VERSIONS = {
     "hmm": 2,
     "latent": 2,
 }
-_STAGE_ALGORITHM_VERSIONS = {stage: "1" for stage in EXPERIMENT_STAGES}
+# Per-stage algorithm versions.
+#
+# BUMP POLICY: increment a stage's version whenever a code change alters what
+# that stage produces for unchanged inputs and unchanged config. Config changes
+# are already covered by ``stage_config_hash`` and input changes by the channel
+# fingerprints; this value is the *only* signal that the producing code itself
+# changed. Leaving it untouched after a behavioural fix makes the planner report
+# a pre-fix generation as ``compatible``, silently serving stale results.
+#
+# Do not bump for refactors, logging, or performance work that leaves outputs
+# byte-identical. A bump invalidates every stored generation of that stage
+# across all experiments, and cascades to downstream stages.
+_STAGE_ALGORITHM_VERSIONS = {
+    # 2: chunked-FASTQ pairing (F20), barcode-from-filename (F21), ragged obs
+    #    collapse (F24), and demux status carried into obs (F25, F31).
+    "raw": "2",
+    # 2: mismatch integer-encoding clustermaps added to the stage output
+    #    (EGL-26).
+    "preprocess": "2",
+    # 2: per-group read caps (EGL-24), locus-plottable regions (F27a, F27b),
+    #    and streamed position matrices (F32).
+    "spatial": "2",
+    "hmm": "1",
+    # 2: Leiden clustering over latent embeddings, cluster-block ordering, and
+    #    per-unit clustermaps (EGL-28a-d, F29).
+    "latent": "2",
+}
 _STAGE_DEPENDENCIES = {
     "raw": None,
     "preprocess": "raw",

@@ -573,7 +573,7 @@ def test_stage_publication_records_semantic_result_identity(tmp_path):
 
     entry = read_experiment_manifest(tmp_path)["stages"]["raw"]
     assert entry["semantic_analysis_id"] == experiment_graph.EXPERIMENT_NODE_IDS["raw"]
-    assert entry["semantic_algorithm_version"] == "1"
+    assert entry["semantic_algorithm_version"] == experiment_graph._STAGE_ALGORITHM_VERSIONS["raw"]
     assert entry["semantic_output_schema_version"] == 3
     assert entry["semantic_result_id"].startswith("raw:")
     assert len(entry["semantic_channel_fingerprint"]) == 64
@@ -603,3 +603,46 @@ def test_batch_surfaces_target_planning_failures(tmp_path, monkeypatch):
         "type": "ValueError",
         "message": "simulated target planning failure",
     }
+
+
+def test_every_stage_declares_an_explicit_algorithm_version():
+    """Each stage owns a version that reaches its spec.
+
+    The dict was once ``{stage: "1" for stage in EXPERIMENT_STAGES}``, which made
+    ``algorithm_version`` inert: no behavioural fix could ever mark a stored
+    generation stale.
+    """
+    versions = experiment_graph._STAGE_ALGORITHM_VERSIONS
+    assert set(versions) == set(experiment_graph.EXPERIMENT_STAGES)
+    assert all(isinstance(value, str) and value for value in versions.values())
+
+    specs = {spec.analysis_id: spec for spec in experiment_graph.experiment_node_specs()}
+    for stage in experiment_graph.EXPERIMENT_STAGES:
+        spec = specs[experiment_graph.EXPERIMENT_NODE_IDS[stage]]
+        assert spec.algorithm_version == versions[stage]
+
+
+def test_generation_from_before_the_raw_algorithm_bump_is_not_compatible(tmp_path, monkeypatch):
+    """A pre-F31 raw generation must not be served as compatible.
+
+    Raw generations written before the demux-status fix were recorded at
+    algorithm version "1" and lack the demux obs columns, yet the planner
+    reported them ``compatible`` because the version never moved.
+    """
+    cfg = _cfg(tmp_path)
+    paths = _paths(tmp_path)
+    record_stage_state(
+        cfg.output_directory,
+        "raw",
+        "complete",
+        config_hash=helpers.stage_config_hash(cfg, "raw"),
+        input_artifact_ids=[],
+        schema_versions={"raw": 3},
+        semantic_algorithm_version="1",
+    )
+    monkeypatch.setattr(experiment_graph, "stage_is_complete", lambda *_args, **_kwargs: True)
+
+    plan = experiment_graph.build_experiment_plan(cfg, "raw", paths=paths)
+
+    assert plan.decisions[0].state is PlanState.STALE_ALGORITHM
+    assert plan.decisions[0].reason_code == "algorithm_version_changed"
