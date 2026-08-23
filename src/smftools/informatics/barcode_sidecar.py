@@ -48,6 +48,10 @@ _UNKNOWN = frozenset({"", "unknown", "none", "nan", "null"})
 _FASTQ_SUFFIXES = (".fastq.gz", ".fq.gz", ".fastq.gzip", ".fq.gzip", ".fastq", ".fq")
 _MATE_SUFFIX_RE = re.compile(r"(?:[._-](?:R|read)?[12](?:[._-]\d{3})?)$", re.IGNORECASE)
 _BARCODE_TOKEN_RE = re.compile(r"barcode([0-9A-Za-z-]+)", re.IGNORECASE)
+#: An explicit "no barcode assigned" marker, as its own path component or token.
+_UNCLASSIFIED_TOKEN_RE = re.compile(
+    r"(?:^|[._-])(?:unclassified|unassigned)(?:$|[._-])", re.IGNORECASE
+)
 
 
 class BarcodeIdentityError(ValueError):
@@ -109,20 +113,48 @@ def _confidence(value: Any, default: float) -> float:
     return min(1.0, max(0.0, result))
 
 
-def _legacy_filename_barcode(path: str | Path) -> str:
-    name = Path(path).name
+def _demuxed_stem(path: Path) -> str:
+    """The filename with its FASTQ suffix removed."""
+    name = path.name
     lower = name.lower()
     for suffix in _FASTQ_SUFFIXES:
         if lower.endswith(suffix):
-            name = name[: -len(suffix)]
-            break
-    else:
-        name = Path(name).stem
-    match = _BARCODE_TOKEN_RE.search(name)
-    if match:
-        return match.group(1)
-    name = _MATE_SUFFIX_RE.sub("", name)
-    return name or "unknown"
+            return name[: -len(suffix)]
+    return Path(name).stem
+
+
+def _legacy_filename_barcode(path: str | Path) -> str:
+    """The barcode a demultiplexed tree assigns to a file, or `""` if it assigns none.
+
+    Both the parent directory and the filename are consulted, directory first:
+    in a MinKNOW tree the directory *is* the assignment and the filename merely
+    repeats it, and only the directory is present for every layout.
+
+    `unclassified` is a real answer, not a missing one. Reads the demultiplexer
+    declined to assign belong to no barcode, and saying so is what makes a
+    contamination denominator possible -- silently dropping them leaves only the
+    errors, which measures 100% contamination on any input (`F36`).
+
+    The stem fallback below is kept: a `sample_R1.fastq.gz` layout really does
+    name its barcode that way. What it must never swallow is MinKNOW's
+    `<flowcell>_pass_unclassified_<runid>_<hash>_<chunk>.fastq.gz`, which it
+    used to return whole -- handing 163,232 unclassified reads 16 distinct
+    filename-shaped "barcodes", one per chunk file. That was harmless only
+    while this tier always lost; `F35` made it authoritative and the garbage
+    won. Recognising the marker, rather than second-guessing the stem's shape,
+    is what fixes it (`F36`).
+    """
+    path = Path(path)
+    for candidate in (path.parent.name, _demuxed_stem(path)):
+        if not candidate:
+            continue
+        if _UNCLASSIFIED_TOKEN_RE.search(candidate):
+            return "unclassified"
+        match = _BARCODE_TOKEN_RE.search(candidate)
+        if match:
+            return match.group(1)
+    stem = _MATE_SUFFIX_RE.sub("", _demuxed_stem(path))
+    return stem or "unknown"
 
 
 def _manifest_rows(input_manifest: Any) -> tuple[Any, ...]:
