@@ -93,7 +93,7 @@ def _evidence(value: Any) -> str:
     return "" if text.lower() in _UNKNOWN else text
 
 
-def _barcode_key(value: str) -> str:
+def barcode_key(value: str) -> str:
     """Comparison key that survives the naming differences between sources (`F35`).
 
     A demultiplexed directory yields the bare token `11`, while a sequence
@@ -331,7 +331,7 @@ def _select(
                 values.append(value)
         classified = [value for value in values if _classified(value)]
         # Comparisons are on the normalized key, never the raw text (`F35`).
-        if len({_barcode_key(value) for value in classified}) > 1:
+        if len({barcode_key(value) for value in classified}) > 1:
             conflicts.append({"field": field, "source": source, "values": "|".join(classified)})
         candidate = classified[0] if classified else values[0] if values else ""
         if not selected and candidate:
@@ -341,7 +341,7 @@ def _select(
         elif (
             _classified(selected)
             and _classified(candidate)
-            and _barcode_key(candidate) != _barcode_key(selected)
+            and barcode_key(candidate) != barcode_key(selected)
         ):
             conflicts.append(
                 {
@@ -478,7 +478,7 @@ def publish_barcode_identity_sidecar(
         directory_barcodes = [
             _legacy_filename_barcode(_row_value(row, "path")) for row in (matched or rows)
         ]
-        if len({_barcode_key(value) for value in directory_barcodes if value}) > 1 and not matched:
+        if len({barcode_key(value) for value in directory_barcodes if value}) > 1 and not matched:
             directory_barcodes = []
         directory_barcode = next((value for value in directory_barcodes if _value(value)), "")
 
