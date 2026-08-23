@@ -183,8 +183,44 @@ def _attach_obs_metadata(
         frame["max_insertion_length"] = [runs[0] for runs in indel_runs]
         frame["max_deletion_length"] = [runs[1] for runs in indel_runs]
     if getattr(cfg, "skip_unclassified", False):
-        frame = frame.loc[frame["barcode"] != "unclassified"]
+        frame = _drop_unclassified_except_spike_in(frame, cfg)
     return frame.reset_index(drop=True)
+
+
+def _drop_unclassified_except_spike_in(frame: pd.DataFrame, cfg) -> pd.DataFrame:
+    """Drop unassigned reads, keeping those that landed on a spike-in reference.
+
+    `skip_unclassified` exists because unassigned reads are usually noise. On a
+    run carrying an unbarcoded spike-in they are the opposite: a spike-in read
+    that was correctly left unassigned is a *correct* observation, and the
+    denominator the contamination QC divides by. Dropping it leaves only the
+    mis-barcoded spike-in reads, which measures 100% contamination on any input
+    (`F40`).
+
+    The exemption is scoped to the configured spike-in references rather than
+    turning the filter off, so a run keeps discarding the unassigned noise it
+    does not want while retaining the few thousand reads that carry the signal.
+    """
+    unassigned = frame["barcode"].astype(str).str.lower() == "unclassified"
+    if not unassigned.any():
+        return frame
+
+    references = getattr(cfg, "spike_in_references", None) or []
+    if not references:
+        return frame.loc[~unassigned]
+
+    from ..preprocessing.barcode_contamination_qc import spike_in_mask
+
+    spike = spike_in_mask(frame, references)
+    kept = int((unassigned & spike).sum())
+    if kept:
+        logger.info(
+            "Keeping %d unassigned read(s) on spike-in reference(s) %s; "
+            "they are the contamination QC denominator",
+            kept,
+            ", ".join(str(name) for name in references),
+        )
+    return frame.loc[~(unassigned & ~spike)]
 
 
 def _direct_probability(call_code: object, probability: object) -> float:

@@ -218,3 +218,70 @@ def test_writer_emits_a_table_and_a_summary(tmp_path):
     summary = json.loads(paths["summary"].read_text())
     assert summary["spike_in"]["contamination_rate"] == pytest.approx(0.1)
     assert summary["spike_in_references"] == SPIKE
+
+
+# --- `F39`/`F40`: the two things that made the QC unmeasurable ----------------
+
+
+def test_agreement_compares_normalized_barcodes():
+    """`01` from a directory and `NB01` from a classifier are the same call.
+
+    Compared literally, a real run reported 1,256,947 of 1,328,671 reads as
+    disagreeing when the true figure was 696. `barcode_sidecar._select` was
+    taught this in `F35`; this second comparison site was not (`F39`).
+    """
+    from smftools.informatics.demux_agreement import AGREEMENT_COLUMN, report_barcode_agreement
+
+    obs = pd.DataFrame(
+        {
+            "barcode_assigned": ["01", "02", "03"],
+            "barcode_rederived": ["NB01", "NB02", "NB47"],
+        }
+    )
+    summary = report_barcode_agreement(obs)
+
+    assert list(obs[AGREEMENT_COLUMN]) == ["agree", "agree", "disagree"]
+    assert summary["disagree"] == 1
+
+
+def test_unassigned_spike_in_reads_survive_the_unclassified_filter():
+    """`skip_unclassified` must not remove the contamination denominator.
+
+    An unassigned read on the spike-in is a *correct* observation. Dropping it
+    leaves only the mis-barcoded spike-in reads, which measures 100%
+    contamination on any input whatsoever (`F40`).
+    """
+    from types import SimpleNamespace
+
+    from smftools.cli.raw_adata import _drop_unclassified_except_spike_in
+
+    frame = pd.DataFrame(
+        {
+            "barcode": ["unclassified", "unclassified", "NB01"],
+            "Reference_strand": ["ctcf_mNanog_top", "6B6_top", "6B6_top"],
+        }
+    )
+    cfg = SimpleNamespace(spike_in_references=["ctcf_mNanog"])
+
+    kept = _drop_unclassified_except_spike_in(frame, cfg)
+
+    # The spike-in read is kept; the unassigned noise read is not.
+    assert list(kept["Reference_strand"]) == ["ctcf_mNanog_top", "6B6_top"]
+    assert list(kept["barcode"]) == ["unclassified", "NB01"]
+
+
+def test_without_a_spike_in_the_filter_is_unchanged():
+    """The exemption is scoped, not a blanket disabling of the filter."""
+    from types import SimpleNamespace
+
+    from smftools.cli.raw_adata import _drop_unclassified_except_spike_in
+
+    frame = pd.DataFrame(
+        {
+            "barcode": ["unclassified", "NB01"],
+            "Reference_strand": ["ctcf_mNanog_top", "6B6_top"],
+        }
+    )
+    kept = _drop_unclassified_except_spike_in(frame, SimpleNamespace(spike_in_references=[]))
+
+    assert list(kept["barcode"]) == ["NB01"]

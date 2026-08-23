@@ -56,8 +56,17 @@ def classify_agreement(assigned: pd.Series, rederived: pd.Series) -> pd.Series:
     barcode is a correctness problem, and only the second calls the assignment
     into question.
     """
-    left = assigned.map(_normalize)
-    right = rederived.map(_normalize)
+    # Compared on the shared normalized key, never on raw text (`F39`). The two
+    # sources spell the same call differently -- a demultiplexed directory gives
+    # `01`, a sequence classifier gives `NB01` -- so a literal comparison
+    # labelled 1,256,947 of 1,328,671 reads "disagree" on a run whose real
+    # disagreement was 696. `barcode_sidecar._select` was taught this in `F35`;
+    # this second comparison site was not, which is why the normalizer is now
+    # shared rather than reimplemented per call site.
+    from .barcode_sidecar import barcode_key
+
+    left = assigned.map(_normalize).map(barcode_key)
+    right = rederived.map(_normalize).map(barcode_key)
 
     result = pd.Series(NOT_COMPARED, index=assigned.index, dtype=object)
     left_missing = left.map(_is_unclassified)
