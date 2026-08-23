@@ -76,6 +76,14 @@ _OBS_COLUMN_ALIASES = {
 
 _RAW_SCALAR_OBS_COLUMNS = (
     "BC",
+    "BM",
+    # `F31`: without these names the columns are computed on the read frame and
+    # then silently dropped here -- `_RAW_SCALAR_OBS_COLUMNS` is an allowlist,
+    # so anything unnamed never reaches obs however correctly it was derived.
+    "demux_type",
+    "demux_type_source",
+    "demux_type_confidence",
+    "barcode_agreement",
     "barcode_source",
     "barcode_confidence",
     "sample_source",
