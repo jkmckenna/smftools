@@ -128,6 +128,16 @@ class _ExperimentPlanningContext:
     plan: SemanticPlan
 
 
+def stage_algorithm_version(stage: str) -> str | None:
+    """The declared algorithm version for ``stage``, or ``None`` if unknown.
+
+    Exposed so the CLI's own completion gate can compare against the same value
+    the planner does. Two independent notions of "already complete" is how a
+    bump gets reported and then ignored (`F41`).
+    """
+    return _STAGE_ALGORITHM_VERSIONS.get(str(stage))
+
+
 def experiment_node_specs() -> tuple[SemanticNodeSpec, ...]:
     """Return the coarse experiment graph and registered legacy leaves."""
     specs: list[SemanticNodeSpec] = []

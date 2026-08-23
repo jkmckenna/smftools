@@ -646,3 +646,37 @@ def test_generation_from_before_the_raw_algorithm_bump_is_not_compatible(tmp_pat
 
     assert plan.decisions[0].state is PlanState.STALE_ALGORITHM
     assert plan.decisions[0].reason_code == "algorithm_version_changed"
+
+
+def test_the_run_gate_agrees_with_the_planner_about_algorithm_version(tmp_path, monkeypatch):
+    """The plan reporting `stale_algorithm` must actually make the stage rerun.
+
+    `partitioned_stage_is_complete` decides whether a stage is skipped, and it
+    compared config hash, inputs and artifacts but not the algorithm version.
+    So a bump was reported by `smftools experiment plan` and ignored by
+    `smftools experiment raw` -- the version was advisory, and a real rebuild
+    was skipped on exactly the run meant to verify two fixes (`F41`).
+    """
+    from smftools.cli.helpers import partitioned_stage_is_complete
+
+    cfg = _cfg(tmp_path)
+    current = experiment_graph._STAGE_ALGORITHM_VERSIONS["raw"]
+    record_stage_state(
+        cfg.output_directory,
+        "raw",
+        "complete",
+        config_hash=helpers.stage_config_hash(cfg, "raw"),
+        input_artifact_ids=helpers.raw_input_artifact_ids(cfg),
+        schema_versions={"raw": 3},
+        semantic_algorithm_version=current,
+    )
+    assert partitioned_stage_is_complete(cfg, "raw", required=())
+
+    monkeypatch.setattr(
+        experiment_graph,
+        "_STAGE_ALGORITHM_VERSIONS",
+        {**experiment_graph._STAGE_ALGORITHM_VERSIONS, "raw": current + "-next"},
+    )
+    assert not partitioned_stage_is_complete(cfg, "raw", required=()), (
+        "a bumped algorithm version must make the run gate report incomplete"
+    )
