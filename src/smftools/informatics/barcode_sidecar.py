@@ -19,7 +19,7 @@ from .molecule_identity import alignment_segment_id
 
 logger = get_logger(__name__)
 
-BARCODE_IDENTITY_SCHEMA_VERSION = 1
+BARCODE_IDENTITY_SCHEMA_VERSION = 2
 BARCODE_IDENTITY_REPORT_SUFFIX = ".identity_report.json"
 BARCODE_IDENTITY_COLUMNS = (
     "identity_schema_version",
@@ -34,6 +34,14 @@ BARCODE_IDENTITY_COLUMNS = (
     "namespace",
     "identity_status",
     "identity_conflicts",
+    # `F35`: the independent assignments, kept apart rather than collapsed into
+    # one resolved value. `barcode` remains the authority downstream groups on;
+    # these are the evidence it was chosen from, and the only way to tell a
+    # directory assignment from a sequence re-derivation after the fact.
+    "barcode_assigned",
+    "barcode_rederived",
+    "barcode_front",
+    "barcode_rear",
 )
 _UNCLASSIFIED = frozenset({"unclassified", "unassigned"})
 _UNKNOWN = frozenset({"", "unknown", "none", "nan", "null"})
@@ -60,6 +68,37 @@ def _value(value: Any) -> str:
 
 def _classified(value: str) -> bool:
     return value.lower() not in _UNKNOWN | _UNCLASSIFIED
+
+
+def _evidence(value: Any) -> str:
+    """A per-end evidence value, with placeholder spellings flattened to empty."""
+    text = _value(value)
+    return "" if text.lower() in _UNKNOWN else text
+
+
+def _barcode_key(value: str) -> str:
+    """Comparison key that survives the naming differences between sources (`F35`).
+
+    A demultiplexed directory yields the bare token `11`, while a sequence
+    classifier emits the kit-qualified `NB11`. Compared literally these look
+    like disagreeing assignments, which flagged **every** barcoded read as
+    `conflicting` and left `classified` at zero across 1.75M reads.
+
+    Only the discriminating part is compared: a recognised prefix is stripped
+    and a purely numeric remainder is zero-padded, so `11`, `NB11`, `bc11` and
+    `barcode011` share a key. Anything that does not reduce to digits is
+    compared case-insensitively as-is rather than being forced into a shape it
+    does not have.
+    """
+    text = value.strip().lower()
+    if not text:
+        return ""
+    for prefix in ("barcode", "bc", "nb", "rb", "bp"):
+        if text.startswith(prefix) and text[len(prefix) :]:
+            text = text[len(prefix) :]
+            break
+    text = text.lstrip("-_")
+    return f"{int(text):04d}" if text.isdigit() else text
 
 
 def _confidence(value: Any, default: float) -> float:
@@ -246,14 +285,19 @@ def _select(
             if value and value.lower() not in _UNKNOWN and value not in values:
                 values.append(value)
         classified = [value for value in values if _classified(value)]
-        if len(set(classified)) > 1:
+        # Comparisons are on the normalized key, never the raw text (`F35`).
+        if len({_barcode_key(value) for value in classified}) > 1:
             conflicts.append({"field": field, "source": source, "values": "|".join(classified)})
         candidate = classified[0] if classified else values[0] if values else ""
         if not selected and candidate:
             selected = candidate
             selected_source = source
             selected_confidence = confidence
-        elif _classified(selected) and _classified(candidate) and candidate != selected:
+        elif (
+            _classified(selected)
+            and _classified(candidate)
+            and _barcode_key(candidate) != _barcode_key(selected)
+        ):
             conflicts.append(
                 {
                     "field": field,
@@ -289,6 +333,7 @@ def publish_barcode_identity_sidecar(
     input_manifest: Any = None,
     classifier_sidecar: str | Path | None = None,
     classifier_source: str = "sequence",
+    directory_authoritative: bool = False,
 ) -> tuple[Path, Path]:
     """Resolve all barcode/sample authorities and publish canonical schema 1.
 
@@ -298,6 +343,13 @@ def publish_barcode_identity_sidecar(
         input_manifest: Resolved input manifest or its row sequence.
         classifier_sidecar: Optional route-specific barcode evidence.
         classifier_source: Evidence label, normally ``sequence`` or ``filename``.
+            It must describe what the classifier sidecar actually contains. A
+            sequence classifier labelled ``filename`` makes the resolved source
+            unreadable and silently changes which tier wins (`F35`).
+        directory_authoritative: Set for an already-demultiplexed input tree,
+            where the directory a read arrived in *is* its assignment and must
+            outrank sequence re-derivation. The re-derived call is still kept,
+            as ``barcode_rederived``, so the two can be compared.
 
     Returns:
         The canonical sidecar and validation-report paths.
@@ -374,23 +426,36 @@ def publish_barcode_identity_sidecar(
             } - {""}
             if bam_read_group_evidence in generated_read_groups:
                 bam_read_group_evidence = ""
-        filename_barcodes = (
-            [_legacy_filename_barcode(_row_value(row, "path")) for row in (matched or rows)]
-            if classifier_source == "filename"
-            else []
-        )
-        if len(set(filename_barcodes)) > 1 and not matched:
-            filename_barcodes = []
+        # The directory assignment is gathered unconditionally. It used to be
+        # collected only when the classifier was *labelled* `filename`, which
+        # tied "is there a directory assignment" to an unrelated label and left
+        # the real assignment recoverable only from a conflict string (`F35`).
+        directory_barcodes = [
+            _legacy_filename_barcode(_row_value(row, "path")) for row in (matched or rows)
+        ]
+        if len({_barcode_key(value) for value in directory_barcodes if value}) > 1 and not matched:
+            directory_barcodes = []
+        directory_barcode = next((value for value in directory_barcodes if _value(value)), "")
 
         classifier_confidence = _confidence(classifier.get("barcode_confidence"), 0.75)
-        barcode, barcode_source, barcode_confidence, conflicts = _select(
-            (
+        if directory_authoritative:
+            barcode_tiers = (
+                ("manifest", 1.0, manifest_barcodes),
+                ("demux_directory", 0.97, directory_barcodes),
+                ("bam:BC", 0.95, [bam_barcode_evidence]),
+                ("bam:RG", 0.9, [bam_read_group_evidence]),
+                (classifier_source, classifier_confidence, [classifier_barcode]),
+            )
+        else:
+            barcode_tiers = (
                 ("manifest", 1.0, manifest_barcodes),
                 ("bam:BC", 0.95, [bam_barcode_evidence]),
                 ("bam:RG", 0.9, [bam_read_group_evidence]),
                 (classifier_source, classifier_confidence, [classifier_barcode]),
-                ("filename", 0.25, filename_barcodes),
-            ),
+                ("filename", 0.25, directory_barcodes),
+            )
+        barcode, barcode_source, barcode_confidence, conflicts = _select(
+            barcode_tiers,
             field="barcode",
         )
         sample, sample_source, sample_confidence, sample_conflicts = _select(
@@ -448,6 +513,11 @@ def publish_barcode_identity_sidecar(
             "namespace": namespace,
             "identity_status": status,
             "identity_conflicts": json.dumps(conflicts, sort_keys=True, separators=(",", ":")),
+            # `F35`: the independent assignments, preserved side by side.
+            "barcode_assigned": directory_barcode,
+            "barcode_rederived": classifier_barcode,
+            "barcode_front": _evidence(classifier.get("B5")),
+            "barcode_rear": _evidence(classifier.get("B6")),
             # Backward-compatible aliases/evidence consumed by split and dense paths.
             "BC": barcode,
             "BM": _value(classifier.get("BM")) or _value(bam_record.get("bam_bm")),

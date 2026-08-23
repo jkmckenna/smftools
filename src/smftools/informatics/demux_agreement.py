@@ -110,8 +110,8 @@ def summarize_agreement(agreement: pd.Series, assigned: pd.Series, rederived: pd
 def report_barcode_agreement(
     obs: pd.DataFrame,
     *,
-    assigned_column: str = "barcode",
-    rederived_column: str = "BC",
+    assigned_column: str = "barcode_assigned",
+    rederived_column: str = "barcode_rederived",
     warn_above: float = 0.01,
 ) -> Mapping[str, Any] | None:
     """Add the agreement column to ``obs`` and log a summary.

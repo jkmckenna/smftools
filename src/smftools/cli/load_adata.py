@@ -233,6 +233,7 @@ def _publish_canonical_barcode_identity(
     resolved_input_manifest,
     route_sidecar: str | Path | None,
     classifier_source: str,
+    directory_authoritative: bool,
     sidecar_manifest: str | Path,
     force_redo: bool,
     sidecar_key_suffix: str = "",
@@ -264,6 +265,9 @@ def _publish_canonical_barcode_identity(
         input_artifacts=tuple(identity_inputs),
         operation_config={
             "classifier_source": classifier_source,
+            # Decides which authority wins, so a change to it must not reuse a
+            # sidecar resolved under the other precedence (`F35`).
+            "directory_authoritative": bool(directory_authoritative),
             "schema_version": BARCODE_IDENTITY_SCHEMA_VERSION,
         },
     )
@@ -285,6 +289,7 @@ def _publish_canonical_barcode_identity(
             input_manifest=resolved_input_manifest,
             classifier_sidecar=route_sidecar,
             classifier_source=classifier_source,
+            directory_authoritative=directory_authoritative,
         )
         commit_intermediate(workspace, {"barcode": barcode_sidecar, "report": report})
     key_suffix = f":{sidecar_key_suffix}" if sidecar_key_suffix else ""
@@ -307,9 +312,15 @@ def _publish_canonical_barcode_identity(
 
 
 def _barcode_classifier_source(cfg, *, demux_backend: str) -> str:
-    """Return the provenance tier for route-specific barcode evidence."""
-    if cfg.input_already_demuxed:
-        return "filename"
+    """Return the provenance tier for route-specific barcode evidence.
+
+    This labels what the classifier sidecar *contains*, which is decided by the
+    backend alone. It used to return `filename` whenever the input was already
+    demultiplexed -- but an already-demuxed tree still gets a real sequence
+    classifier run over it when a kit is configured, so the label described the
+    wrong thing and, because the tier list keyed off it, also decided which
+    authority won. Directory precedence is now passed separately (`F35`).
+    """
     if not cfg.barcode_kit:
         return "filename"
     return "sequence:smftools" if demux_backend == "smftools" else "sequence:dorado"
@@ -335,6 +346,10 @@ def _attach_dense_barcode_identity(
         "identity_status",
         "identity_conflicts",
         "identity_schema_version",
+        "barcode_assigned",
+        "barcode_rederived",
+        "barcode_front",
+        "barcode_rear",
         "BC",
         "BM",
         "bi",
@@ -1888,6 +1903,7 @@ def load_adata_core(
     # input_already_demuxed=True + skip_bam_split=True route, where no split
     # BAM filenames exist from which to reconstruct labels.
     classifier_source = _barcode_classifier_source(cfg, demux_backend=demux_backend)
+    directory_authoritative = bool(getattr(cfg, "input_already_demuxed", False))
     route_barcode_sidecar = barcode_sidecar
     partition_barcode_sidecars: dict[Path, Path] = {}
     assert alignment_partitions is not None
@@ -1898,6 +1914,7 @@ def load_adata_core(
             resolved_input_manifest=resolved_input_manifest,
             route_sidecar=route_barcode_sidecar,
             classifier_source=classifier_source,
+            directory_authoritative=directory_authoritative,
             sidecar_manifest=sidecar_manifest,
             force_redo=force_redo_intermediates,
         )
@@ -1915,6 +1932,7 @@ def load_adata_core(
                 resolved_input_manifest=partition_manifest,
                 route_sidecar=None,
                 classifier_source=classifier_source,
+                directory_authoritative=directory_authoritative,
                 sidecar_manifest=sidecar_manifest,
                 force_redo=force_redo_intermediates,
                 sidecar_key_suffix=str(source_row.source_id),

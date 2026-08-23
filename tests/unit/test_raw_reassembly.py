@@ -16,7 +16,7 @@ from smftools.informatics.raw_store import write_raw_store
 pytestmark = pytest.mark.unit
 
 
-def _read(read_id, barcode, seq_ints, *, bm=None, bc=None):
+def _read(read_id, barcode, seq_ints, *, bm=None, rederived=None):
     row = dict(
         read_id=read_id,
         reference="ref",
@@ -40,8 +40,9 @@ def _read(read_id, barcode, seq_ints, *, bm=None, bc=None):
     )
     if bm is not None:
         row["BM"] = bm
-    if bc is not None:
-        row["BC"] = bc
+    if rederived is not None:
+        row["barcode_assigned"] = barcode
+        row["barcode_rederived"] = rederived
     return row
 
 
@@ -90,9 +91,9 @@ def test_reassembly_recovers_demux_type_from_shards(tmp_path):
     derivable from a generation that never recorded `demux_type` at all.
     """
     rows = [
-        _read("read1", "bc01", [0, 1, 2, 3], bm="both", bc="bc01"),
-        _read("read2", "bc01", [3, 2, 1, 0], bm="read_start_only", bc="bc01"),
-        _read("read3", "bc02", [1, 1, 1, 1], bm="both", bc="bc02"),
+        _read("read1", "bc01", [0, 1, 2, 3], bm="both", rederived="bc01"),
+        _read("read2", "bc01", [3, 2, 1, 0], bm="read_start_only", rederived="bc01"),
+        _read("read3", "bc02", [1, 1, 1, 1], bm="both", rederived="bc02"),
     ]
     raw_out = _store(tmp_path, rows)
     generation_dir = raw_out["spine"].parent
@@ -197,8 +198,8 @@ def test_reassembled_generation_publishes_and_shares_its_parent_shards(tmp_path)
     from smftools.informatics.raw_reassembly import reassemble_raw_generation
 
     rows = [
-        _read("read1", "bc01", [0, 1, 2, 3], bm="both", bc="bc01"),
-        _read("read2", "bc01", [3, 2, 1, 0], bm="read_end_only", bc="bc01"),
+        _read("read1", "bc01", [0, 1, 2, 3], bm="both", rederived="bc01"),
+        _read("read2", "bc01", [3, 2, 1, 0], bm="read_end_only", rederived="bc01"),
     ]
     published = _publish_real_generation(tmp_path, rows, generation_id="generation-a")
     parent = published["generation"]

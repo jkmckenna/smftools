@@ -13,6 +13,7 @@ from smftools.cli.raw_adata import _attach_obs_metadata
 from smftools.informatics.bam_functions import concatenate_fastqs_to_bam
 from smftools.informatics.barcode_sidecar import (
     BARCODE_IDENTITY_COLUMNS,
+    BARCODE_IDENTITY_SCHEMA_VERSION,
     publish_barcode_identity_sidecar,
     read_barcode_identity_sidecar,
 )
@@ -139,7 +140,12 @@ def test_classifiers_publish_the_same_canonical_columns(tmp_path, source):
 @pytest.mark.parametrize(
     ("already_demuxed", "barcode_kit", "backend", "expected"),
     [
-        (True, "kit", "smftools", "filename"),
+        # `F35`: an already-demuxed tree still runs a real sequence classifier
+        # when a kit is configured, so the label describes the backend. Directory
+        # precedence is carried by `directory_authoritative`, not by this label.
+        (True, "kit", "smftools", "sequence:smftools"),
+        (True, "kit", "dorado", "sequence:dorado"),
+        (True, None, "smftools", "filename"),
         (False, None, "smftools", "filename"),
         (False, "kit", "smftools", "sequence:smftools"),
         (False, "kit", "dorado", "sequence:dorado"),
@@ -276,7 +282,7 @@ def test_raw_metadata_consumes_canonical_sample_and_namespace(tmp_path):
     row = {column: "" for column in BARCODE_IDENTITY_COLUMNS}
     row.update(
         {
-            "identity_schema_version": 1,
+            "identity_schema_version": BARCODE_IDENTITY_SCHEMA_VERSION,
             "read_name": "read-1",
             "barcode": "barcode01",
             "barcode_source": "manifest",
@@ -353,7 +359,7 @@ def test_dense_metadata_preserves_manifest_namespace(tmp_path):
     row = {column: "" for column in BARCODE_IDENTITY_COLUMNS}
     row.update(
         {
-            "identity_schema_version": 1,
+            "identity_schema_version": BARCODE_IDENTITY_SCHEMA_VERSION,
             "read_name": "read-1",
             "barcode": "barcode01",
             "barcode_source": "manifest",
@@ -392,6 +398,7 @@ def test_non_split_bc_tagged_bam_publishes_and_reuses_canonical_sidecar(tmp_path
         resolved_input_manifest=manifest,
         route_sidecar=None,
         classifier_source="filename",
+        directory_authoritative=False,
         sidecar_manifest=sidecar_manifest,
         force_redo=False,
     )
@@ -401,6 +408,7 @@ def test_non_split_bc_tagged_bam_publishes_and_reuses_canonical_sidecar(tmp_path
         resolved_input_manifest=manifest,
         route_sidecar=None,
         classifier_source="filename",
+        directory_authoritative=False,
         sidecar_manifest=sidecar_manifest,
         force_redo=False,
     )
@@ -412,3 +420,98 @@ def test_non_split_bc_tagged_bam_publishes_and_reuses_canonical_sidecar(tmp_path
     assert json.loads(first[1].read_text())["total_reads"] == 1
     assert resolve_sidecar(sidecar_manifest, "barcode") == first[0]
     assert resolve_sidecar(sidecar_manifest, "barcode_identity_report") == first[1]
+
+
+# --- `F35`: the two assignments stay apart ------------------------------------
+
+
+def _demuxed_tree_case(tmp_path, *, rederived="NB11"):
+    """A read from a `barcode11/` directory with a sequence classifier over it."""
+    directory = tmp_path / "fastq_pass" / "barcode11"
+    directory.mkdir(parents=True)
+    fastq = directory / "FBF_pass_barcode11_run_0.fastq.gz"
+    fastq.write_bytes(b"")
+    bam = _bam(tmp_path / "reads.bam", [("read-1", {})])
+    classifier = tmp_path / "classifier.parquet"
+    pd.DataFrame(
+        {
+            "read_name": ["read-1"],
+            "BC": [rederived],
+            "BM": ["both"],
+            "B5": ["NB11"],
+            "B6": [rederived],
+        }
+    ).to_parquet(classifier, index=False)
+    return bam, classifier, [_manifest_row(fastq)]
+
+
+def test_directory_and_rederived_assignments_are_both_kept(tmp_path):
+    """`BC` used to be written as an alias of the resolved barcode.
+
+    That made the agreement check compare a column with itself, reporting a
+    vacuous 100% agreement over an entire run while the directory assignment --
+    the one the config declares authoritative -- was discarded (`F35`).
+    """
+    bam, classifier, manifest = _demuxed_tree_case(tmp_path, rederived="NB47")
+
+    sidecar, _report = publish_barcode_identity_sidecar(
+        bam,
+        tmp_path / "identity.parquet",
+        input_manifest=manifest,
+        classifier_sidecar=classifier,
+        classifier_source="sequence:smftools",
+        directory_authoritative=True,
+    )
+
+    row = pd.read_parquet(sidecar).iloc[0]
+    assert row["barcode_assigned"] == "11"
+    assert row["barcode_rederived"] == "NB47"
+    assert row["barcode_front"] == "NB11"
+    assert row["barcode_rear"] == "NB47"
+    # The directory wins, and the disagreement stays visible rather than being
+    # resolved away.
+    assert row["barcode_source"] == "demux_directory"
+    assert row["identity_status"] == "conflicting"
+
+
+def test_equivalent_barcode_spellings_are_not_a_conflict(tmp_path):
+    """`11` from a directory and `NB11` from a classifier are the same call.
+
+    Compared as raw strings they looked like disagreeing assignments, which
+    flagged every barcoded read `conflicting` and left `classified` at zero
+    across 1.75M reads of a real run (`F35`).
+    """
+    bam, classifier, manifest = _demuxed_tree_case(tmp_path, rederived="NB11")
+
+    sidecar, _report = publish_barcode_identity_sidecar(
+        bam,
+        tmp_path / "identity.parquet",
+        input_manifest=manifest,
+        classifier_sidecar=classifier,
+        classifier_source="sequence:smftools",
+        directory_authoritative=True,
+    )
+
+    row = pd.read_parquet(sidecar).iloc[0]
+    assert row["identity_status"] == "classified"
+    assert json.loads(row["identity_conflicts"]) == []
+
+
+def test_sequence_call_wins_when_the_tree_is_not_authoritative(tmp_path):
+    """Directory precedence is opt-in, not a blanket reordering."""
+    bam, classifier, manifest = _demuxed_tree_case(tmp_path, rederived="NB47")
+
+    sidecar, _report = publish_barcode_identity_sidecar(
+        bam,
+        tmp_path / "identity.parquet",
+        input_manifest=manifest,
+        classifier_sidecar=classifier,
+        classifier_source="sequence:smftools",
+        directory_authoritative=False,
+    )
+
+    row = pd.read_parquet(sidecar).iloc[0]
+    assert row["barcode"] == "NB47"
+    assert row["barcode_source"] == "sequence:smftools"
+    # Even when it loses, the directory assignment is still recorded.
+    assert row["barcode_assigned"] == "11"

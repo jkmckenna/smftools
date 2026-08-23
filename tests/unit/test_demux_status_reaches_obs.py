@@ -32,7 +32,8 @@ def _frame(bm_values):
                 "reference": "ref",
                 "Reference_strand": "ref_top",
                 "barcode": "bc1",
-                "BC": "bc1",
+                "barcode_assigned": "bc1",
+                "barcode_rederived": "bc1",
                 "BM": bm,
                 "sample": "bc1",
                 "reference_start": 0,
@@ -133,7 +134,7 @@ def test_demux_status_survives_into_a_published_raw_store(tmp_path):
 
 def test_barcode_agreement_survives_into_a_published_raw_store(tmp_path):
     frame = _frame(["both", "both"])
-    frame.loc[1, "BC"] = "bc2"  # disagrees with the assigned barcode
+    frame.loc[1, "barcode_rederived"] = "bc2"  # disagrees with the assigned barcode
     from smftools.informatics.demux_agreement import report_barcode_agreement
 
     report_barcode_agreement(frame)
