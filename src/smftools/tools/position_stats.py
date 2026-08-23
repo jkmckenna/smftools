@@ -4,7 +4,7 @@ import os
 import warnings
 from contextlib import contextmanager
 from itertools import cycle
-from typing import TYPE_CHECKING, Dict, List, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -302,6 +302,7 @@ def compute_positionwise_statistics(
     output_key: str = "positionwise_result",
     min_count_for_pairwise: int = 10,
     max_threads: Optional[int] = None,
+    on_result: Optional[Callable[[str, Any, "pd.DataFrame", int], None]] = None,
     reverse_indices_on_store: bool = False,
     min_position_valid_fraction: Optional[float] = None,
     index_col_suffix: Optional[str] = None,
@@ -318,7 +319,14 @@ def compute_positionwise_statistics(
         encoding: ``"signed"`` or ``"binary"`` encoding.
         output_key: Key prefix for results stored in ``adata.uns``.
         min_count_for_pairwise: Minimum counts for pairwise comparisons.
-        max_threads: Maximum number of threads.
+        max_threads: Maximum number of threads. Parallelizes *within* one
+            (sample, reference) cell, not across them -- so it does not affect
+            how many matrices are held at once.
+        on_result: Optional sink called as ``(method, label, frame, n_reads)``
+            for each completed matrix. When given, matrices are handed over and
+            released instead of accumulating in ``adata.uns``, which is what
+            makes peak memory independent of barcode count. Library callers
+            that omit it keep the previous accumulate-everything behaviour.
         reverse_indices_on_store: Whether to reverse indices on output storage.
         min_position_valid_fraction: If set, exclude positions where the
             ``{ref}_valid_fraction`` var column is below this threshold
@@ -503,7 +511,17 @@ def compute_positionwise_statistics(
                     # make dataframe with labels
                     df = pd.DataFrame(mat_store, index=idx_names, columns=idx_names)
 
-                    adata.uns[output_key][m][label] = df
+                    if on_result is None:
+                        adata.uns[output_key][m][label] = df
+                    else:
+                        # Hand the matrix off and drop the reference. A P-by-P
+                        # matrix is 168 MiB at a 4,690 bp locus, and retaining
+                        # one per barcode made the budget scale with barcode
+                        # count -- 41 barcodes estimated 41 GB and the guard
+                        # (correctly) refused. Streaming keeps peak memory at
+                        # one matrix regardless of how many barcodes there are.
+                        on_result(m, label, df, int(n_reads))
+                        del df
                     adata.uns[output_key + "_n"][m][label] = int(n_reads)
 
             except Exception as exc:
