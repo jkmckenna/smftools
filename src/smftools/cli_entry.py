@@ -161,6 +161,30 @@ def raw(config_path):
     run_experiment_target(config_path, "raw")
 
 
+@experiment_group.command("reassemble-raw")
+@click.argument("config_path", type=click.Path(exists=True))
+@click.option(
+    "--no-select",
+    is_flag=True,
+    help="Publish the rebuilt generation without making it current.",
+)
+def reassemble_raw(config_path, no_select: bool):
+    """Rebuild the current raw generation's obs from its existing shards.
+
+    Re-runs only the annotation that is derivable from the shards already on
+    disk -- no BAM, no alignment, no re-extraction. Publishes an immutable
+    sibling generation that hardlinks the unchanged artifacts.
+    """
+    from .cli.helpers import load_experiment_config
+    from .informatics.raw_reassembly import reassemble_raw_generation
+
+    cfg = load_experiment_config(str(config_path))
+    result = reassemble_raw_generation(cfg.output_directory, select_current=not no_select)
+    click.echo(f"Published raw generation {result.get('generation_id')}")
+    if no_select:
+        click.echo("Selector unchanged: pass no --no-select to make it current.")
+
+
 @experiment_group.command()
 @click.argument("config_path", type=click.Path(exists=True))
 def load(config_path):

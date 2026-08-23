@@ -234,3 +234,23 @@ def derive_demux_type_from_bm(frame: pd.DataFrame, *, bm_column: str = "BM") -> 
         counts.get("unclassified", 0),
     )
     return int(len(frame))
+
+
+def annotate_demux_obs(frame: pd.DataFrame) -> pd.DataFrame:
+    """Apply the obs annotation that is recomputable from shard scalars alone.
+
+    Both steps read only columns that survive into the ragged parquet shards
+    (`BM`, `barcode`, `BC`), so this is exactly the part of the raw stage's obs
+    annotation that can be replayed against an existing generation without
+    re-extracting anything -- see `informatics.raw_reassembly` (`F34`).
+
+    It exists as one function, called from both the live extraction path and
+    the reassembly path, so the two cannot drift. A rebuild that computed
+    slightly different columns from the same shards would be worse than no
+    rebuild at all.
+
+    Mutates and returns ``frame``.
+    """
+    derive_demux_type_from_bm(frame)
+    report_barcode_agreement(frame)
+    return frame

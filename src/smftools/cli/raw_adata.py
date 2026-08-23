@@ -107,8 +107,7 @@ def _attach_obs_metadata(
     """
     from ..informatics.barcode_sidecar import read_barcode_identity_sidecar
     from ..informatics.demux_agreement import (
-        derive_demux_type_from_bm,
-        report_barcode_agreement,
+        annotate_demux_obs,
     )
     from ..informatics.ragged_store import cigar_max_indel_runs
 
@@ -131,8 +130,7 @@ def _attach_obs_metadata(
         # partitioned pipeline never takes, so without this `demux_type` never
         # reaches obs -- and `duplicate_detection_demux_types_to_use`, which is
         # guarded on the column existing, silently does nothing.
-        derive_demux_type_from_bm(frame)
-        report_barcode_agreement(frame)
+        annotate_demux_obs(frame)
     for sidecar in (_load_read_sidecar(umi_sidecar),):
         if sidecar is not None:
             for column in sidecar.columns:
