@@ -1306,6 +1306,8 @@ def _plot_latent_clustermaps(result, record, cfg, layout, *, spine_path) -> None
             layer_names=layer_names,
             plot_layout=layout,
             cfg=cfg,
+            model_id=str(record["model_id"]),
+            model_checksum=str(record["model_checksum"]),
         )
     except Exception:
         # Additive: without these the stage still publishes coordinates,
@@ -1330,6 +1332,8 @@ def _plot_latent_composition(result, record, cfg, layout) -> None:
             end=int(record["core_end"]),
             plot_layout=layout,
             cfg=cfg,
+            model_id=str(record["model_id"]),
+            model_checksum=str(record["model_checksum"]),
         )
     except Exception:
         logger.exception(

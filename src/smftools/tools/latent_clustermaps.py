@@ -225,6 +225,8 @@ def render_unit_composition(
     plot_layout,
     cfg,
     category: str = "clusters",
+    model_id: str = "",
+    model_checksum: str = "",
 ) -> list[dict]:
     """Stacked cluster-composition barplots per group, per embedding."""
     from smftools.cli.stage_artifacts import register_plot_artifact
@@ -282,6 +284,8 @@ def render_unit_composition(
                 reference=reference,
                 core_start=start,
                 core_end=end,
+                model_id=model_id,
+                model_checksum=model_checksum,
             )
             logger.info(
                 "Composition barplot for %s %s by %s: %d group(s), %d cluster(s)",
@@ -307,6 +311,8 @@ def render_unit_clustermaps(
     plot_layout,
     cfg,
     category: str = "clusters",
+    model_id: str = "",
+    model_checksum: str = "",
 ) -> list[dict]:
     """Render every selected embedding of one already-clustered unit.
 
@@ -394,6 +400,8 @@ def render_unit_clustermaps(
             reference=reference,
             core_start=start,
             core_end=end,
+            model_id=model_id,
+            model_checksum=model_checksum,
         )
         logger.info(
             "Latent clustermap for %s %s: %d molecule(s), %d cluster(s), %d panel(s)",
