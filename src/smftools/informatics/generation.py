@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -43,6 +44,73 @@ STAGING_SUBDIR = ".staging"
 CURRENT_FILENAME = "current.json"
 GENERATION_MANIFEST = "generation_manifest.json"
 CURRENT_SCHEMA_VERSION = 1
+#: How long an abandoned staging tree is kept before it may be swept.
+#:
+#: A staging tree is the only evidence left when a run dies mid-publish, so it
+#: is deliberately not removed promptly. The default keeps a full working day of
+#: forensics while still bounding what accumulates -- an abandoned raw staging
+#: tree is ~12 GiB, and nothing else ever reclaims it.
+ABANDONED_STAGING_MAX_AGE_S = 24 * 60 * 60
+
+
+def sweep_abandoned_staging(
+    output_dir: str | Path,
+    *,
+    keep: str | None = None,
+    older_than_seconds: float = ABANDONED_STAGING_MAX_AGE_S,
+    now: float | None = None,
+) -> tuple[Path, ...]:
+    """Remove staging trees left behind by runs that died before publishing.
+
+    ``staged_generation`` removes its own tree when a build fails, and the
+    atomic move consumes it when a build succeeds. Neither happens if the
+    process is killed, so the tree survives -- unreferenced, invisible to
+    ``ls`` and ``du -sh *`` because the directory is hidden, and never
+    reclaimed. Two such trees accumulated in one afternoon of stopping runs.
+
+    Hiding the build area is deliberate: consumers glob ``generations/`` and
+    resolve ``current.json``, and a half-built tree must not be mistaken for
+    either. The cost of hiding it is that nobody notices the leak, which is
+    what this repays.
+
+    Args:
+        output_dir: The kind's directory (e.g. ``<run>/raw_outputs``).
+        keep: A generation id to leave alone whatever its age -- the tree the
+            caller is about to build into.
+        older_than_seconds: Minimum age before a tree may be swept. Guards a
+            concurrently-running publish, whose staging tree is by definition
+            young, and preserves recent failures for inspection.
+
+    Returns:
+        The paths removed, for logging by the caller.
+    """
+    output_dir = Path(output_dir)
+    staging_root = output_dir / STAGING_SUBDIR
+    if not staging_root.is_dir():
+        return ()
+    generations_root = output_dir / GENERATIONS_SUBDIR
+    cutoff = (time.time() if now is None else now) - float(older_than_seconds)
+
+    removed: list[Path] = []
+    for tree in sorted(staging_root.iterdir()):
+        if not tree.is_dir() or tree.is_symlink() or tree.name == keep:
+            continue
+        # A published id under `.staging` would mean the move already happened;
+        # never touch anything that also exists as a real generation.
+        if (generations_root / tree.name).exists():
+            continue
+        if tree.stat().st_mtime > cutoff:
+            continue
+        shutil.rmtree(tree, ignore_errors=True)
+        removed.append(tree)
+    if removed:
+        logger.info(
+            "Swept %d abandoned staging tree(s) under %s: %s",
+            len(removed),
+            staging_root,
+            ", ".join(tree.name for tree in removed),
+        )
+    return tuple(removed)
 
 
 class GenerationError(RuntimeError):
@@ -208,6 +276,9 @@ def staged_generation(
         raise GenerationError(f"generation {generation_id!r} is already published")
 
     shutil.rmtree(staging_dir, ignore_errors=True)
+    # Reclaim trees left by runs that were killed mid-publish. Only aged ones,
+    # so a concurrent publish and a recent failure are both left alone.
+    sweep_abandoned_staging(output_dir, keep=generation_id)
     staging_dir.mkdir(parents=True)
     final_dir.parent.mkdir(parents=True, exist_ok=True)
 
