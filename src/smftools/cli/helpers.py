@@ -447,8 +447,19 @@ def partitioned_stage_is_complete(
     extra_matches: dict[str, Any] | None = None,
     allow_previous_complete: bool = False,
 ) -> bool:
-    """Check the compatible completion record used by partitioned CLI skips."""
+    """Check the compatible completion record used by partitioned CLI skips.
+
+    This gate decides whether a stage actually reruns, so it must agree with the
+    planner about what "complete" means. It used to compare config hash, input
+    artifacts and required artifacts but *not* the algorithm version, so
+    `smftools experiment plan` would report `stale_algorithm` and the run would
+    skip the stage anyway -- making every version bump advisory (`F41`).
+
+    A manifest entry predating the field records nothing there, compares
+    unequal, and reruns. That is the safe direction.
+    """
     from ..informatics.experiment_manifest import stage_is_complete
+    from ..pipeline.experiment_graph import stage_algorithm_version
 
     if str(stage) == "raw":
         input_artifact_ids = raw_input_artifact_ids(cfg)
@@ -462,13 +473,17 @@ def partitioned_stage_is_complete(
             if source_path is not None
             else None
         )
+    matches = dict(extra_matches or {})
+    algorithm_version = stage_algorithm_version(stage)
+    if algorithm_version is not None:
+        matches.setdefault("semantic_algorithm_version", algorithm_version)
     return stage_is_complete(
         cfg.output_directory,
         stage,
         config_hash=stage_config_hash(cfg, stage),
         input_artifact_ids=input_artifact_ids,
         required_artifacts=required,
-        extra_matches=extra_matches,
+        extra_matches=matches,
         allow_previous_complete=allow_previous_complete,
     )
 
