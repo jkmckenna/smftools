@@ -65,6 +65,16 @@ _PLOT_CONFIG_KEYS = {
     "sample_name_col_for_plotting",
 }
 _REDUCER_CONFIG_KEYS = {
+    # `F47`: segmentation settings decide whether the segments artifact and
+    # `deaminase_segment_chimera` exist at all, and where the change points
+    # fall. Only the *scalar* chimera keys were fingerprinted, so `EGL-25`'s
+    # bypass flag never invalidated preprocess -- toggling it silently reused a
+    # generation built the other way. `deaminase_segment_batch_reads` stays out
+    # deliberately: batches are cut within shards and each read is segmented
+    # independently, so batch size changes scheduling, not results.
+    "bypass_deamination_segmentation",
+    "deaminase_segment_penalty_scale",
+    "deaminase_segment_min_observations",
     "bypass_filter_reads_on_cigar_indels",
     "bypass_filter_reads_on_length_quality_mapping",
     "bypass_filter_reads_on_modification_thresholds",

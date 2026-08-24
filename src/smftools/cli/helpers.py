@@ -65,12 +65,83 @@ _DISPLAY_ONLY_CONFIG_KEYS = {
     "reindexing_offsets",
     "reindexing_invert",
     "reindexed_var_suffix",
+    # Colour maps and which layer a clustermap draws change the picture, never
+    # the matrix behind it. They reach four stages apiece, so leaving them
+    # semantic made a palette tweak invalidate hmm and spatial together
+    # (`F46`).
+    "clustermap_cmap_a",
+    "clustermap_cmap_c",
+    "clustermap_cmap_cpg",
+    "clustermap_cmap_gpc",
+    "layer_for_clustermap_plotting",
 }
 
 #: Stage order, used to keep a stage from being invalidated by settings that
 #: belong to stages running after it (`F30`). Turning on a spatial plot
 #: previously marked the raw store stale.
 _STAGE_ORDER = ("raw", "preprocess", "spatial", "hmm", "latent")
+
+
+#: Name fragments that identify which stage a config key belongs to, for keys
+#: that do not carry a stage prefix (`F46`).
+#:
+#: `_downstream_config_prefixes` below only strips keys literally prefixed
+#: `preprocess_`/`spatial_`/`hmm_`/`latent_`, and most settings do not follow
+#: that convention: `bypass_deamination_segmentation`,
+#: `read_len_filter_thresholds` and `deaminase_segment_penalty_scale` are all
+#: preprocess-owned and all sat in raw's hash. Raw carried 279 keys, so a
+#: filter-threshold tweak forced a 36-minute re-extraction.
+#:
+#: Fragments must be specific enough that they cannot match a key an *earlier*
+#: stage owns. A false match here excludes a genuinely relevant key and lets a
+#: stale stage be reused silently, which is the failure this file's denylist
+#: design exists to avoid; a missed fragment merely recomputes too often.
+_STAGE_OWNED_KEY_MARKERS: dict[str, tuple[str, ...]] = {
+    "preprocess": (
+        "deaminase",
+        "deamination",
+        "chimera",
+        "duplicate",
+        "filter_thresholds",
+        "clean_nan",
+        "base_context",
+        "mismatch_frequency",
+        "read_modification_stats",
+        "complexity_analysis",
+        "binary_layer",
+        "variant_",
+    ),
+    "spatial": ("spatial_", "autocorr", "matrix_corr"),
+    "hmm": ("hmm_",),
+    "latent": ("latent_", "umap", "leiden"),
+}
+
+
+def _stage_owning_key(key: str) -> str | None:
+    """The stage a config key belongs to by name, or ``None`` when unclear.
+
+    ``bypass_x`` and ``force_redo_x`` are resolved through ``x``: a switch for
+    one stage's work cannot affect a stage that runs before it.
+    """
+    name = str(key)
+    for prefix in ("bypass_", "force_redo_"):
+        if name.startswith(prefix):
+            name = name[len(prefix) :]
+            break
+    for stage, markers in _STAGE_OWNED_KEY_MARKERS.items():
+        if any(marker in name for marker in markers):
+            return stage
+    return None
+
+
+def _is_downstream_owned(key: str, stage: str) -> bool:
+    """True when ``key`` belongs to a stage that runs after ``stage``."""
+    if stage not in _STAGE_ORDER:
+        return False
+    owner = _stage_owning_key(key)
+    if owner is None or owner not in _STAGE_ORDER:
+        return False
+    return _STAGE_ORDER.index(owner) > _STAGE_ORDER.index(stage)
 
 
 def _downstream_config_prefixes(stage: str) -> tuple[str, ...]:
@@ -232,6 +303,7 @@ def resolved_stage_config(cfg, stage: str | None = None) -> dict[str, Any]:
         and not key.startswith("force_redo_")
         and not key.endswith("_max_workers")
         and not (downstream and key.startswith(downstream))
+        and not _is_downstream_owned(key, str(stage))
     }
     selected = _STAGE_SEMANTIC_CONFIG_KEYS.get(str(stage))
     if selected is not None:
