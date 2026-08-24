@@ -250,8 +250,17 @@ def _dispatch_and_fold(
     hamming_minima: dict[str, np.ndarray],
     *,
     pool_label: str | None = None,
+    force_sequential: bool = False,
 ) -> list[str]:
-    """Dispatch one round's chunk tasks in parallel, fold results, return survivors."""
+    """Dispatch one round's chunk tasks in parallel, fold results, return survivors.
+
+    ``force_sequential`` is set when this already runs inside a worker. Without
+    it the chunk dispatch starts a *nested* pool sized from `cfg.threads` again:
+    on a real run that produced a four-level process tree, six group workers
+    each with their own sub-workers, 63.6 GiB aggregate against a 76.8 GiB
+    budget, and watchdog kills on process-tree RSS that looked like a bad memory
+    estimate rather than accidental nesting (`F49`).
+    """
     if not tasks:
         return []
     from ..memory_guard import run_tasks_parallel
@@ -261,6 +270,7 @@ def _dispatch_and_fold(
         execute_duplicate_detection_chunk_task,
         task_args,
         cfg=cfg,
+        force_sequential=force_sequential,
         pool_label=pool_label,
         per_item_memory_mb=max(task.estimated_memory_bytes for task in tasks) / (1024**2),
         estimator="duplicate_detection_chunk_peak",
@@ -331,6 +341,8 @@ def execute_duplicate_detection_group(
         union_find=local_union_find,
         read_position=local_position,
         hamming_minima=local_minima,
+        # Already inside a pool worker: chunk dispatch must not start another.
+        force_sequential=True,
     )
 
     pairs = [
@@ -383,6 +395,7 @@ def run_duplicate_detection_rounds(
     union_find: UnionFind,
     read_position: dict[str, int],
     hamming_minima: dict[str, np.ndarray],
+    force_sequential: bool = False,
 ) -> None:
     """Own one (reference, sample, core) group's full multi-round duplicate-detection loop.
 
@@ -451,6 +464,7 @@ def run_duplicate_detection_rounds(
                 f"dedup {reference}/{sample} core={core_start}-{core_end} "
                 f"round={round_index} ({len(tasks)} chunk(s), {len(current_pool)} reads)"
             ),
+            force_sequential=force_sequential,
         )
 
         if fits_in_one_chunk:
