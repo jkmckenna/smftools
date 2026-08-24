@@ -761,7 +761,10 @@ def reduce_duplicate_reads(
     arrays spanning every read in the dataset (workers never see them directly) and
     the final per-dataset keeper/cluster reconciliation.
     """
-    from .duplicate_detection_dispatch import run_duplicate_detection_rounds
+    from .duplicate_detection_dispatch import (
+        execute_duplicate_detection_group,
+        merge_duplicate_detection_group,
+    )
     from .flag_duplicate_reads import UnionFind
 
     obs_path = Path(obs_path)
@@ -793,6 +796,11 @@ def reduce_duplicate_reads(
     if sample_column not in obs:
         sample_column = "Sample" if "Sample" in obs else "Barcode"
 
+    # Collect every (reference, sample, core) group first, then dispatch them
+    # together. Walking them sequentially left each group parallelising only
+    # across its own one or two chunks, so 1-2 of 12 cores were busy and 314
+    # groups projected to five hours.
+    dedup_groups: list[tuple] = []
     for reference, raw_plan in sorted(plans.items()):
         plan = dict(raw_plan)
         reference_length = int(reference_lengths.get(reference, plan["reference_length"]))
@@ -816,20 +824,41 @@ def reduce_duplicate_reads(
                     continue
                 load_start = max(0, int(core_obs["reference_start"].min()))
                 load_end = min(reference_length, int(core_obs["reference_end"].max()))
-                run_duplicate_detection_rounds(
-                    preprocess_spine_path,
-                    core_obs,
-                    reference=str(reference),
-                    sample=str(sample),
-                    core_start=core_start,
-                    core_end=core_end,
-                    load_start=load_start,
-                    load_end=load_end,
-                    cfg=cfg,
-                    union_find=union_find,
-                    read_position=read_position,
-                    hamming_minima=hamming_minima,
+                dedup_groups.append(
+                    (
+                        preprocess_spine_path,
+                        core_obs,
+                        str(reference),
+                        str(sample),
+                        core_start,
+                        core_end,
+                        load_start,
+                        load_end,
+                        cfg,
+                        hamming_columns,
+                    )
                 )
+
+    if dedup_groups:
+        from ..memory_guard import run_tasks_parallel
+
+        logger.info(
+            "Duplicate detection: %d (reference, sample, core) group(s) to dispatch",
+            len(dedup_groups),
+        )
+        # Merging happens here, in order, on the parent's shared state: the
+        # workers never touch it. Both merges are order-independent, so this is
+        # the same answer the sequential walk produced.
+        run_tasks_parallel(
+            execute_duplicate_detection_group,
+            dedup_groups,
+            cfg=cfg,
+            pool_label=f"duplicate detection ({len(dedup_groups)} groups)",
+            per_item_memory_mb=float(getattr(cfg, "target_task_memory_mb", 512) or 512),
+            on_result=lambda _index, contribution: merge_duplicate_detection_group(
+                contribution, union_find, read_position, hamming_minima
+            ),
+        )
 
     clusters: dict[int, list[str]] = {}
     for read_id, index in read_position.items():
