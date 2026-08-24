@@ -655,7 +655,7 @@ bypass_calculate_read_modification_stats: False # Whether to skip adding read le
 force_redo_calculate_read_modification_stats: False # Whether to force redo adding read level modification statistics.
 bypass_filter_reads_on_modification_thresholds: False # Whether to skip filtering reads based on read level modification statistics.
 force_redo_filter_reads_on_modification_thresholds: False # Whether to redo filtering reads based on read level modification statistics.
-bypass_deamination_segmentation: False # Skip PELT deamination segmentation; the scalar deaminase_PCR_chimera column is still produced
+bypass_deamination_segmentation: True # Skip PELT deamination segmentation by default: it costs ~2h on a 1.3M-read run and changed 0 chimera calls and ~0.03% of variant calls when measured. The scalar deaminase_PCR_chimera column is still produced. Set False to recover deaminase_segment_chimera, the segment plots, and segment-aware variant acceptance (EGL-20a).
 bypass_flag_duplicate_reads: False # Whether to skip flagging duplicate reads based on modification similarity.
 force_redo_flag_duplicate_reads: False # Whether to redo flagging duplicate reads based on modification similarity.
 bypass_complexity_analysis: False # Whether to skip complexity analysis

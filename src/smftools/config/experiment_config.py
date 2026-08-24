@@ -1468,7 +1468,20 @@ class ExperimentConfig:
     # this is for *having* the chemistry and declining the compute. The scalar
     # `deaminase_PCR_chimera` column is still produced, so bypassing removes the
     # expensive half rather than chimera detection entirely (`EGL-25`).
-    bypass_deamination_segmentation: bool = False
+    #
+    # Defaults to *on*: segmentation costs ~2h of saturated 12-way CPU on a
+    # 1.3M-read run, and on the one dataset where both paths were compared it
+    # changed 0 chimera calls and ~0.03% of variant calls (330,814 -> 330,705).
+    # That is a poor trade to make silently on every run.
+    #
+    # Turning it off is not free of consequences and they are worth stating:
+    # `deaminase_segment_chimera` disappears, so the composite
+    # `is_chimeric_any` rests on two methods instead of three; the deamination
+    # segment plots are not produced; and variant acceptance falls back from
+    # `EGL-20a`'s chemistry-local logic to the per-read path. Set this to
+    # `False` on a run that needs located strand switches rather than a
+    # per-read chimera flag.
+    bypass_deamination_segmentation: bool = True
     bypass_flag_duplicate_reads: bool = False
     force_redo_flag_duplicate_reads: bool = False
     bypass_complexity_analysis: bool = False
@@ -2823,7 +2836,11 @@ class ExperimentConfig:
                 "force_redo_filter_reads_on_modification_thresholds", False
             ),
             bypass_deamination_segmentation=_parse_bool(
-                merged.get("bypass_deamination_segmentation", False)
+                # Matches the dataclass default above. They are only ever both
+                # consulted when `default.yaml` lacks the key, and disagreeing
+                # there would make the effective default depend on which file
+                # was loaded.
+                merged.get("bypass_deamination_segmentation", True)
             ),
             bypass_flag_duplicate_reads=merged.get("bypass_flag_duplicate_reads", False),
             force_redo_flag_duplicate_reads=merged.get("force_redo_flag_duplicate_reads", False),
