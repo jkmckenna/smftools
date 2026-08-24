@@ -1015,6 +1015,7 @@ def run_tasks_parallel(
     *,
     cfg,
     n_items: int | None = None,
+    on_result: Callable[[int, Any], None] | None = None,
     force_sequential: bool = False,
     pool_label: str | None = None,
     per_item_memory_mb: float | None = None,
@@ -1074,6 +1075,14 @@ def run_tasks_parallel(
     retried, and retrying means replaying the tasks that never produced a
     result -- a generator cannot be rewound. Each attempt calls it again and
     skips indices already completed.
+
+    ``on_result`` receives ``(index, result)`` as each task finishes, and the
+    result is then dropped rather than retained; the returned list is empty.
+    Streaming the arguments in bounds only one side. Deamination's 5,370 batch
+    results accumulated to 30 GiB in four minutes and were still climbing
+    linearly, because every completed result was held until the whole pool
+    finished and then copied twice more (`F45`). A caller that writes results
+    as they arrive holds none of them.
 
     If the watchdog kills a worker, every other future still pending in that
     same pool also raises ``BrokenProcessPool`` (the whole executor is
@@ -1149,7 +1158,10 @@ def run_tasks_parallel(
                 )
                 task_started = time.monotonic()
                 result = worker(*args)
-                results.append(result)
+                if on_result is None:
+                    results.append(result)
+                else:
+                    on_result(index, result)
                 if perf is not None:
                     measured_rss = process_tree_rss_bytes()
                     perf.sample(
@@ -1185,6 +1197,7 @@ def run_tasks_parallel(
 
     poll_interval = float(getattr(cfg, "perf_log_sample_interval_seconds", 2.0) or 2.0)
     results: list = [None] * total_tasks
+    completed_indices: set[int] = set()
     pending_indices = list(range(total_tasks))
     completed_count = 0
     retry_counts = [0] * total_tasks
@@ -1281,7 +1294,11 @@ def run_tasks_parallel(
                             task_args = args_in_flight.pop(index, None)
                             try:
                                 result = future.result()
-                                results[index] = result
+                                if on_result is None:
+                                    results[index] = result
+                                else:
+                                    on_result(index, result)
+                                completed_indices.add(index)
                                 completed_count += 1
                                 completed_in_attempt += 1
                                 if perf is not None:
@@ -1306,7 +1323,7 @@ def run_tasks_parallel(
                             # stream, so it is derived from what has no result
                             # rather than drained from a queue (`F44`).
                             still_pending.extend(
-                                index for index in wanted if results[index] is None
+                                index for index in wanted if index not in completed_indices
                             )
                             still_pending.extend(future_to_index.values())
                             for future in future_to_index:
