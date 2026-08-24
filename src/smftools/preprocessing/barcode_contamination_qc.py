@@ -212,9 +212,18 @@ def mislabeling_by_demux_type(
     unassigned -- which is why the unclassified population has to be ingested.
     Without it only the composition of the errors is knowable, not their rate.
 
-    ``discrimination`` is the ratio of the two rates: how many times more likely
-    a single-ended assignment is to be spurious than a double-ended one, and
-    therefore what requiring double-ended actually buys.
+    Every rate divides by the **whole** spike-in population, never by the subset
+    carrying that demux call. `demux_type` is an *outcome* of the mis-ligation,
+    not a stratum that exists beforehand: a read with barcodes at both ends will
+    be assigned, so "100% of double-ended spike-in reads are contaminated" is
+    near-tautological and says nothing about reliability. Dividing within the
+    stratum reported a discrimination of 0.88x on a run whose true figure is
+    ~560x -- it inverted the conclusion (`F43`).
+
+    ``discrimination`` is therefore the ratio of two per-molecule exposures: how
+    much more likely a spike-in molecule is to acquire a spurious single-ended
+    barcode than a spurious double-ended one, which is what requiring
+    double-ended assignment actually buys.
     """
     _require_columns(obs, [barcode_column, demux_column])
     spike = spike_in_mask(obs, spike_in_references)
@@ -228,27 +237,29 @@ def mislabeling_by_demux_type(
     demux = spike_obs[demux_column].astype(str)
 
     total = int(len(spike_obs))
+    errors_total = int(assigned.sum())
     by_type: dict[str, dict[str, Any]] = {}
     for demux_type in sorted(set(demux) | {"single", "double"}):
         in_type = demux == demux_type
-        denominator = int(in_type.sum())
         errors = int((in_type & assigned).sum())
         low, high = poisson_interval(errors, confidence=confidence)
         by_type[demux_type] = {
-            "spike_in_reads": denominator,
-            "mislabeled_reads": errors,
-            "mislabeling_rate": (errors / denominator) if denominator else None,
-            "rate_low": (low / denominator) if denominator else None,
-            "rate_high": (high / denominator) if denominator else None,
+            # Population carrying this call, for context only -- never the
+            # denominator below.
+            "spike_in_reads_of_type": int(in_type.sum()),
+            "spurious_assignments": errors,
+            "rate_per_spike_in_read": (errors / total) if total else None,
+            "rate_low": (low / total) if total else None,
+            "rate_high": (high / total) if total else None,
         }
 
-    single = by_type.get("single", {}).get("mislabeling_rate")
-    double = by_type.get("double", {}).get("mislabeling_rate")
+    single = by_type.get("single", {}).get("rate_per_spike_in_read")
+    double = by_type.get("double", {}).get("rate_per_spike_in_read")
     discrimination = (single / double) if single and double else None
     return {
         "spike_in_reads": total,
-        "mislabeled_reads": int(assigned.sum()),
-        "contamination_rate": (int(assigned.sum()) / total) if total else None,
+        "mislabeled_reads": errors_total,
+        "contamination_rate": (errors_total / total) if total else None,
         "by_demux_type": by_type,
         "single_over_double_discrimination": discrimination,
     }
