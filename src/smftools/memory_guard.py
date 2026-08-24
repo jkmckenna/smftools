@@ -31,7 +31,7 @@ import threading
 import time
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from .logging_utils import get_logger
 
@@ -1011,9 +1011,10 @@ def start_worker_watchdog(
 
 def run_tasks_parallel(
     worker: Callable,
-    task_args_list: list[tuple],
+    task_args_list: Sequence[tuple] | Callable[[], Iterable[tuple]],
     *,
     cfg,
+    n_items: int | None = None,
     force_sequential: bool = False,
     pool_label: str | None = None,
     per_item_memory_mb: float | None = None,
@@ -1062,6 +1063,18 @@ def run_tasks_parallel(
     completion order. No more than the live ``max_in_flight`` futures are
     submitted, so completed results cannot accumulate in an unbounded queue.
 
+    ``task_args_list`` may instead be a **callable returning a fresh iterable**,
+    with ``n_items`` giving the count. Task arguments are then pulled lazily and
+    only the in-flight ones are held, which matters when the arguments carry the
+    payload rather than a pointer to it: deamination segmentation built all
+    5,370 batches up front, each holding its reads' full sequences, and sat on
+    65 GiB before dispatching a single task (`F44`).
+
+    It must be a callable rather than a bare iterator because a broken pool is
+    retried, and retrying means replaying the tasks that never produced a
+    result -- a generator cannot be rewound. Each attempt calls it again and
+    skips indices already completed.
+
     If the watchdog kills a worker, every other future still pending in that
     same pool also raises ``BrokenProcessPool`` (the whole executor is
     unusable once one worker dies unexpectedly) -- the previous behavior let
@@ -1080,14 +1093,23 @@ def run_tasks_parallel(
     """
     from .perf_log import get_perf_logger
 
-    if not task_args_list:
+    provides_stream = callable(task_args_list)
+    if provides_stream and n_items is None:
+        raise ValueError("n_items is required when task_args_list is a callable")
+    total_tasks = int(n_items) if n_items is not None else len(task_args_list)
+    if total_tasks <= 0:
         return []
+
+    def _task_stream():
+        """A fresh ``(index, args)`` stream; re-callable for retry attempts."""
+        source = task_args_list() if provides_stream else task_args_list
+        return enumerate(source)
 
     perf = get_perf_logger()
     pool_id = perf.next_pool_id() if perf is not None else None
     initial_budget = resolve_pool_budget(
         cfg,
-        len(task_args_list),
+        total_tasks,
         per_item_memory_mb=per_item_memory_mb,
         estimator=estimator,
     )
@@ -1099,14 +1121,12 @@ def run_tasks_parallel(
     if perf is not None:
         perf.pool_start(
             pool_id,
-            n_tasks=len(task_args_list),
+            n_tasks=total_tasks,
             max_workers=max_workers,
             force_sequential=bool(force_sequential),
             predicted_peak_gb=round(predicted_peak_bytes / (1024**3), 3),
             pool_budget=initial_budget.as_dict(),
-            **_worker_decision_inputs(
-                cfg, len(task_args_list), per_item_memory_mb=per_item_memory_mb
-            ),
+            **_worker_decision_inputs(cfg, total_tasks, per_item_memory_mb=per_item_memory_mb),
         )
     if max_workers <= 1:
         # The parallel branch below always logs something (the watchdog's
@@ -1117,10 +1137,10 @@ def run_tasks_parallel(
         # repeatedly-invoked caller like duplicate detection's per-group,
         # per-round dispatch.
         if pool_label:
-            logger.info("[%s] running %d task(s) sequentially", pool_label, len(task_args_list))
+            logger.info("[%s] running %d task(s) sequentially", pool_label, total_tasks)
         try:
             results = []
-            for index, args in enumerate(task_args_list):
+            for index, args in _task_stream():
                 require_memory_headroom(
                     cfg,
                     estimated_memory_mb=per_item_memory_mb,
@@ -1143,7 +1163,7 @@ def run_tasks_parallel(
                         pool_id,
                         task_index=index,
                         completed=index + 1,
-                        total=len(task_args_list),
+                        total=total_tasks,
                         duration_seconds=time.monotonic() - task_started,
                         rows=rows,
                         bases=bases,
@@ -1164,10 +1184,10 @@ def run_tasks_parallel(
     from .parallel_utils import configure_worker_threads
 
     poll_interval = float(getattr(cfg, "perf_log_sample_interval_seconds", 2.0) or 2.0)
-    results: list = [None] * len(task_args_list)
-    pending_indices = list(range(len(task_args_list)))
+    results: list = [None] * total_tasks
+    pending_indices = list(range(total_tasks))
     completed_count = 0
-    retry_counts = [0] * len(task_args_list)
+    retry_counts = [0] * total_tasks
     workers_for_attempt = max_workers
     n_retries = 0
     try:
@@ -1195,17 +1215,39 @@ def run_tasks_parallel(
                     pool_label=pool_label,
                 )
                 try:
-                    from collections import deque
+                    # Pull task arguments lazily, holding only the in-flight
+                    # ones. A retry attempt gets a fresh stream and skips
+                    # indices that already produced a result (`F44`).
+                    wanted = set(pending_indices)
+                    completed_in_attempt = 0
+                    task_source = _task_stream()
 
-                    queued_indices = deque(pending_indices)
+                    def _next_wanted():
+                        """The next task this attempt still needs, or ``None``.
+
+                        A one-item lookahead, so "is there more work" is
+                        answerable without first deciding to submit it. Gating
+                        that question on the in-flight target instead spins
+                        forever once the last task completes: the budget for
+                        zero remaining tasks allows zero in flight, the pull
+                        never happens, and the loop never learns the stream is
+                        finished (`F44`).
+                        """
+                        for index, args in task_source:
+                            if index in wanted:
+                                return index, args
+                        return None
+
+                    next_task = _next_wanted()
+                    args_in_flight: dict = {}
                     future_to_index = {}
                     submitted_at: dict = {}
                     broke = False
                     still_pending: list[int] = []
-                    while queued_indices or future_to_index:
+                    while next_task is not None or future_to_index:
                         refill_budget = resolve_pool_budget(
                             cfg,
-                            len(queued_indices) + len(future_to_index),
+                            len(wanted) - completed_in_attempt,
                             per_item_memory_mb=per_item_memory_mb,
                             estimator=estimator,
                         )
@@ -1213,18 +1255,20 @@ def run_tasks_parallel(
                             workers_for_attempt,
                             refill_budget.max_in_flight,
                         )
-                        while queued_indices and len(future_to_index) < target_in_flight:
-                            index = queued_indices.popleft()
-                            future = pool.submit(worker, *task_args_list[index])
+                        while next_task is not None and len(future_to_index) < target_in_flight:
+                            index, args = next_task
+                            future = pool.submit(worker, *args)
                             future_to_index[future] = index
+                            args_in_flight[index] = args
                             submitted_at[future] = time.monotonic()
+                            next_task = _next_wanted()
                         if not future_to_index:
                             # `F26a`: headroom is live, so poll with backoff
                             # before treating this as fatal. On success, loop
                             # round and let the normal submission path run.
                             refill_budget = wait_for_task_admission(
                                 cfg,
-                                len(queued_indices) + len(future_to_index),
+                                len(wanted) - completed_in_attempt,
                                 per_item_memory_mb=per_item_memory_mb,
                                 estimator=estimator,
                                 pool_label=pool_label,
@@ -1234,17 +1278,19 @@ def run_tasks_parallel(
                         done, _ = wait(future_to_index, return_when=FIRST_COMPLETED)
                         for future in done:
                             index = future_to_index.pop(future)
+                            task_args = args_in_flight.pop(index, None)
                             try:
                                 result = future.result()
                                 results[index] = result
                                 completed_count += 1
+                                completed_in_attempt += 1
                                 if perf is not None:
-                                    rows, bases = _task_work_counts(task_args_list[index], result)
+                                    rows, bases = _task_work_counts(task_args, result)
                                     perf.task_complete(
                                         pool_id,
                                         task_index=index,
                                         completed=completed_count,
-                                        total=len(task_args_list),
+                                        total=total_tasks,
                                         duration_seconds=(
                                             time.monotonic() - submitted_at.pop(future)
                                         ),
@@ -1256,7 +1302,12 @@ def run_tasks_parallel(
                                 broke = True
                                 still_pending.append(index)
                         if broke:
-                            still_pending.extend(queued_indices)
+                            # The un-submitted tail was never pulled from the
+                            # stream, so it is derived from what has no result
+                            # rather than drained from a queue (`F44`).
+                            still_pending.extend(
+                                index for index in wanted if results[index] is None
+                            )
                             still_pending.extend(future_to_index.values())
                             for future in future_to_index:
                                 future.cancel()

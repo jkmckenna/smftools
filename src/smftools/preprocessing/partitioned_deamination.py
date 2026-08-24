@@ -284,49 +284,75 @@ def execute_partitioned_deamination(
         raise ValueError(f"raw spine lacks deamination identity columns: {sorted(missing)}")
 
     batch_size = max(1, int(getattr(cfg, "deaminase_segment_batch_reads", 250) or 250))
-    batches: list[tuple] = []
 
-    for group_path, shard_obs in obs.groupby("ragged_shard", sort=True, observed=True):
-        reference_strands = shard_obs["Reference_strand"].astype(str).unique()
-        if len(reference_strands) != 1:
-            raise ValueError(f"raw shard {group_path!r} spans multiple references")
-        reference_strand = str(reference_strands[0])
-        reference = reference_strand.rsplit("_", 1)[0]
-        sequence = references.get(reference)
-        if sequence is None:
-            logger.warning(
-                "No reference sequence for %s; skipping deamination evidence", reference_strand
-            )
-            continue
-        shard_excluded = tuple(
-            sorted(excluded.get(reference_strand, excluded.get(reference, set())))
-        )
-        molecule_by_read = dict(
-            zip(
-                shard_obs.get("read_id", pd.Series(shard_obs.index, index=shard_obs.index)).astype(
-                    str
-                ),
-                shard_obs[MOLECULE_UID_COLUMN].astype(str),
-                strict=True,
-            )
-        )
-        experiment_uid = str(shard_obs[EXPERIMENT_UID_COLUMN].astype(str).iloc[0])
+    def _iter_batches(*, with_payload: bool = True):
+        """Yield one segmentation batch at a time, reading one shard per group.
 
-        frame = pd.read_parquet(spine_path.parent / str(group_path))
-        frame[READ_ID] = frame[READ_ID].astype(str)
-        rows: list[tuple] = []
-        for row in frame.sort_values(READ_ID, kind="stable").to_dict("records"):
-            read_id = str(row[READ_ID])
-            molecule_uid = molecule_by_read.get(read_id)
-            if molecule_uid is None:
+        A generator rather than a list because each batch carries its reads'
+        full sequences. Building them all first held ~65 GiB before a single
+        task dispatched, against a 76.8 GiB ceiling -- so segmentation was
+        refused admission for a 125 MiB task on a run that had already eaten
+        the budget (`F44`). Streaming bounds it to the in-flight batches.
+
+        ``with_payload=False`` runs the identical loop while projecting the
+        sequence column away, so the batch *count* the pool needs up front costs
+        a scalar-only read (~0.5s across 124 shards) instead of a second pass
+        over 65 GiB. Both passes share this one definition deliberately: a
+        separate counting routine that drifted from the yielding one would
+        mis-size the pool in a way nothing would catch.
+        """
+        for group_path, shard_obs in obs.groupby("ragged_shard", sort=True, observed=True):
+            reference_strands = shard_obs["Reference_strand"].astype(str).unique()
+            if len(reference_strands) != 1:
+                raise ValueError(f"raw shard {group_path!r} spans multiple references")
+            reference_strand = str(reference_strands[0])
+            reference = reference_strand.rsplit("_", 1)[0]
+            sequence = references.get(reference)
+            if sequence is None:
+                if with_payload:
+                    # The counting pass walks the same loop, so warn once.
+                    logger.warning(
+                        "No reference sequence for %s; skipping deamination evidence",
+                        reference_strand,
+                    )
                 continue
-            rows.append(
-                (read_id, molecule_uid, str(row[CIGAR]), int(row[REFERENCE_START]), row[SEQUENCE])
+            shard_excluded = tuple(
+                sorted(excluded.get(reference_strand, excluded.get(reference, set())))
             )
-        for offset in range(0, len(rows), batch_size):
-            batches.append(
-                (
-                    rows[offset : offset + batch_size],
+            molecule_by_read = dict(
+                zip(
+                    shard_obs.get(
+                        "read_id", pd.Series(shard_obs.index, index=shard_obs.index)
+                    ).astype(str),
+                    shard_obs[MOLECULE_UID_COLUMN].astype(str),
+                    strict=True,
+                )
+            )
+            experiment_uid = str(shard_obs[EXPERIMENT_UID_COLUMN].astype(str).iloc[0])
+
+            columns = None if with_payload else [READ_ID]
+            frame = pd.read_parquet(spine_path.parent / str(group_path), columns=columns)
+            frame[READ_ID] = frame[READ_ID].astype(str)
+            rows: list[tuple] = []
+            for row in frame.sort_values(READ_ID, kind="stable").to_dict("records"):
+                read_id = str(row[READ_ID])
+                molecule_uid = molecule_by_read.get(read_id)
+                if molecule_uid is None:
+                    continue
+                rows.append(
+                    (
+                        read_id,
+                        molecule_uid,
+                        str(row[CIGAR]),
+                        int(row[REFERENCE_START]),
+                        row[SEQUENCE],
+                    )
+                    if with_payload
+                    else None
+                )
+            for offset in range(0, len(rows), batch_size):
+                yield (
+                    rows[offset : offset + batch_size] if with_payload else (),
                     reference_strand,
                     sequence,
                     experiment_uid,
@@ -335,20 +361,22 @@ def execute_partitioned_deamination(
                     penalty_scale,
                     min_segment,
                 )
-            )
 
-    if not batches:
+    n_batches = sum(1 for _ in _iter_batches(with_payload=False))
+    if not n_batches:
         results: list[tuple[list, list, list]] = []
-    elif len(batches) == 1 or getattr(cfg, "threads", 1) in (None, 1):
-        results = [_execute_deamination_batch(*batch) for batch in batches]
+    elif n_batches == 1 or getattr(cfg, "threads", 1) in (None, 1):
+        # Sequential still streams: one batch resident at a time, not all of them.
+        results = [_execute_deamination_batch(*batch) for batch in _iter_batches()]
     else:
         from ..memory_guard import run_tasks_parallel
 
         results = run_tasks_parallel(
             _execute_deamination_batch,
-            batches,
+            _iter_batches,
             cfg=cfg,
-            pool_label=f"deamination segmentation ({len(batches)} batches)",
+            n_items=n_batches,
+            pool_label=f"deamination segmentation ({n_batches} batches)",
             per_item_memory_mb=max(1.0, batch_size * 0.5),
             estimator="deamination_batch_peak",
         )
