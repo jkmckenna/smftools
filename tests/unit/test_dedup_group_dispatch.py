@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 
@@ -100,3 +102,50 @@ def test_the_executor_dispatches_groups_rather_than_walking_them():
     assert "dedup_groups.append" in source
     assert "run_tasks_parallel" in source
     assert "run_duplicate_detection_rounds(" not in source
+
+
+def test_a_group_worker_does_not_start_a_nested_pool(monkeypatch, tmp_path):
+    """Chunk dispatch inside a group worker must run sequentially (`F49`).
+
+    Without this the worker re-reads `cfg.threads` and starts its own pool, so
+    12 group workers each spawn their own children: a four-level process tree,
+    63.6 GiB aggregate against a 76.8 GiB budget on a real run, and watchdog
+    kills measured on process-tree RSS that looked like a bad memory estimate.
+    """
+    import smftools.preprocessing.duplicate_detection_dispatch as dispatch
+
+    seen: list[bool] = []
+
+    def _capture(worker, task_args, *, cfg, force_sequential=False, **kwargs):
+        seen.append(force_sequential)
+        return []
+
+    import pandas as pd
+
+    monkeypatch.setattr("smftools.memory_guard.run_tasks_parallel", _capture)
+    task = SimpleNamespace(read_ids=["r0"], estimated_memory_bytes=1024)
+
+    dispatch._dispatch_and_fold(
+        [task],
+        tmp_path / "spine.h5ad",
+        object(),
+        pd.DataFrame(index=["r0"]),
+        UnionFind(1),
+        {"r0": 0},
+        {},
+        force_sequential=True,
+    )
+
+    assert seen == [True], "the inner dispatch must be told it is already in a worker"
+
+
+def test_the_group_worker_requests_sequential_chunk_dispatch():
+    """Pin the call site, not just the plumbing."""
+    import inspect
+
+    from smftools.preprocessing.duplicate_detection_dispatch import (
+        execute_duplicate_detection_group,
+    )
+
+    source = inspect.getsource(execute_duplicate_detection_group)
+    assert "force_sequential=True" in source
