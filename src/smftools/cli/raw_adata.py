@@ -209,7 +209,25 @@ def _drop_unclassified_except_spike_in(frame: pd.DataFrame, cfg) -> pd.DataFrame
     if not references:
         return frame.loc[~unassigned]
 
-    from ..preprocessing.barcode_contamination_qc import spike_in_mask
+    from ..preprocessing.barcode_contamination_qc import (
+        REFERENCE_COLUMN,
+        spike_in_mask,
+    )
+
+    if REFERENCE_COLUMN not in frame.columns:
+        # Only the convertible extraction path labels reads before this runs;
+        # the direct paths call `_attach_obs_metadata` without a reference
+        # column at all. Without it every read looks like a non-spike-in and
+        # the exemption silently discards the whole denominator -- the exact
+        # failure `F40` exists to prevent, reintroduced through a different
+        # code path. Refuse rather than quietly drop it (`F42`).
+        raise ValueError(
+            f"spike_in_references is configured ({', '.join(map(str, references))}) but "
+            f"the read frame has no {REFERENCE_COLUMN!r} column, so unassigned spike-in "
+            "reads cannot be identified and would be discarded. This extraction path "
+            "does not label reads before attaching obs metadata; either clear "
+            "spike_in_references or label reads upstream of this filter."
+        )
 
     spike = spike_in_mask(frame, references)
     kept = int((unassigned & spike).sum())
