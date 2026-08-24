@@ -55,7 +55,7 @@ QC_SCHEMA_VERSION = 1
 #: Spellings that mean "no barcode was assigned" rather than naming one.
 UNASSIGNED = frozenset({"", "unclassified", "unassigned", "unknown", "none", "nan", "null", "na"})
 
-_REFERENCE_COLUMN = "Reference_strand"
+REFERENCE_COLUMN = "Reference_strand"
 _STRAND_SUFFIXES = ("_top", "_bottom")
 
 
@@ -80,9 +80,9 @@ def amplicon_names(references: pd.Series) -> pd.Series:
 def spike_in_mask(obs: pd.DataFrame, spike_in_references: Iterable[str]) -> pd.Series:
     """Rows belonging to a configured spike-in amplicon."""
     wanted = {str(name).strip() for name in spike_in_references if str(name).strip()}
-    if not wanted or _REFERENCE_COLUMN not in obs.columns:
+    if not wanted or REFERENCE_COLUMN not in obs.columns:
         return pd.Series(False, index=obs.index)
-    return amplicon_names(obs[_REFERENCE_COLUMN]).isin(wanted)
+    return amplicon_names(obs[REFERENCE_COLUMN]).isin(wanted)
 
 
 def poisson_interval(count: int, *, confidence: float = 0.95) -> tuple[float, float]:

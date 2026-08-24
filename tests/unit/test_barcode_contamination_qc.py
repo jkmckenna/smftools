@@ -285,3 +285,34 @@ def test_without_a_spike_in_the_filter_is_unchanged():
     kept = _drop_unclassified_except_spike_in(frame, SimpleNamespace(spike_in_references=[]))
 
     assert list(kept["barcode"]) == ["NB01"]
+
+
+def test_spike_in_filter_refuses_a_frame_it_cannot_label():
+    """A frame with no reference column cannot honour the spike-in exemption.
+
+    Only the convertible extraction path labels reads before the filter runs;
+    the direct paths do not. There every read looks like a non-spike-in, so the
+    exemption would discard the whole denominator -- `F40`'s failure returning
+    through a different code path (`F42`).
+    """
+    from types import SimpleNamespace
+
+    from smftools.cli.raw_adata import _drop_unclassified_except_spike_in
+
+    frame = pd.DataFrame({"barcode": ["unclassified", "NB01"]})
+    cfg = SimpleNamespace(spike_in_references=["ctcf_mNanog"])
+
+    with pytest.raises(ValueError, match="Reference_strand"):
+        _drop_unclassified_except_spike_in(frame, cfg)
+
+
+def test_unlabelled_frame_is_fine_when_no_spike_in_is_configured():
+    """The guard fires only for runs that actually asked for the exemption."""
+    from types import SimpleNamespace
+
+    from smftools.cli.raw_adata import _drop_unclassified_except_spike_in
+
+    frame = pd.DataFrame({"barcode": ["unclassified", "NB01"]})
+    kept = _drop_unclassified_except_spike_in(frame, SimpleNamespace(spike_in_references=[]))
+
+    assert list(kept["barcode"]) == ["NB01"]
