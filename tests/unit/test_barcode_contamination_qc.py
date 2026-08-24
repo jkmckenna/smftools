@@ -97,8 +97,14 @@ def test_contamination_rate_uses_the_whole_spike_in_population():
     assert summary["contamination_rate"] == pytest.approx(0.1)
 
 
-def test_single_ended_discrimination_is_reported():
-    """The number that licenses filtering on double-ended assignment."""
+def test_discrimination_divides_by_the_whole_spike_in_population():
+    """`demux_type` is an outcome of mis-ligation, not a pre-existing stratum.
+
+    Dividing within the stratum makes "double-ended reads are 100% contaminated"
+    near-tautological -- a read with barcodes at both ends gets assigned -- and
+    on a real run it reported 0.88x where the true figure was ~560x, inverting
+    the conclusion (`F43`).
+    """
     obs = _run(
         clean_spike=900, single_errors=90, double_errors=10, library_per_barcode={"NB01": 1000}
     )
@@ -106,12 +112,13 @@ def test_single_ended_discrimination_is_reported():
     summary = mislabeling_by_demux_type(obs, spike_in_references=SPIKE)
     by_type = summary["by_demux_type"]
 
-    # 90 of 990 single-ended spike reads are errors; 10 of 10 double-ended.
-    assert by_type["single"]["mislabeled_reads"] == 90
-    assert by_type["double"]["mislabeled_reads"] == 10
-    assert summary["single_over_double_discrimination"] == pytest.approx(
-        by_type["single"]["mislabeling_rate"] / by_type["double"]["mislabeling_rate"]
-    )
+    assert summary["spike_in_reads"] == 1000
+    assert by_type["single"]["spurious_assignments"] == 90
+    assert by_type["double"]["spurious_assignments"] == 10
+    # Both rates are per spike-in molecule, so the ratio is the exposure ratio.
+    assert by_type["single"]["rate_per_spike_in_read"] == pytest.approx(0.09)
+    assert by_type["double"]["rate_per_spike_in_read"] == pytest.approx(0.01)
+    assert summary["single_over_double_discrimination"] == pytest.approx(9.0)
 
 
 def test_enrichment_is_against_library_share_not_raw_count():
