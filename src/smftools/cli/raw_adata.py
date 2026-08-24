@@ -995,6 +995,42 @@ def _map_references_parallel(
                 perf.pool_end(pool_id, final_max_workers=max_workers, n_retries=0)
 
 
+def _log_planning_progress(
+    stage: str,
+    *,
+    started_at: float,
+    record: str | None = None,
+    done: int | None = None,
+    total: int | None = None,
+    reads: int | None = None,
+    buckets: int | None = None,
+) -> None:
+    """Report progress through extraction's single-threaded planning phase.
+
+    Between "Extracting read-relative raw records" and the pool's first
+    progress line sits a stretch that logs nothing: one whole-BAM scan for read
+    features, then a further BAM scan per alignment target to collect its read
+    ids, then bucketing and per-bucket metric slicing. On a real run that was
+    about eight minutes of silence on a single core, and the only way to know it
+    was healthy rather than hung was to have watched a previous run
+    (`F37` fixed the pool; this is the step before it, `F48`).
+    """
+    elapsed = time.monotonic() - started_at
+    if record is None:
+        logger.info("Raw extraction planning: %s (%.1f min elapsed)", stage, elapsed / 60.0)
+        return
+    logger.info(
+        "Raw extraction planning: %s %d/%d (%s: %s reads, %s bucket(s)), %.1f min elapsed",
+        stage,
+        done or 0,
+        total or 0,
+        record,
+        f"{reads:,}" if reads is not None else "?",
+        buckets if buckets is not None else "?",
+        elapsed / 60.0,
+    )
+
+
 #: How often the extraction pool reports progress, as a fraction of its buckets.
 _EXTRACTION_PROGRESS_FRACTION = 0.05
 
@@ -1451,8 +1487,13 @@ def _build_ragged_records_streaming_convertible(
         # whole BAM regardless of which reads it's asked about, so calling it
         # again inside the per-reference loop below would re-scan the whole
         # BAM once per reference instead of once total.
+        planning_started = time.monotonic()
+        _log_planning_progress("scanning BAM for read features", started_at=planning_started)
         metrics = extract_read_features_from_bam(
             aligned_bam, samtools_backend=cfg.samtools_backend, primary_only=True
+        )
+        _log_planning_progress(
+            f"read features for {len(metrics):,} read(s)", started_at=planning_started
         )
         # Split per reference into several read-count-balanced buckets, not
         # just one item per reference -- parallelizing per-reference alone
@@ -1471,7 +1512,7 @@ def _build_ragged_records_streaming_convertible(
         buckets_remaining: dict[str, int] = {}
         record_chromosome: dict[str, str] = {}
         items = []
-        for record, (_length, sequence) in reference_map.items():
+        for planned, (record, (_length, sequence)) in enumerate(reference_map.items(), start=1):
             info = record_info[record]
             record_chromosome[record] = info.chromosome
             read_ids = _read_ids_for_reference(aligned_bam, record)
@@ -1482,6 +1523,15 @@ def _build_ragged_records_streaming_convertible(
             )
             buckets = _bucket_read_ids(read_ids, n_buckets)
             buckets_remaining[record] = len(buckets)
+            _log_planning_progress(
+                "bucketing references",
+                started_at=planning_started,
+                record=record,
+                done=planned,
+                total=len(reference_map),
+                reads=len(read_ids),
+                buckets=len(buckets),
+            )
             for bucket in buckets:
                 # Sliced to this bucket's own read_ids -- passing the whole
                 # experiment's metrics dict to every bucket task is itself the
@@ -1623,14 +1673,21 @@ def _build_ragged_records_streaming_direct(
     max_workers = max(1, int(getattr(cfg, "threads", 1) or 1))
 
     def _reference_frames():
+        planning_started = time.monotonic()
+        _log_planning_progress("scanning BAM for read features", started_at=planning_started)
         metrics = extract_read_features_from_bam(
             aligned_bam, samtools_backend=cfg.samtools_backend, primary_only=True
+        )
+        _log_planning_progress(
+            f"read features for {len(metrics):,} read(s)", started_at=planning_started
         )
         buckets_remaining: dict[str, int] = {}
         items = []
         read_id_to_bucket_id: dict[str, int] = {}
         bucket_id_counter = 0
-        for record, (_record_length, sequence) in reference_map.items():
+        for planned, (record, (_record_length, sequence)) in enumerate(
+            reference_map.items(), start=1
+        ):
             read_ids = _read_ids_for_reference(aligned_bam, record)
             n_buckets = _n_buckets_for_reference(
                 len(read_ids),
@@ -1639,6 +1696,15 @@ def _build_ragged_records_streaming_direct(
             )
             buckets = _bucket_read_ids(read_ids, n_buckets)
             buckets_remaining[record] = len(buckets)
+            _log_planning_progress(
+                "bucketing references",
+                started_at=planning_started,
+                record=record,
+                done=planned,
+                total=len(reference_map),
+                reads=len(read_ids),
+                buckets=len(buckets),
+            )
             for bucket in buckets:
                 metrics_slice = {rid: metrics[rid] for rid in bucket if rid in metrics}
                 if backend == "modkit":
