@@ -180,6 +180,64 @@ def _observed_bases(row: pd.Series) -> dict[int, str]:
     return observed
 
 
+class _StreamingParquetSink:
+    """Append row dicts to a parquet file without holding them all.
+
+    The batch results they come from are the other half of `F44`: streaming the
+    arguments into the pool bounded its input, but every completed result was
+    still retained until the pool finished and then copied into a list and again
+    into a DataFrame -- three simultaneous copies of the whole output. On the
+    `260820` run that grew linearly at ~5.2 GiB/min with no plateau (`F45`).
+
+    The schema is taken from the first flush and every later batch is built
+    against it, so a batch whose column happens to be all-null cannot silently
+    change a column's type. A batch that genuinely does not fit the established
+    schema raises rather than writing something subtly wrong.
+    """
+
+    def __init__(self, path: Path, *, flush_rows: int = 50_000) -> None:
+        self._path = path
+        self._flush_rows = max(1, int(flush_rows))
+        self._buffer: list[dict] = []
+        self._writer = None
+        self._schema = None
+        self.n_rows = 0
+
+    def extend(self, rows) -> None:
+        rows = list(rows)
+        if not rows:
+            return
+        self._buffer.extend(rows)
+        self.n_rows += len(rows)
+        if len(self._buffer) >= self._flush_rows:
+            self._flush()
+
+    def _flush(self) -> None:
+        if not self._buffer:
+            return
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        if self._schema is None:
+            table = pa.Table.from_pylist(self._buffer)
+            self._schema = table.schema
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            self._writer = pq.ParquetWriter(self._path, self._schema)
+        else:
+            table = pa.Table.from_pylist(self._buffer, schema=self._schema)
+        self._writer.write_table(table)
+        self._buffer.clear()
+
+    def close(self) -> Path:
+        self._flush()
+        if self._writer is not None:
+            self._writer.close()
+        else:
+            # No rows at all: still publish the artifact the caller expects.
+            _write_parquet(pd.DataFrame(), self._path)
+        return self._path
+
+
 def _write_parquet(frame: pd.DataFrame, path: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     frame.to_parquet(path, index=False, row_group_size=portable_parquet_row_group_rows(frame))
@@ -362,53 +420,53 @@ def execute_partitioned_deamination(
                     min_segment,
                 )
 
+    root = output_dir / DEAMINATION_SUBDIR
+    events_sink = _StreamingParquetSink(root / DEAMINATION_TASK_STORE / "events.parquet")
+    segments_sink = _StreamingParquetSink(root / DEAMINATION_TASK_STORE / "segments.parquet")
+    summaries_sink = _StreamingParquetSink(
+        root / DEAMINATION_OBS_SIDECAR / "deamination_obs.parquet"
+    )
+    chimeric_count = [0]
+
+    def _consume(_index, result) -> None:
+        """Write one batch's rows straight through; retain nothing but counts."""
+        events, segments, summaries = result
+        events_sink.extend(events)
+        segments_sink.extend(segments)
+        summaries_sink.extend(summaries)
+        chimeric_count[0] += sum(1 for row in summaries if row.get(CHIMERA_COLUMN))
+
     n_batches = sum(1 for _ in _iter_batches(with_payload=False))
-    if not n_batches:
-        results: list[tuple[list, list, list]] = []
-    elif n_batches == 1 or getattr(cfg, "threads", 1) in (None, 1):
-        # Sequential still streams: one batch resident at a time, not all of them.
-        results = [_execute_deamination_batch(*batch) for batch in _iter_batches()]
-    else:
+    if n_batches == 1 or getattr(cfg, "threads", 1) in (None, 1):
+        # Sequential streams both ways too: one batch in, one batch straight out.
+        for index, batch in enumerate(_iter_batches()):
+            _consume(index, _execute_deamination_batch(*batch))
+    elif n_batches:
         from ..memory_guard import run_tasks_parallel
 
-        results = run_tasks_parallel(
+        run_tasks_parallel(
             _execute_deamination_batch,
             _iter_batches,
             cfg=cfg,
             n_items=n_batches,
+            on_result=_consume,
             pool_label=f"deamination segmentation ({n_batches} batches)",
             per_item_memory_mb=max(1.0, batch_size * 0.5),
             estimator="deamination_batch_peak",
         )
 
-    event_rows: list[dict[str, object]] = []
-    segment_rows: list[dict[str, object]] = []
-    summary_rows: list[dict[str, object]] = []
-    for events, segments, summaries in results:
-        event_rows.extend(events)
-        segment_rows.extend(segments)
-        summary_rows.extend(summaries)
-
-    root = output_dir / DEAMINATION_SUBDIR
     outputs = {
-        "events": _write_parquet(
-            pd.DataFrame(event_rows), root / DEAMINATION_TASK_STORE / "events.parquet"
-        ),
-        "segments": _write_parquet(
-            pd.DataFrame(segment_rows), root / DEAMINATION_TASK_STORE / "segments.parquet"
-        ),
-        "obs": _write_parquet(
-            pd.DataFrame(summary_rows), root / DEAMINATION_OBS_SIDECAR / "deamination_obs.parquet"
-        ),
+        "events": events_sink.close(),
+        "segments": segments_sink.close(),
+        "obs": summaries_sink.close(),
     }
-    chimeric = int(pd.DataFrame(summary_rows)[CHIMERA_COLUMN].sum()) if summary_rows else 0
     logger.info(
         "Deamination evidence: %d molecule(s), %d observation(s), %d segment(s), %d chimeric "
         "(penalty_scale=%.1f)",
-        len(summary_rows),
-        len(event_rows),
-        len(segment_rows),
-        chimeric,
+        summaries_sink.n_rows,
+        events_sink.n_rows,
+        segments_sink.n_rows,
+        chimeric_count[0],
         penalty_scale,
     )
     return outputs
