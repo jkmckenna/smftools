@@ -280,6 +280,95 @@ def _dispatch_and_fold(
     return survivors
 
 
+def execute_duplicate_detection_group(
+    spine_path,
+    group_obs: pd.DataFrame,
+    reference: str,
+    sample: str,
+    core_start: int,
+    core_end: int,
+    load_start: int,
+    load_end: int,
+    cfg,
+    hamming_columns: tuple[str, ...],
+) -> tuple[list[tuple[str, str]], dict[str, dict[str, float]]]:
+    """Run one group's full duplicate-detection loop against *local* state.
+
+    Module-level and picklable so groups can be dispatched to a pool. The caller
+    used to walk reference x sample x core sequentially, and each group only
+    parallelised across its own chunks -- usually one or two. On a real run that
+    left 1-2 of 12 cores busy and put 314 groups on a five-hour path.
+
+    Returning contributions rather than mutating shared state is what makes that
+    safe. Both merges the caller performs are associative and commutative --
+    union-find composition does not care which pass discovered a pair, and a
+    per-read minimum is order-independent -- so folding groups in any order
+    gives the same answer the sequential walk gave. A read spanning a tile
+    boundary appears in two groups, and unioning its pairs twice is idempotent.
+
+    Returns ``(pairs, minima)``: read-id pairs to union, and per-column
+    ``{read_id: value}`` minima, both in caller-global terms.
+    """
+    from .flag_duplicate_reads import UnionFind
+
+    read_ids = [str(value) for value in group_obs.index]
+    local_position = {read_id: index for index, read_id in enumerate(read_ids)}
+    local_union_find = UnionFind(len(read_ids))
+    local_minima = {
+        column: np.full(len(read_ids), np.nan, dtype=float) for column in hamming_columns
+    }
+
+    run_duplicate_detection_rounds(
+        spine_path,
+        group_obs,
+        reference=reference,
+        sample=sample,
+        core_start=core_start,
+        core_end=core_end,
+        load_start=load_start,
+        load_end=load_end,
+        cfg=cfg,
+        union_find=local_union_find,
+        read_position=local_position,
+        hamming_minima=local_minima,
+    )
+
+    pairs = [
+        (read_ids[local_union_find.find(index)], read_id)
+        for index, read_id in enumerate(read_ids)
+        if local_union_find.find(index) != index
+    ]
+    minima = {
+        column: {
+            read_ids[index]: float(value)
+            for index, value in enumerate(values)
+            if not np.isnan(value)
+        }
+        for column, values in local_minima.items()
+    }
+    return pairs, minima
+
+
+def merge_duplicate_detection_group(
+    contribution: tuple[list[tuple[str, str]], dict[str, dict[str, float]]],
+    union_find: UnionFind,
+    read_position: dict[str, int],
+    hamming_minima: dict[str, np.ndarray],
+) -> None:
+    """Fold one group's contributions into the caller's shared state."""
+    pairs, minima = contribution
+    for anchor, member in pairs:
+        union_find.union(read_position[anchor], read_position[member])
+    for column, values in minima.items():
+        global_values = hamming_minima.get(column)
+        if global_values is None:
+            continue
+        for read_id, value in values.items():
+            index = read_position[read_id]
+            if np.isnan(global_values[index]) or value < global_values[index]:
+                global_values[index] = value
+
+
 def run_duplicate_detection_rounds(
     spine_path,
     group_obs: pd.DataFrame,
