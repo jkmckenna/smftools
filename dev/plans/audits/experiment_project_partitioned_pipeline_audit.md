@@ -1,5 +1,9 @@
 # Experiment/project partitioned pipeline audit
 
+> **Repository state reviewed:** `43958ee` — inferred: last commit on `main` on the stated audit date 2026-07-21.
+> **427 commits on `main` since.** An audit describes the code at a moment; it
+> goes stale rather than completing. Re-verify any specific claim before relying on it.
+
 **Audit date:** 2026-07-21
 
 **Repository:** `smftools`

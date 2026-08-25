@@ -1,5 +1,9 @@
 # smftools ML infrastructure audit
 
+> **Repository state reviewed:** `15bcc01` — inferred: last commit on `main` on the stated date 2026-07-30.
+> **319 commits on `main` since.** An audit describes the code at a moment; it
+> goes stale rather than completing. Re-verify any specific claim before relying on it.
+
 Date: 2026-07-30. Scope: `~/git/smftools` at its current working-tree state (includes uncommitted
 changes from active development — see "State of the audited tree" below), cross-referenced against
 the downstream consumer project `Nkg2a_DAFseq_merged/claude_scripts/ml/`. Written for whoever picks

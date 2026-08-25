@@ -1,5 +1,9 @@
 # Selective POD5 re-basecalling and processing-lineage audit
 
+> **Repository state reviewed:** `0e742db` — recorded in this document.
+> **190 commits on `main` since.** An audit describes the code at a moment; it
+> goes stale rather than completing. Re-verify any specific claim before relying on it.
+
 **Audit date:** 2026-08-14
 
 **Repository:** `smftools`

@@ -1,5 +1,9 @@
 # smftools ML behavior and migration inventory
 
+> **Repository state reviewed:** `b8b5a90` — recorded in this document as `Committed source`.
+> **335 commits on `main` since.** An audit describes the code at a moment; it
+> goes stale rather than completing. Re-verify any specific claim before relying on it.
+
 **Work package:** ML-001
 
 **Inventory date:** 2026-07-30

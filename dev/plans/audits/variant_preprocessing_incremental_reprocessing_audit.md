@@ -1,5 +1,9 @@
 # Variant-to-preprocessing and incremental reprocessing audit
 
+> **Repository state reviewed:** `293ec85` — recorded in this document.
+> **373 commits on `main` since.** An audit describes the code at a moment; it
+> goes stale rather than completing. Re-verify any specific claim before relying on it.
+
 **Audit date:** 2026-07-27
 **Repository state reviewed:** `293ec85` on
 `feature/project-latent-acceptance`

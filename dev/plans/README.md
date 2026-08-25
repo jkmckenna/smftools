@@ -10,8 +10,13 @@ goes stale and is then worse than nothing.
 ## `audits/`
 
 Investigations of the code as it is. An audit never "completes"; it goes stale.
-Each should carry an **audited against `<sha>`** marker — none currently do,
-which is worth fixing as each is next touched.
+Each carries a **Repository state reviewed** block naming the commit it describes
+and how far `main` has moved since — between 190 and 538 commits, so treat every
+specific claim as needing re-verification.
+
+`load_preprocess_audit.md` is **superseded**: it describes the pre-partitioned
+architecture, which no longer exists. `input_ingestion_alignment_audit.md` has no
+recoverable anchor and says so.
 
 | document | scope | plan it motivated |
 |---|---|---|
