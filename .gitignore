@@ -23,7 +23,14 @@ venvs/
 /environment.yml
 
 # Development
-/dev/
+# Ignore dev/ contents (dev/tests and dev/data are tens of GiB of fixtures), but
+# track the design records. A directory cannot be re-included once excluded, so
+# this excludes the *contents* of dev/ rather than dev/ itself -- `/dev/` plus a
+# negation silently does nothing.
+/dev/*
+!/dev/plans/
+# Operational logs hold measurements from unpublished experiments.
+/dev/plans/logs/
 
 # Tests
 /tests/_test_inputs/dorado_models
