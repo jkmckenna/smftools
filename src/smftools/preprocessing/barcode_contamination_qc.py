@@ -50,7 +50,17 @@ logger = get_logger(__name__)
 CONTAMINATION_QC_SUBDIR = "barcode_contamination_qc"
 PER_BARCODE_FILENAME = "contamination_by_barcode.parquet"
 SUMMARY_FILENAME = "contamination_summary.json"
-QC_SCHEMA_VERSION = 1
+QC_SCHEMA_VERSION = 2
+#: Library reads a barcode needs before its enrichment is treated as a finding.
+#:
+#: Enrichment divides the spike-in share by the library share, so a barcode with
+#: a handful of library reads has a near-zero denominator and the ratio
+#: explodes. On a real run, barcodes with 1 and 5 library reads produced
+#: enrichments of 2,606x and 1,042x and were flagged significant -- sitting at
+#: the top of the table where they are most misleading. The Poisson interval
+#: cannot catch this: it is computed on the spike-in *count* and knows nothing
+#: about uncertainty in the denominator (`F50`).
+MIN_LIBRARY_READS_FOR_ENRICHMENT = 1000
 
 #: Spellings that mean "no barcode was assigned" rather than naming one.
 UNASSIGNED = frozenset({"", "unclassified", "unassigned", "unknown", "none", "nan", "null", "na"})
@@ -185,7 +195,10 @@ def contamination_by_barcode(
     frame["enrichment_low"] = np.array([low for low, _ in intervals]) * per_count
     frame["enrichment_high"] = np.array([high for _, high in intervals]) * per_count
 
-    frame["significant"] = frame["enrichment_low"] > 1.0
+    # A barcode with almost no library reads has no meaningful share to divide
+    # by, so it is reported but never ranked as a finding.
+    frame["library_reads_sufficient"] = frame["library_reads"] >= MIN_LIBRARY_READS_FOR_ENRICHMENT
+    frame["significant"] = (frame["enrichment_low"] > 1.0) & frame["library_reads_sufficient"]
     return frame.sort_values("spike_in_reads", ascending=False)
 
 
@@ -348,6 +361,12 @@ def barcode_contamination_report(
             barcode_column=barcode_column,
             confidence=confidence,
         )
+        thin = per_barcode.loc[~per_barcode["library_reads_sufficient"]]
+        summary["barcodes_below_library_floor"] = [
+            {"barcode": str(index), "library_reads": int(row["library_reads"])}
+            for index, row in thin.iterrows()
+        ]
+        summary["min_library_reads_for_enrichment"] = MIN_LIBRARY_READS_FOR_ENRICHMENT
         significant = per_barcode.loc[per_barcode["significant"]]
         summary["barcodes_enriched_above_library_share"] = [
             {"barcode": str(index), "enrichment": float(row["enrichment"])}

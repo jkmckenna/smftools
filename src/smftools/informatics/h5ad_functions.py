@@ -95,7 +95,8 @@ def add_demux_type_from_bm_tag(
     Mapping:
         - "both" → "double" (both ends matched same barcode)
         - "left_only", "right_only", "read_start_only", "read_end_only" → "single"
-        - "mismatch", "unclassified" → "unclassified"
+        - "mismatch" → "mismatch" (both ends read, and they disagreed)
+        - "unclassified" → "unclassified" (no usable barcode seen)
 
     Parameters
     ----------
@@ -121,13 +122,15 @@ def add_demux_type_from_bm_tag(
     bm_values = adata.obs[bm_column].astype(str).str.lower()
 
     # Map BM values to demux_type
+    # Kept identical to `demux_agreement.derive_demux_type_from_bm`; the two
+    # paths must not drift (`F50`).
     demux_type = np.where(
         bm_values == "both",
         "double",
         np.where(
             bm_values.isin(["left_only", "right_only", "read_start_only", "read_end_only"]),
             "single",
-            "unclassified",
+            np.where(bm_values == "mismatch", "mismatch", "unclassified"),
         ),
     )
 

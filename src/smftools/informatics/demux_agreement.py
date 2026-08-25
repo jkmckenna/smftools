@@ -197,6 +197,13 @@ def should_derive_demux_status(cfg, demux_backend: str, *, dorado_supports: bool
 
 #: `BM` values that mean a barcode was found at both ends.
 _BM_DOUBLE = frozenset({"both"})
+#: Both ends were read and named *different* barcodes. Distinct from
+#: `unclassified`, which means no usable barcode was seen at all: a mismatch is
+#: a positive observation of mis-ligation, not an absence of evidence. Folding
+#: the two together hid 991 of 2,449 spike-in reads -- 40% of an amplicon that
+#: carries no barcode of its own, and so the most direct evidence of
+#: cross-ligation the run contains (`F50`).
+_BM_MISMATCH = frozenset({"mismatch"})
 #: `BM` values that mean exactly one end carried a recognizable barcode.
 _BM_SINGLE = frozenset({"left_only", "right_only", "read_start_only", "read_end_only"})
 
@@ -225,21 +232,28 @@ def derive_demux_type_from_bm(frame: pd.DataFrame, *, bm_column: str = "BM") -> 
     demux_type = np.where(
         values.isin(_BM_DOUBLE),
         "double",
-        np.where(values.isin(_BM_SINGLE), "single", "unclassified"),
+        np.where(
+            values.isin(_BM_SINGLE),
+            "single",
+            np.where(values.isin(_BM_MISMATCH), "mismatch", "unclassified"),
+        ),
     )
     frame["demux_type"] = demux_type
     frame["demux_type_source"] = BM_SOURCE
     # `BM` is a classifier assertion rather than a score, so confidence is 1.0
     # where it made a call and 0.0 where it did not -- keeping the column shape
     # identical to the sequencing-summary route, which reports a real fraction.
+    # `mismatch` is a *known* state, not a missing one: both ends were read and
+    # they disagreed. Only `unclassified` means the tag told us nothing.
     frame["demux_type_confidence"] = np.where(demux_type == "unclassified", 0.0, 1.0)
 
     counts = pd.Series(demux_type).value_counts().to_dict()
     logger.info(
-        "Derived demux_type from %s: double=%d, single=%d, unclassified=%d",
+        "Derived demux_type from %s: double=%d, single=%d, mismatch=%d, unclassified=%d",
         bm_column,
         counts.get("double", 0),
         counts.get("single", 0),
+        counts.get("mismatch", 0),
         counts.get("unclassified", 0),
     )
     return int(len(frame))

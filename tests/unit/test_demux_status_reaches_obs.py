@@ -63,7 +63,9 @@ def test_bm_maps_to_demux_type():
         "double",
         "single",
         "single",
-        "unclassified",
+        # `F50`: both ends read and disagreed -- a positive observation, kept
+        # apart from "no usable barcode seen".
+        "mismatch",
         "unclassified",
     ]
 
@@ -83,10 +85,18 @@ def test_mapping_matches_the_dense_helper():
 
 
 def test_provenance_and_confidence_are_recorded():
-    frame = _frame(["both", "mismatch"])
+    """Confidence is in the *label*, not in the barcode it implies (`F50`).
+
+    `mismatch` scored 0.0 only because it used to be folded into
+    `unclassified`. As its own type it is a confident observation -- both ends
+    were read and they disagreed -- so only `unclassified`, where the tag told
+    us nothing, remains low-confidence. Neither yields a usable barcode, and
+    consumers select on `demux_type` rather than this field.
+    """
+    frame = _frame(["both", "mismatch", "unclassified"])
     derive_demux_type_from_bm(frame)
     assert set(frame["demux_type_source"]) == {"bm_tag"}
-    assert list(frame["demux_type_confidence"]) == [1.0, 0.0]
+    assert list(frame["demux_type_confidence"]) == [1.0, 1.0, 0.0]
 
 
 def test_a_frame_without_bm_is_left_alone():
@@ -128,7 +138,7 @@ def test_demux_status_survives_into_a_published_raw_store(tmp_path):
         obs = ad.read_h5ad(outputs["spine"]).obs
 
     assert "demux_type" in obs.columns, "demux_type must reach the published obs"
-    assert list(obs["demux_type"]) == ["double", "double", "single", "unclassified"]
+    assert list(obs["demux_type"]) == ["double", "double", "single", "mismatch"]
     assert set(obs["demux_type_source"]) == {"bm_tag"}
 
 
