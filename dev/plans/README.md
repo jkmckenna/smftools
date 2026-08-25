@@ -20,6 +20,9 @@ which is worth fixing as each is next touched.
 | `variant_preprocessing_incremental_reprocessing_audit.md` | incremental variant reprocessing | `completed/semantic_dag_variant_preprocessing_implementation_plan.md` |
 | `input_ingestion_alignment_audit.md` | input ingestion and alignment | `completed/input_ingestion_alignment_implementation_plan.md` |
 | `selective_pod5_rebasecalling_audit.md` | selective re-basecalling from pod5 | `in-progress/selective_pod5_rebasecalling_implementation_plan.md` |
+| `ml_infrastructure_audit.md` | ML infrastructure as of 2026-07-30 | `completed/ml_implementation_ledger.md` |
+| `ml_audit_second_opinion.md` | independent review of the ML infrastructure audit | `completed/ml_implementation_ledger.md` |
+| `ml_behavior_inventory.md` | `ML-001` inventory of ML behaviour and migration surface | `completed/ml_implementation_ledger.md` |
 
 ## `completed/`
 
@@ -32,6 +35,8 @@ Every tracked item merged to `main` and verified against the code.
 | `project_and_latent_partitioned_pipeline_implementation_plan.md` | `PL-15`–`PL-23` (PR #414) |
 | `semantic_dag_variant_preprocessing_implementation_plan.md` | `SDV-01`–`SDV-14` |
 | `input_ingestion_alignment_implementation_plan.md` | `IAR-01`–`IAR-15` (PRs #468–#488), `PCLI-01`–`PCLI-04` (PRs #489–#493); coverage in `tests/acceptance/*.json` |
+| `ml_implementation_ledger.md` | `ML-001`–`ML-503`, the ML migration; plan and development ledger fused in one document |
+| `ml700_benchmark_plan.md` | `ML-700` performance and scalability qualification |
 
 ## `in-progress/`
 
@@ -54,6 +59,15 @@ unpublished experiments land first.
 |---|---|
 | `generation_lifecycle_and_naming_implementation_plan.md` | `EGL` generation lifecycle (complete), `NKG` regeneration (active), `F20`–`F50` findings |
 
-That document is three programs fused into one and should be split — `EGL` into
+## Not tracked here
+
+Project-specific drivers -- code and plans tied to one lab dataset rather than
+to smftools -- belong in the analyses repository, not in the design records. The
+ML migration's per-project driver is an example: it is named for the dataset it
+migrates and describes that project's slice, not the library's design.
+
+---
+
+The generation-lifecycle document is three programs fused into one and should be split — `EGL` into
 `completed/`, `NKG` into `in-progress/`, the findings log staying here. It is
 twice the length of its nearest neighbour, which is the signal.
