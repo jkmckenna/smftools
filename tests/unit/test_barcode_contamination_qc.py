@@ -323,3 +323,74 @@ def test_unlabelled_frame_is_fine_when_no_spike_in_is_configured():
     kept = _drop_unclassified_except_spike_in(frame, SimpleNamespace(spike_in_references=[]))
 
     assert list(kept["barcode"]) == ["NB01"]
+
+
+# --- `F50`: a mismatch is evidence, and a thin denominator is not ------------
+
+
+def test_a_barcode_with_almost_no_library_is_not_a_finding():
+    """Enrichment divides by library share, so a tiny denominator explodes.
+
+    On a real run barcodes with 1 and 5 library reads scored 2,606x and 1,042x
+    and were flagged significant, ranking at the very top of the table. The
+    Poisson interval cannot catch it: it is computed on the spike-in count and
+    knows nothing about uncertainty in the denominator.
+    """
+    rows = []
+    rows += [_row("ctcf_mNanog_top", "NB01", "single")] * 4
+    rows += [_row("ctcf_mNanog_top", "NB02", "single")] * 60
+    rows += [_row("6B6_top", "NB01", "double")] * 1  # essentially no library
+    rows += [_row("6B6_top", "NB02", "double")] * 20000
+
+    frame = contamination_by_barcode(_obs(rows), spike_in_references=SPIKE)
+
+    assert frame.loc["NB01", "enrichment"] > frame.loc["NB02", "enrichment"]
+    assert not frame.loc["NB01", "significant"], "a 1-read library cannot support a finding"
+    assert not frame.loc["NB01", "library_reads_sufficient"]
+    assert frame.loc["NB02", "library_reads_sufficient"]
+
+
+def test_thin_barcodes_are_reported_rather_than_hidden():
+    """Excluded from the ranking, still visible: they may be worth explaining."""
+    rows = []
+    rows += [_row("ctcf_mNanog_top", "NB01", "single")] * 4
+    rows += [_row("6B6_top", "NB01", "double")] * 1
+    rows += [_row("6B6_top", "NB02", "double")] * 20000
+
+    _per_barcode, summary = barcode_contamination_report(_obs(rows), spike_in_references=SPIKE)
+
+    below = {entry["barcode"] for entry in summary["barcodes_below_library_floor"]}
+    assert "NB01" in below
+    assert summary["min_library_reads_for_enrichment"] == 1000
+
+
+def test_mismatch_is_its_own_demux_type_not_unclassified():
+    """Both ends read and disagreeing is a positive observation of mis-ligation.
+
+    Folding it into `unclassified` hid 991 of 2,449 spike-in reads -- 40% of an
+    amplicon that carries no barcode of its own.
+    """
+    import pandas as pd
+
+    from smftools.informatics.demux_agreement import derive_demux_type_from_bm
+
+    frame = pd.DataFrame({"BM": ["both", "read_start_only", "mismatch", "unclassified"]})
+    derive_demux_type_from_bm(frame)
+
+    assert list(frame["demux_type"]) == ["double", "single", "mismatch", "unclassified"]
+    # `mismatch` is a known state; only `unclassified` means the tag said nothing.
+    assert list(frame["demux_type_confidence"]) == [1.0, 1.0, 1.0, 0.0]
+
+
+def test_both_demux_paths_agree_on_mismatch():
+    """The ragged and dense helpers must not drift; the docstrings promise it."""
+    import inspect
+
+    from smftools.informatics import h5ad_functions
+    from smftools.informatics.demux_agreement import derive_demux_type_from_bm
+
+    for source in (
+        inspect.getsource(derive_demux_type_from_bm),
+        inspect.getsource(h5ad_functions.add_demux_type_from_bm_tag),
+    ):
+        assert '"mismatch"' in source

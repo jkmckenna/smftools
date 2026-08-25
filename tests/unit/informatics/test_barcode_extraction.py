@@ -300,11 +300,16 @@ class TestAddDemuxTypeFromBmTag:
         add_demux_type_from_bm_tag(adata)
         assert all(adata.obs["demux_type"] == "single")
 
-    def test_mismatch_becomes_unclassified(self):
-        """Test that BM='mismatch' maps to demux_type='unclassified'."""
+    def test_mismatch_is_its_own_type(self):
+        """BM='mismatch' is a positive observation, not a missing one (`F50`).
+
+        Both ends were read and named different barcodes. Folding that into
+        `unclassified` hid 40% of an unbarcoded spike-in amplicon -- the most
+        direct evidence of cross-ligation a run contains.
+        """
         adata = self._make_adata(["mismatch", "mismatch"])
         add_demux_type_from_bm_tag(adata)
-        assert all(adata.obs["demux_type"] == "unclassified")
+        assert all(adata.obs["demux_type"] == "mismatch")
 
     def test_unclassified_stays_unclassified(self):
         """Test that BM='unclassified' maps to demux_type='unclassified'."""
@@ -318,7 +323,7 @@ class TestAddDemuxTypeFromBmTag:
             ["both", "read_start_only", "read_end_only", "mismatch", "unclassified"]
         )
         add_demux_type_from_bm_tag(adata)
-        expected = ["double", "single", "single", "unclassified", "unclassified"]
+        expected = ["double", "single", "single", "mismatch", "unclassified"]
         assert list(adata.obs["demux_type"]) == expected
 
     def test_case_insensitive(self):
