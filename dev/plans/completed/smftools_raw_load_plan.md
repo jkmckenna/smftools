@@ -1,5 +1,12 @@
 # smftools output re-architecture: thin molecule-index AnnData over distributed storage
 
+> **Implemented.** The v2.0.0 `raw`/`load` split this plan describes is the
+> architecture in use: a thin spine (`spine.h5ad`, `is_spine`) over a partitioned
+> ragged parquet store (`RAW_SUBDIR`, `ragged_store`, `molecule_index`), with
+> `smftools experiment raw` and `experiment load` as separate commands and
+> densification an optional cache. The repository is now on 2.20.x, well past the
+> v2.0.0 this plan targets.
+
 > Working plan doc (mirrors the approved planning-session plan). Tracks the multi-branch
 > re-architecture of smftools storage/CLI. Branches 1.0.0 and 1.1.0 are built; the
 > **current active work is v2.0.0 — the `raw`/`load` split** (section below).

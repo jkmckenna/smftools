@@ -42,6 +42,7 @@ Every tracked item merged to `main` and verified against the code.
 | `input_ingestion_alignment_implementation_plan.md` | `IAR-01`–`IAR-15` (PRs #468–#488), `PCLI-01`–`PCLI-04` (PRs #489–#493); coverage in `tests/acceptance/*.json` |
 | `ml_implementation_ledger.md` | `ML-001`–`ML-503`, the ML migration; plan and development ledger fused in one document |
 | `ml700_benchmark_plan.md` | `ML-700` performance and scalability qualification |
+| `smftools_raw_load_plan.md` | the v2.0.0 `raw`/`load` split; thin spine over a partitioned ragged store |
 
 ## `in-progress/`
 
@@ -52,7 +53,6 @@ An active branch, some items merged and others open.
 | `selective_pod5_rebasecalling_implementation_plan.md` | `SRB` |
 | `experiment_storage_schema.md` | formal parquet/zarr storage schema; phases 1-2 implemented |
 | `project_sample_and_set_stores.md` | project-level per-sample and set stores; set store v2 implemented |
-| `smftools_raw_load_plan.md` | thin molecule-index AnnData over distributed storage |
 | `generation_lifecycle_and_naming_implementation_plan.md` | `EGL` generation lifecycle and experiment naming; the NKG rollout and the findings log are split out into `logs/` |
 
 ## `proposed/`
