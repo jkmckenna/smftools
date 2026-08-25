@@ -59,7 +59,7 @@ def iter_stage_slices(
     made a single 43,735-read reference's materialize() call take 107.6s
     (of which only 300-per-barcode were ever used), with far larger
     references in the same experiment taking proportionally longer -- see
-    dev/pipeline_scaling_audit.md. ``None`` (default) keeps every read,
+    dev/plans/audits/pipeline_scaling_audit.md. ``None`` (default) keeps every read,
     matching the previous unbounded behavior for callers that need it (this
     function currently has no other caller, but is a shared partition-aware
     utility).

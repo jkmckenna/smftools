@@ -132,7 +132,7 @@ def test_ragged_parquet_round_trip_narrows_modification_signal_to_float32(tmp_pa
     # stored/read as int64/float64 (pandas' default for plain Python
     # lists), ~8x wider than the int8/float32 the values actually need
     # (small integer codes, Phred scores, probabilities) -- see
-    # dev/pipeline_scaling_audit.md.
+    # dev/plans/audits/pipeline_scaling_audit.md.
     path = write_ragged_parquet(_ragged_frame(), tmp_path / "reads.parquet")
     result = read_ragged_parquet(path)
     np.testing.assert_array_equal(result.at[0, MODIFICATION_SIGNAL], [float(v) for v in range(9)])

@@ -43,7 +43,7 @@ def project_add(
     path discovers every stage automatically.
 
     Also backfills the project's per-sample store (see
-    ``smftools.project.sample_store`` and ``dev/project_sample_and_set_stores.md``)
+    ``smftools.project.sample_store`` and ``dev/plans/in-progress/project_sample_and_set_stores.md``)
     from this experiment's most-derived available stage: modern (partitioned-store)
     experiments get a pointer catalog only, legacy experiments get their molecules
     cached once (their only read path is a full eager load, so repeating it on every

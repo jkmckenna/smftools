@@ -853,7 +853,7 @@ def start_worker_watchdog(
     handful of MB, even though the pool's *aggregate* usage may still be safe.
     Confirmed on real batch data: 8 of 11 experiments were aborted this way in
     a single run, each killed worker only 0-4% over budget (see
-    dev/pipeline_scaling_audit.md). `tolerance_fraction` absorbs that
+    dev/plans/audits/pipeline_scaling_audit.md). `tolerance_fraction` absorbs that
     variance, and `grace_polls` absorbs single-sample spikes (a worker must be
     over budget on `grace_polls` *consecutive* polls, not just once) --
     together these still catch genuine runaway growth (which keeps climbing
@@ -1093,7 +1093,7 @@ def run_tasks_parallel(
     underestimates a task type's real footprint (not just watchdog noise --
     ``resolve_max_workers`` then packs more concurrent workers than the
     machine can actually hold): confirmed on real data, this aborted 8 of 11
-    batch experiments in a single run (see dev/pipeline_scaling_audit.md).
+    batch experiments in a single run (see dev/plans/audits/pipeline_scaling_audit.md).
     Tasks that hadn't produced a result yet when the pool broke are now
     retried in a fresh pool sized to half as many workers (floor 1), halving
     again on each repeated break, down to a final sequential (single-worker)
@@ -1403,7 +1403,7 @@ def _worker_decision_inputs(cfg, n_items: int, *, per_item_memory_mb: float | No
     Surfacing *why* a worker count was chosen (threads vs. item count vs. the
     aggregate-budget / per-task-estimate cap) is what makes the perf log
     actionable when the estimate is wrong -- the exact failure mode behind the
-    batch OOM (see dev/pipeline_scaling_audit.md).
+    batch OOM (see dev/plans/audits/pipeline_scaling_audit.md).
     """
     envelope = resource_envelope_for_config(cfg)
     threads = envelope.resolved_threads

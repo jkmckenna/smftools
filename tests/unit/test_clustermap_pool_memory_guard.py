@@ -1,7 +1,7 @@
 """Verify the clustermap plotting pools (spatial + HMM) wire up the
 per-worker memory watchdog when given a cfg, and stay unguarded (previous
 behavior) when cfg is omitted -- these pools previously bypassed the
-memory-guard machinery entirely (dev/pipeline_scaling_audit.md, finding E).
+memory-guard machinery entirely (dev/plans/audits/pipeline_scaling_audit.md, finding E).
 """
 
 from __future__ import annotations

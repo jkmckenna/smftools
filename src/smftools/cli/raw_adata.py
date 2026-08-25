@@ -333,7 +333,7 @@ def _resolve_direct_call(code_bytes: dict[str, int]) -> tuple[str, float]:
     against a real modkit-extract TSV on real direct-modality data: this
     reproduces modkit's ``call_code``/``call_prob`` columns exactly (0
     mismatches across every explicitly-called position in a sampled read) --
-    see dev/pipeline_scaling_audit.md's Track B notes.
+    see dev/plans/audits/pipeline_scaling_audit.md's Track B notes.
     """
     canonical_prob = 1.0 - sum(value / 255.0 for value in code_bytes.values())
     best_code, best_prob = "-", canonical_prob
@@ -367,7 +367,7 @@ def _attach_direct_signals_from_bam(
     signals``'s approach) -- avoids the external ``modkit extract`` subprocess
     and its whole-file TSV entirely, and needs only the same aligned BAM
     already open for read extraction, so it's streaming-compatible (see
-    dev/pipeline_scaling_audit.md's Track B notes). Selected via
+    dev/plans/audits/pipeline_scaling_audit.md's Track B notes). Selected via
     ``cfg.direct_signal_backend == "pysam"`` -- not the default for now (see
     that field's docstring in ``experiment_config.py``): its decode produces
     a lower downstream QC-pass rate than modkit's own output on real data,
@@ -732,7 +732,7 @@ class _ChromosomeGroupAccumulator:
     chromosome's data can be flushed at once -- holding one entire
     chromosome's ragged data in memory before writing anything doesn't scale
     with experiment size (a single deaminase chromosome with 700k+ reads put
-    ~87GB in the parent process; see dev/pipeline_scaling_audit.md). So this
+    ~87GB in the parent process; see dev/plans/audits/pipeline_scaling_audit.md). So this
     accumulator supports two independent operations: ``add_partial`` feeds
     newly-available frames for a record (call it any number of times, e.g.
     once per completed bucket) and returns a bounded-size flush the moment
@@ -833,7 +833,7 @@ def _map_references_parallel(
     parquet writes), completed-but-unretrieved results piled up in the
     executor's internal queue without bound -- this is what actually caused
     a ~90GB parent-process blowup on real data even after bounding the
-    downstream chromosome accumulator (see dev/pipeline_scaling_audit.md);
+    downstream chromosome accumulator (see dev/plans/audits/pipeline_scaling_audit.md);
     that fix only bounded what happens *after* retrieval, not how far ahead
     of the consumer the pool was allowed to compute. This backpressure
     caps peak parent-side memory at O(max_workers * per_bucket_result_size)
@@ -1165,7 +1165,7 @@ def _n_buckets_for_reference(
       and so per-worker memory -- scaling linearly with reference read
       count: fine for a small experiment, but a large one could put tens of
       thousands of reads in a single bucket and exceed the per-worker
-      memory budget entirely (see dev/pipeline_scaling_audit.md). Bucket
+      memory budget entirely (see dev/plans/audits/pipeline_scaling_audit.md). Bucket
       count must grow with ``n_reads`` past ``max_workers`` once
       ``n_reads / max_workers`` would exceed ``max_reads_per_bucket``, so
       bucket size -- and therefore memory -- stays experiment-size-independent.
@@ -1617,7 +1617,7 @@ def _build_ragged_records_streaming_direct(
     parallelism (``_split_modkit_tsv_by_bucket``), bounding both per-worker
     memory and giving the modkit backend the same real multi-core
     parallelism the pysam backend already has, instead of one process
-    joining the whole file serially (see dev/pipeline_scaling_audit.md's
+    joining the whole file serially (see dev/plans/audits/pipeline_scaling_audit.md's
     Track B notes for why the old whole-frame-only path existed).
     """
     from ..informatics.bam_functions import extract_read_features_from_bam
@@ -1803,7 +1803,7 @@ def build_ragged_records_streaming(
     items (each capped around ``cfg.raw_shard_flush_max_reads``) instead of
     accumulating that reference's whole ragged frame in memory first, which
     otherwise scales with experiment size rather than staying bounded (see
-    dev/pipeline_scaling_audit.md). ``write_raw_store_streaming`` is the
+    dev/plans/audits/pipeline_scaling_audit.md). ``write_raw_store_streaming`` is the
     intended consumer of this exact shape.
     """
     modality = str(cfg.smf_modality)

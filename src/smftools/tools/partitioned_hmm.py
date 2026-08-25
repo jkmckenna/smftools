@@ -702,7 +702,7 @@ def _plot_hmm_parameters_across_barcodes(records, models_dir: Path, cfg, layout)
     ``"global"`` fit -- if parameters converge to similar values across
     barcodes, that's direct evidence a global fit would work just as well, at
     a fraction of the per-task fitting cost (each per-sample fit is a fresh,
-    uncached EM run -- see dev/pipeline_scaling_audit.md's HMM cost
+    uncached EM run -- see dev/plans/audits/pipeline_scaling_audit.md's HMM cost
     discussion). No-op when ``hmm_fit_scope="global"``: every barcode already
     shares the exact same fitted model in that case, so there's nothing to
     compare.
@@ -879,7 +879,7 @@ def _plot_hmm_fit_history(models_dir: Path, layout) -> None:
     straight from the saved ``.pt`` files (no model reconstruction needed) so
     convergence can be inspected without refitting -- diagnostic for whether
     ``hmm_max_iter`` (default 50) is set higher than real data needs (see
-    dev/pipeline_scaling_audit.md's HMM cost discussion).
+    dev/plans/audits/pipeline_scaling_audit.md's HMM cost discussion).
     """
     import matplotlib.pyplot as plt
     import torch

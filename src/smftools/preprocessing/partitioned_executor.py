@@ -39,7 +39,7 @@ PREPROCESS_OBS_SIDECAR = "obs.parquet"
 # Distinct from PREPROCESS_OBS_SIDECAR above: that file is a denormalized, internal
 # working artifact (full obs copy, mutated across QC/dedup steps). This is the
 # normalized "newly-produced columns only" artifact from
-# dev/experiment_storage_schema.md (Phase 3), read via informatics.stage_obs.
+# dev/plans/in-progress/experiment_storage_schema.md (Phase 3), read via informatics.stage_obs.
 PREPROCESS_STAGE_OBS = "stage_obs.parquet"
 YOUDEN_FIT_SUBDIR = "02B_Position_wide_Youden_threshold_performance"
 
@@ -347,7 +347,7 @@ def execute_preprocess_task(
 
     Layers are streamed to disk (``incremental_zarr.append_zarr_layer``) as
     soon as each is computed, then freed, instead of being collected in memory
-    and written together at the end -- see dev/pipeline_scaling_audit.md and
+    and written together at the end -- see dev/plans/audits/pipeline_scaling_audit.md and
     the plan that implemented this. Ordering is modality-aware: for ``direct``,
     the binarized layer is both a reportable derived layer *and* ``clean_NaN``'s
     read source, so it can't be written+freed until after ``clean_NaN`` returns.
@@ -676,7 +676,7 @@ def reduce_read_modification_stats(
         # O(n_reads * n_var_rows) blowup (~233 billion comparisons on real
         # 260420 data) that took 30+ minutes on one thread, when only
         # O(n_unique_references) (~10) lookups are actually needed. See
-        # dev/pipeline_scaling_audit.md.
+        # dev/plans/audits/pipeline_scaling_audit.md.
         totals_by_reference: dict[str, int] = {}
         for reference in reduced["reference"].unique():
             column = f"{reference}_{site_type}"

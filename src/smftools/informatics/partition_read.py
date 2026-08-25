@@ -312,7 +312,7 @@ def _load_ragged_selection(
     (``materialize_ragged_streaming``) rather than reading every selected read's
     ragged arrays into one pandas frame first: those int64/float64 list-columns
     are ~25-50x their dense footprint, so the whole-frame read drove a nominally-
-    0.5GB preprocess task to a 16-44GB peak (see dev/pipeline_scaling_audit.md).
+    0.5GB preprocess task to a 16-44GB peak (see dev/plans/audits/pipeline_scaling_audit.md).
     Peak is now ~one shard's frame + the dense output.
     """
     from .ragged_store import (
