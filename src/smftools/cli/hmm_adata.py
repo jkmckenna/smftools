@@ -642,7 +642,7 @@ class HMMTrainer:
 
         max_iter = int(getattr(self.cfg, "hmm_max_iter", 50))
         # Relative tolerance (see BaseHMM.fit's docstring) -- 1e-5 was chosen
-        # from real-data convergence probing (dev/pipeline_scaling_audit.md):
+        # from real-data convergence probing (dev/plans/audits/pipeline_scaling_audit.md):
         # it matches the iteration where >99.99% of the achievable
         # log-likelihood improvement has already landed on representative
         # real fits (~29 iterations, vs. hmm_max_iter's default cap of 50).

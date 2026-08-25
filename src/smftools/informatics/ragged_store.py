@@ -208,7 +208,7 @@ def _as_list(value: object) -> list:
 # narrower here is lossless relative to that existing precision, just earlier.
 # This -- not chunking alone -- is what was driving materialize()'s ~27x
 # memory balloon (int64/float64 Python-object list-columns are ~25-50x their
-# dense footprint); see dev/pipeline_scaling_audit.md.
+# dense footprint); see dev/plans/audits/pipeline_scaling_audit.md.
 _RAGGED_INT8_COLUMNS = frozenset({SEQUENCE, MISMATCH, QUALITY})
 _RAGGED_FLOAT32_COLUMNS = frozenset({MODIFICATION_SIGNAL, *SIGNAL_FEATURE_COLUMNS})
 
@@ -301,7 +301,7 @@ def read_ragged_parquet(
     reading the whole shard into pandas and filtering afterward -- only the
     selected rows' ragged arrays are ever materialized, which is most of the
     remaining memory floor after streaming materialization (see
-    dev/pipeline_scaling_audit.md, and ``_narrow_ragged_values`` above for the
+    dev/plans/audits/pipeline_scaling_audit.md, and ``_narrow_ragged_values`` above for the
     other half).
     """
     path_list = [paths] if isinstance(paths, (str, Path)) else list(paths)
@@ -841,7 +841,7 @@ def materialize_ragged_streaming(
     whole selection's ragged arrays into one pandas frame before compacting to
     dense (int64/float64 list-columns are ~25-50x their dense footprint) drove
     a nominally-0.5GB preprocess task to 16-44GB peak (see
-    dev/pipeline_scaling_audit.md). Reads in a chunk that are not in ``obs`` are
+    dev/plans/audits/pipeline_scaling_audit.md). Reads in a chunk that are not in ``obs`` are
     ignored (a shard holds many barcodes' reads); a chunk with no matching reads
     contributes nothing.
     """

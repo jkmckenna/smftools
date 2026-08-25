@@ -1,7 +1,7 @@
 """Consolidated ``experiment_spine.h5ad``: a generated, superset spine per experiment.
 
 Coexists with (does not replace) every stage's own ``spine.h5ad`` -- see
-``dev/experiment_storage_schema.md``'s Phase 3 status for why: ~15 existing call
+``dev/plans/in-progress/experiment_storage_schema.md``'s Phase 3 status for why: ~15 existing call
 sites (``project/registry.py``, ``sample_store.py``, explicit ``--stage`` pinning,
 ...) rely on resolving one *specific* stage's self-contained spine, and that stays
 exactly as it is. This file is an additional, opt-in-preferred artifact for the

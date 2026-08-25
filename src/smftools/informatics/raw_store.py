@@ -488,7 +488,7 @@ def _write_raw_shards_streaming(
     size streaming producer (e.g. ``cli/raw_adata.py``'s
     ``_ChromosomeGroupAccumulator``, flushing a chromosome's data in pieces
     to keep the parent process's memory experiment-size-independent, see
-    dev/pipeline_scaling_audit.md) can't guarantee one reference arrives as a
+    dev/plans/audits/pipeline_scaling_audit.md) can't guarantee one reference arrives as a
     single group the way a whole-frame ``groupby`` naturally does. Per-
     ``(reference_strand, start_bin)`` shard-index numbering is tracked
     persistently across items rather than restarted per item, so repeated
@@ -826,7 +826,7 @@ def write_raw_store(
         # via spine.copy(), so it needs the same stage-independent anchor as the
         # uns cross-stage pointers. See _run_root_from_spine_path / relative_uns_path.
         obs["bam_path"] = relative_uns_path(bam_path, output_dir.parent)
-    # Formal obs.parquet analog (dev/experiment_storage_schema.md, Phase 3, partial):
+    # Formal obs.parquet analog (dev/plans/in-progress/experiment_storage_schema.md, Phase 3, partial):
     # raw has no earlier stage to normalize against, so this is the full obs, written
     # alongside (not instead of) spine.h5ad -- purely additive, no consumer changes.
     obs_path = write_stage_obs(output_dir, obs)
@@ -940,7 +940,7 @@ def write_raw_store_streaming(
     attach one reference's rows as a single group, but for a high-read-depth
     one it flushes that reference's data across several bounded-size groups
     instead of accumulating the whole thing first (see
-    dev/pipeline_scaling_audit.md).
+    dev/plans/audits/pipeline_scaling_audit.md).
 
     Every other artifact this writes (catalog, molecules, barcode index,
     spine obs/uns, manifest) is identical in shape to ``write_raw_store``'s --

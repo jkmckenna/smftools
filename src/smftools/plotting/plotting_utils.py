@@ -191,7 +191,7 @@ def subsample_read_ids(read_ids: Sequence[str], max_reads: int | None, *, seed: 
     materializes a whole reference's/region's reads (every barcode combined)
     just to subsample per-(reference, sample) group afterward defeats the
     point: capping each group's read IDs up front bounds the materialize
-    itself instead of only the final plot (see dev/pipeline_scaling_audit.md,
+    itself instead of only the final plot (see dev/plans/audits/pipeline_scaling_audit.md,
     finding E). Same reproducible, order-preserving semantics as
     ``subsample_reads_for_plot``; call once per group (e.g. per barcode) so
     each group is independently capped rather than the combined pool.

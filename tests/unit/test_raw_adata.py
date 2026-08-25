@@ -372,7 +372,7 @@ def test_chromosome_group_accumulator_flushes_early_past_threshold():
     # batch before the record completes -- not wait and hand the whole
     # chromosome to the writer in one piece (a real 700k-read chromosome put
     # ~87GB in the parent process before this fix; see
-    # dev/pipeline_scaling_audit.md).
+    # dev/plans/audits/pipeline_scaling_audit.md).
     record_chromosome = {"chr1": "chr1"}
     accumulator = _ChromosomeGroupAccumulator(record_chromosome, flush_threshold=3)
 
@@ -607,7 +607,7 @@ def test_map_references_parallel_bounds_in_flight_submissions(monkeypatch):
     # from consumption -- with fast workers producing large per-bucket
     # results and a single-threaded consumer draining them, completed
     # results piled up in the executor's queue unbounded by max_workers (see
-    # dev/pipeline_scaling_audit.md). Confirms at most max_workers items are
+    # dev/plans/audits/pipeline_scaling_audit.md). Confirms at most max_workers items are
     # ever submitted before the first result is retrieved from the
     # generator, regardless of total item count.
     import concurrent.futures as cf
@@ -714,7 +714,7 @@ def test_n_buckets_for_reference_scales_past_max_workers_for_memory_safety():
     # matter how large n_reads was, so bucket (and per-worker memory) size
     # scaled linearly with reference read count -- fine for a small
     # experiment, but large experiments blew past the per-worker memory
-    # budget entirely (see dev/pipeline_scaling_audit.md). Bucket count must
+    # budget entirely (see dev/plans/audits/pipeline_scaling_audit.md). Bucket count must
     # now grow past max_workers once n_reads/max_workers would exceed
     # max_reads_per_bucket, keeping bucket size experiment-size-independent.
     n_buckets = _n_buckets_for_reference(

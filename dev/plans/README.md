@@ -45,10 +45,17 @@ An active branch, some items merged and others open.
 | document | scope |
 |---|---|
 | `selective_pod5_rebasecalling_implementation_plan.md` | `SRB` |
+| `experiment_storage_schema.md` | formal parquet/zarr storage schema; phases 1-2 implemented |
+| `project_sample_and_set_stores.md` | project-level per-sample and set stores; set store v2 implemented |
+| `smftools_raw_load_plan.md` | thin molecule-index AnnData over distributed storage |
 
 ## `proposed/`
 
-A plan with no implementation branch yet. Currently empty.
+A plan with no implementation branch yet.
+
+| document | scope |
+|---|---|
+| `agent_files_plan.md` | restructuring the repo's `AGENTS.md`/`CLAUDE.md` files; explicitly not deployed |
 
 ## `logs/` — not tracked
 

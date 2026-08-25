@@ -13,7 +13,7 @@ served by -- a stale one.
 
 ``join_periodicity`` is the read side: it attaches an already-computed analysis
 (never computes one itself) onto a materialized selection by molecule UID, the mechanism
-``dev/project_sample_and_set_stores.md`` calls the set store's per-sample catalog
+``dev/plans/in-progress/project_sample_and_set_stores.md`` calls the set store's per-sample catalog
 join. It's a separate, explicit step after pooling a set (e.g. via
 ``catalog.project_adata`` or streaming ``set_store.iter_set_parts``) rather than
 automatic inside it, since which analysis/definition is relevant is caller knowledge

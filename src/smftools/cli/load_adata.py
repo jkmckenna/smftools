@@ -1632,7 +1632,7 @@ def load_adata_core(
                 # purely to harvest a reliable read->barcode sidecar from -- the
                 # split BAMs themselves are discarded, honoring skip_bam_split's
                 # promise that the aligned BAM stays the one artifact used
-                # downstream. See dev/pipeline_scaling_audit.md.
+                # downstream. See dev/plans/audits/pipeline_scaling_audit.md.
                 logger.info(
                     "skip_bam_split=True with dorado backend: bi tag not found on aligned BAM. "
                     "Running dorado demux classification into a temporary directory to build "
@@ -2163,7 +2163,7 @@ def load_adata_core(
         # docstring: "the raw spine obs or ragged frame").
         n_molecules = safe_read_h5ad(raw_paths["spine"], verbose=False)[0].n_obs
 
-        # Consolidated provenance manifest (dev/experiment_storage_schema.md, Phase 2):
+        # Consolidated provenance manifest (dev/plans/in-progress/experiment_storage_schema.md, Phase 2):
         # config-by-value, input/FASTA paths, and a readable stage-completion index --
         # none of which spine.uns previously captured (only a hash, not the values, and
         # nothing for input_data_path at all).
