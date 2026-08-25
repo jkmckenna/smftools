@@ -1,5 +1,10 @@
 # smftools CLI Audit — `load` and `preprocess`
 
+> **Superseded** by `pipeline_scaling_audit.md`, which states that this document
+> describes the pre-partitioned, monolithic `.h5ad.gz` architecture — a materially
+> different system that no longer exists, not an earlier version of the current one.
+> Kept for its reasoning, not as a description of the code.
+
 Scope: the `smftools load` and `smftools preprocess` stages of the CLI workflow,
 their data structures, efficiency, and readiness to scale to millions of reads
 across variable CPU/RAM/GPU hardware. Written against branch `0.4.5-layer-audit`.

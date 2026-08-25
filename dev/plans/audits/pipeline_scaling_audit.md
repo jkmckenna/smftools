@@ -1,5 +1,9 @@
 # Audit: I/O, memory, and parallelism scaling in `smftools experiment full`
 
+> **Repository state reviewed:** `107c668` — resolved from the `v2.1.0` version this document names.
+> **538 commits on `main` since.** An audit describes the code at a moment; it
+> goes stale rather than completing. Re-verify any specific claim before relying on it.
+
 Scope: the current (v2.1.0, branch `2.1.0-project-catalog`) partitioned-store
 pipeline -- `raw → preprocess → spatial → hmm`. Supersedes `load_preprocess_
 audit.md`, which describes the pre-partitioned, monolithic-`.h5ad.gz` architecture

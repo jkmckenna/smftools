@@ -18,8 +18,17 @@ settled when what finished was the plan it motivated -- so audits live in their
 own directory and carry a staleness marker instead of a status:
 
 ```markdown
-**Audited against `a5dc558`** (2026-08-20).
+> **Repository state reviewed:** `<sha>` — recorded in this document.
+> **N commits on `main` since.** An audit describes the code at a moment; it
+> goes stale rather than completing. Re-verify any specific claim before relying on it.
 ```
+
+Record the sha **while writing**, not afterwards. Four of the ten existing
+audits had to have it inferred from a date, and two had no anchor at all -- one
+of which turned out to describe an architecture that no longer exists, a fact
+recorded only in its successor. Say how the anchor was obtained (`recorded`,
+`resolved from tag`, `inferred from the stated date`) so a reader knows how much
+to trust it, and never invent one.
 
 A plan moves between `proposed/`, `in-progress/` and `completed/` as its status
 changes. `logs/` is gitignored because it is where raw measurements from

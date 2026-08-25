@@ -1,5 +1,9 @@
 # Project and latent compatibility audit for the partitioned pipeline
 
+> **Repository state reviewed:** `baccc3e` — recorded in this document.
+> **401 commits on `main` since.** An audit describes the code at a moment; it
+> goes stale rather than completing. Re-verify any specific claim before relying on it.
+
 **Audit date:** 2026-07-22  
 **Repository state reviewed:** `baccc3e` (`origin/main`, detached worktree)  
 **Scope:** project registry/catalog/materialization/export/analysis stores and

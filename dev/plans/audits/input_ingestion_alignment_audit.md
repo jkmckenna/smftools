@@ -1,5 +1,11 @@
 # Experiment input, alignment, and round-trip audit
 
+> **Repository state reviewed:** not recorded, and not recoverable — this document
+> carries neither a commit nor a date. Its companion plan
+> (`completed/input_ingestion_alignment_implementation_plan.md`) landed as PRs
+> #468–#493, so the audit predates those. Treat every claim as needing
+> re-verification.
+
 ## Status and scope
 
 This repository-local audit records the planning-time behavior and identified gaps at the boundary
