@@ -53,6 +53,7 @@ An active branch, some items merged and others open.
 | `experiment_storage_schema.md` | formal parquet/zarr storage schema; phases 1-2 implemented |
 | `project_sample_and_set_stores.md` | project-level per-sample and set stores; set store v2 implemented |
 | `smftools_raw_load_plan.md` | thin molecule-index AnnData over distributed storage |
+| `generation_lifecycle_and_naming_implementation_plan.md` | `EGL` generation lifecycle and experiment naming; the NKG rollout and the findings log are split out into `logs/` |
 
 ## `proposed/`
 
@@ -69,7 +70,8 @@ unpublished experiments land first.
 
 | document | scope |
 |---|---|
-| `generation_lifecycle_and_naming_implementation_plan.md` | `EGL` generation lifecycle (complete), `NKG` regeneration (active), `F20`–`F50` findings |
+| `pipeline_findings.md` | `F17`–`F50`, findings from running the pipeline; append-only |
+| `nkg_regeneration_rollout.md` | `NKG-01`–`NKG-06`; a naming scheme over twenty named experiments, so the identifiers are the content |
 
 ## Not tracked here
 
@@ -77,9 +79,3 @@ Project-specific drivers -- code and plans tied to one lab dataset rather than
 to smftools -- belong in the analyses repository, not in the design records. The
 ML migration's per-project driver is an example: it is named for the dataset it
 migrates and describes that project's slice, not the library's design.
-
----
-
-The generation-lifecycle document is three programs fused into one and should be split — `EGL` into
-`completed/`, `NKG` into `in-progress/`, the findings log staying here. It is
-twice the length of its nearest neighbour, which is the signal.
