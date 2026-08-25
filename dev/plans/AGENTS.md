@@ -31,7 +31,22 @@ recorded only in its successor. Say how the anchor was obtained (`recorded`,
 to trust it, and never invent one.
 
 A plan moves between `proposed/`, `in-progress/` and `completed/` as its status
-changes. `logs/` is gitignored because it is where raw measurements from
+changes. Plans have **two** terminal states, and only one of them is
+`completed/`:
+
+- `completed/` — the work described landed.
+- `superseded/` — the work did not land; a different approach replaced it.
+
+Filing a superseded plan under `completed/` claims something false, so create
+`superseded/` when the first one appears — not before. Give it a banner naming
+what replaced it, the way a stale audit does. There is no such plan today: the
+one document that looked superseded by its title turned out to be fully
+implemented, which is the argument for checking the code rather than the
+title.
+
+Audits do not use `superseded/`. Supersession is simply maximal staleness, and
+the staleness block already says so; splitting audits by degree of staleness
+would scatter them for no gain. `logs/` is gitignored because it is where raw measurements from
 unpublished experiments land first.
 
 The usual unit is a **pair**: `audits/<program>_audit.md` investigates, and
