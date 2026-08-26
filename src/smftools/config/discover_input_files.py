@@ -5,6 +5,79 @@ from typing import Any, Dict, List, Union
 
 from smftools.constants import BAM_SUFFIX
 
+POD5_EXTS = {".pod5", ".p5"}
+FAST5_EXTS = {".fast5", ".f5"}
+FASTQ_EXTS = {
+    ".fastq",
+    ".fq",
+    ".fastq.gz",
+    ".fq.gz",
+    ".fastq.bz2",
+    ".fq.bz2",
+    ".fastq.xz",
+    ".fq.xz",
+    ".fastq.zst",
+    ".fq.zst",
+}
+H5AD_EXTS = {".h5ad", ".h5"}
+COMPRESSED_EXTS = {".gz", ".bz2", ".xz", ".zst"}
+
+
+def extension_key(path: Path) -> str:
+    """Return a robust extension key, folding one compressor suffix into the one before it.
+
+    Examples:
+        ``a.fastq.gz`` -> ``.fastq.gz``; ``a.fq.xz`` -> ``.fq.xz``; ``a.bam`` -> ``.bam``;
+        ``a`` -> ``""``.
+
+    Args:
+        path: The file path to key.
+
+    Returns:
+        str: The lowercased extension key.
+    """
+    suff = [s.lower() for s in Path(path).suffixes]
+    if not suff:
+        return ""
+    if suff[-1] in COMPRESSED_EXTS and len(suff) >= 2:
+        return suff[-2] + suff[-1]
+    return suff[-1]
+
+
+def input_kind_for_path(path: Path, *, bam_suffix: str = BAM_SUFFIX) -> str:
+    """Classify one input file by extension.
+
+    Shared by directory discovery and by offline identity restoration, which has
+    only recorded paths to work from. Keeping one implementation is what stops the
+    two from disagreeing and silently moving a stage's config hash (`PSR-01`).
+
+    Args:
+        path: The file to classify.
+        bam_suffix: The configured BAM suffix.
+
+    Returns:
+        str: One of ``pod5``, ``fast5``, ``fastq``, ``h5ad``, ``bam``, ``sam``,
+        ``cram``, or ``other``.
+    """
+    if not bam_suffix.startswith("."):
+        bam_suffix = "." + bam_suffix
+    key = extension_key(path)
+    if key in POD5_EXTS:
+        return "pod5"
+    if key in FAST5_EXTS:
+        return "fast5"
+    if key in FASTQ_EXTS:
+        return "fastq"
+    if key in H5AD_EXTS:
+        return "h5ad"
+    if key == bam_suffix.lower():
+        return "bam"
+    if key == ".sam":
+        return "sam"
+    if key == ".cram":
+        return "cram"
+    return "other"
+
 
 def discover_input_files(
     input_data_path: Union[str, Path],
@@ -33,40 +106,6 @@ def discover_input_files(
         bam_suffix = "." + bam_suffix
     bam_suffix = bam_suffix.lower()
 
-    # Sets of canonical extension keys we’ll compare against
-    pod5_exts = {".pod5", ".p5"}
-    fast5_exts = {".fast5", ".f5"}
-    fastq_exts = {
-        ".fastq",
-        ".fq",
-        ".fastq.gz",
-        ".fq.gz",
-        ".fastq.bz2",
-        ".fq.bz2",
-        ".fastq.xz",
-        ".fq.xz",
-        ".fastq.zst",
-        ".fq.zst",
-    }
-    h5ad_exts = {".h5ad", ".h5"}
-    compressed_exts = {".gz", ".bz2", ".xz", ".zst"}
-
-    def ext_key(pp: Path) -> str:
-        """
-        A robust extension key: last suffix, or last two if the final one is a compressor (.gz/.bz2/.xz/.zst).
-        Examples:
-          a.fastq.gz -> ".fastq.gz"
-          a.fq.xz    -> ".fq.xz"
-          a.bam      -> ".bam"
-          a          -> ""
-        """
-        suff = [s.lower() for s in pp.suffixes]
-        if not suff:
-            return ""
-        if suff[-1] in compressed_exts and len(suff) >= 2:
-            return suff[-2] + suff[-1]
-        return suff[-1]
-
     pod5_paths: List[Path] = []
     fast5_paths: List[Path] = []
     fastq_paths: List[Path] = []
@@ -76,24 +115,19 @@ def discover_input_files(
     h5ad_paths: List[Path] = []
     other_paths: List[Path] = []
 
+    buckets = {
+        "pod5": pod5_paths,
+        "fast5": fast5_paths,
+        "fastq": fastq_paths,
+        "h5ad": h5ad_paths,
+        "bam": bam_paths,
+        "sam": sam_paths,
+        "cram": cram_paths,
+        "other": other_paths,
+    }
+
     def categorize_file(fp: Path) -> None:
-        key = ext_key(fp)
-        if key in pod5_exts:
-            pod5_paths.append(fp)
-        elif key in fast5_exts:
-            fast5_paths.append(fp)
-        elif key in fastq_exts:
-            fastq_paths.append(fp)
-        elif key in h5ad_exts:
-            h5ad_paths.append(fp)
-        elif key == bam_suffix:
-            bam_paths.append(fp)
-        elif key == ".sam":
-            sam_paths.append(fp)
-        elif key == ".cram":
-            cram_paths.append(fp)
-        else:
-            other_paths.append(fp)
+        buckets[input_kind_for_path(fp, bam_suffix=bam_suffix)].append(fp)
 
     if not p.exists():
         raise FileNotFoundError(f"input_data_path does not exist: {input_data_path}")

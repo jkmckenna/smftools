@@ -657,6 +657,10 @@ def load_adata_core(
         reconfigure=log_file is not None and not raw_only,
     )
 
+    # Ingestion is the point where raw input is actually read. Refusing here,
+    # rather than at config load, is what lets every downstream stage run with the
+    # raw data archived (`PSR-01`).
+    cfg.require_input_available("raw" if raw_only else "load")
     requested_input_data_path = cfg.input_data_path
     resolved_input_manifest = resolve_input_manifest(
         output_directory=output_directory,
