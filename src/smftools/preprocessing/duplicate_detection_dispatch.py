@@ -193,9 +193,7 @@ def execute_duplicate_detection_chunk_task(
             "span_agnostic_banding": bool(
                 getattr(cfg, "duplicate_detection_span_agnostic_banding", True)
             ),
-            "anchor_window_sites": int(
-                getattr(cfg, "duplicate_detection_anchor_window_sites", 0)
-            ),
+            "anchor_window_sites": int(getattr(cfg, "duplicate_detection_anchor_window_sites", 0)),
             "anchor_window_stride_sites": int(
                 getattr(cfg, "duplicate_detection_anchor_window_stride_sites", 0)
             ),
