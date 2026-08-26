@@ -73,7 +73,7 @@ survivor reshuffle. Fixing candidate generation fixes both.
 | `DSA-02` derive the window geometry from `min_overlap_positions` | drafted | `test_random_fragmentation_recovers_every_comparable_pair`, `test_derived_geometry_reaches_the_configured_minimum_overlap` |
 | `DSA-03` config surface and semantic fingerprint entries | drafted | `duplicate_detection_span_agnostic_banding` and three siblings in `semantic_upgrade.py` |
 | `DSA-04` route the hierarchical-skip notice to the logger | drafted | `test_hierarchical_topup_skipped_above_representative_cap` |
-| `DSA-05` qualify on a real fragmented run; revisit the hierarchical cap | open | -- |
+| `DSA-05` qualify on a real fragmented run; revisit the hierarchical cap | measured | see Real-data qualification below; cap revisit still open |
 
 ### `DSA-01` — anchored banding
 
@@ -126,23 +126,56 @@ reached a run log. It is now `logger.warning` and names whether anchored banding
 is active. One existing test moved from `pytest.warns` to `caplog`; its
 assertion that linkage does not run above the cap is unchanged.
 
-### `DSA-05` — open
+### `DSA-05` — measured; the cap revisit stays open
 
-Two questions this draft does not answer:
-
-- **Cost on a real run.** The derived geometry costs ~10x the unfixed path on
-  the synthetic group above. Whether that is acceptable inside a full preprocess
-  stage is unmeasured.
-- **Real-data qualification.** Everything below rests on synthetic groups.
-  The check that matters is a fragmented library reprocessed with and without
-  `duplicate_detection_span_agnostic_banding`, comparing cluster-size
-  distributions and the complexity curves in `calculate_complexity_II`. Expect
-  complexity estimates to *fall*, since the defect inflated them.
-- **Whether the hierarchical cap can now drop.** If anchored banding carries
-  recall, the top-up's value shrinks and a lower cap would buy headroom on the
-  dedup memory ceiling. Do not touch it until the item above has run.
+Cost and real-data behaviour are now measured (see below). What remains open is
+whether `duplicate_detection_hierarchical_max_representatives` can drop. The
+evidence says it nearly can -- with banding on, capping the top-up at 50 instead
+of 5000 changes the result by 0.01 points and one cluster -- but that is one run,
+and lowering it would remove the only exact pass. Leave it until a second
+library agrees.
 
 ## Measurements
+
+### Real-data qualification
+
+A rapid-kit (transposase, single-ended barcode) deaminase library: 14,358 reads
+surviving raw ingestion, median read length 585, p10 144, p90 1,960. Four
+preprocess generations over one shared raw generation, differing only in the
+dedup keys.
+
+| variant | banding | hierarchical cap | duplicates | unique clusters | preprocess stage |
+|---|---|---|---|---|---|
+| A | off | 5000 | 53.03% | 5,496 | 175.7s |
+| B | on | 5000 | **61.47%** | **4,508** | 202.8s |
+| C | off | 50 | 52.50% | 5,558 | 204.4s |
+| D | on | 50 | 61.46% | 4,509 | 204.9s |
+
+Three things fall out, and the first is a correction.
+
+**The hierarchical pass was never carrying this.** `F51` framed the defect as
+the cap disabling the only span-blind step. A against C -- that pass running
+versus skipped -- differs by **0.53 points**. The sort-key span sensitivity was
+under-calling differing-span duplicates even when the pass ran; the cap made a
+pre-existing defect worse rather than creating it. The synthetic fixture showed
+the pass recovering 1.000 because uniform-random patterns and identical
+truncation make mean-imputed euclidean distance far more separable than real
+footprint data is. **A synthetic fixture that agrees with the story you already
+have is the one to distrust.**
+
+**The recovered pairs are well supported.** Of the 990 reads newly called
+duplicate, 89.4% overlap their best cluster partner by 500+ positions, median
+overlap 1,537; exactly one pair sits in the 30-50 position range and none in
+20-30. They are not artifacts of the `min_overlap_positions` floor. 30% of the
+pairs differ by more than 1.5x in span -- the predicted signature.
+
+**Cost is +15%, not the ~10x below.** The synthetic figure came from a dense
+2,000-read x 2,000-site group where anchored passes dominate the work; a real
+preprocess stage spends most of its time elsewhere.
+
+Apparent library complexity falls **18%** on this run. That is the defect being
+corrected, not a regression, but it changes published numbers and belongs in
+release notes.
 
 ### Random fragmentation
 
@@ -178,12 +211,13 @@ Same 2,000-read group, wall-clock inside `_process_group`:
 | fixed 100/100 | 0.904 | 64 | 11.3 |
 | derived (default) | 1.000 | 181 | 29.8 |
 
-**Correctness is ~10x the cost of the broken behaviour here**, and that is the
-default. The number of windows scales with `n_sites / stride`, so a locus-mode
-reference plans proportionally more. This is the main thing `DSA-05` must
-measure on a real run: if it dominates preprocess wall-clock, the lever is
-`duplicate_detection_anchor_window_sites`, which trades short-overlap recall for
-speed and now says so in the log when it does.
+**Correctness is ~10x the cost of the broken behaviour on this synthetic
+group.** That figure did not survive contact with a real stage, which measured
++15% -- the group above is dense and wide, so anchored passes dominate its work
+in a way they do not dominate a real preprocess run. Kept here because it is the
+worst case the geometry can produce, and because the lever if it ever does bite
+is `duplicate_detection_anchor_window_sites`, which trades short-overlap recall
+for speed and says so in the log.
 
 ### Two size classes
 
