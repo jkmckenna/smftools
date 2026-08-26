@@ -65,6 +65,14 @@ A source satisfies the config when **all** of:
 1. **Model matches.** A bare short name (`hac`) is satisfied by any version of
    that family, newest winning. An explicitly versioned name must match exactly.
    Ordering comes from the existing `_model_version_key`.
+
+   **The Dorado version does not participate.** A basecaller release that leaves
+   the model identity unchanged does not invalidate a match: gating on it would
+   force a re-basecall of every archived run on each instrument software update,
+   for reads the model says are equivalent. The observed Dorado version is
+   recorded in the basecall manifest and reported, so a difference stays visible
+   and auditable, but it never causes selection to reject a source or a stage to
+   recompute. Decided 2026-08-26; previously an open question.
 2. **Capability suffices.** Model identity alone is not enough. A canonical FASTQ
    carries no MM/ML, which is fine for `deaminase` and `conversion` but
    disqualifying for `direct` — a rule the config layer already enforces for
@@ -112,6 +120,43 @@ interpretation of it. `BCS` covers the first ingestion, where there is nothing t
 hold beside. The two must not become two ways to do one thing: if an experiment
 already has a raw generation, changing the model is an `SRB` lineage operation,
 and `basecall` should say so rather than quietly producing a second answer.
+
+### Two ways to invoke it
+
+Basecalling a drawer of runs off an archive drive is data preparation, not
+experiment work, and demanding a full experiment config per run to do it is
+friction that pushes people back to calling Dorado by hand. So `basecall` takes
+either form:
+
+```shell
+smftools basecall <config.csv>
+smftools basecall --input <pod5-dir> --output <dir> --model hac --model-dir <dir> \
+    [--kit <barcode-kit>] [--modifications 5mC_5hmC] [--device auto]
+```
+
+One command and one core, not two implementations. The config form supplies the
+same model parameters the config already carries — `model`, `model_dir`,
+`barcode_kit`, `barcode_both_ends`, `trim`, `device`, `emit_moves`, and
+`mod_list` for a `direct` experiment — and explicit flags override them where
+both are given.
+
+**Both forms publish the same artifact.** The config-free form writes a basecall
+generation into `--output` exactly as the config form writes one into the run
+root, which is what makes the batch workflow work: basecall a drawer of runs with
+no configs in sight, then point experiments at the results and have selection
+(`BCS-03`) recognise them like any other source. A config-free run is not a
+lesser product.
+
+It is a **top-level command rather than a member of `experiment` or `project`**,
+because in its config-free form it is scoped to neither. Per
+`src/smftools/cli/AGENTS.md` that choice is the first step of adding a command,
+so it is recorded here deliberately.
+
+**Overriding the model against an already-ingested experiment is refused**, with
+a pointer to `SRB`. That combination — an existing raw generation plus a
+different model — is exactly a re-basecalling lineage, and silently producing a
+second set of reads beside a finished analysis is the failure that boundary
+exists to prevent.
 
 ### Surviving a detached archive
 
@@ -187,6 +232,7 @@ archive and stays fine.
 | `BCS-07` validate a basecall generation without re-reading POD5 | proposed | -- |
 | `BCS-08` archive write-back command and layout | proposed | -- |
 | `BCS-09` batch I/O policy: no interleaved read and write on one volume | proposed | -- |
+| `BCS-10` config-free `basecall --input/--output` invocation | proposed | -- |
 
 ### Phase 1 — selection (`BCS-01`–`BCS-04`)
 
@@ -215,6 +261,8 @@ not satisfy selection while an equivalent local one does.
   produce byte-identical results to today, with `basecall` reporting `skipped`.
 - `BCS-07` — a published generation records POD5 identity so validation never
   re-reads signal.
+- `BCS-10` — the config-free entry point, sharing the core and the published
+  artifact with the config form.
 
 **Risk.** Adding a stage touches the workflow contract, `experiment plan`
 targets, `full_summary.json`, and the acceptance criteria files. The migration
@@ -228,20 +276,23 @@ Depends on `PSR-08` volume identity for the cross-device check in `BCS-09`.
 Without it, `BCS-09` degrades to "always defer write-back", which is the safe
 behaviour anyway and can ship first.
 
+## Decided
+
+- **A Dorado version difference does not invalidate a model match** (2026-08-26).
+  Recorded and reported, never gating. See the model-match rule above.
+- **`basecall` takes either an experiment config or plain input/output paths plus
+  model parameters** (2026-08-26). One command, one core, the same published
+  artifact either way. See "Two ways to invoke it".
+
 ## Open questions
 
-- **Does a matching model with different Dorado versions count as a match?** The
-  model name and the basecaller version are separate identities, and MinKNOW
-  output records both. Treating a Dorado version change as invalidating would
-  force a re-basecall on every instrument software update; ignoring it entirely
-  hides a real difference. Leaning toward recording it and not gating on it, but
-  this is unresolved.
-- **Should `basecall` be runnable without an experiment config?** Batch
-  basecalling a drawer of runs is a data-preparation task, not an experiment
-  task, and forcing a config per run to do it is friction. A `smftools data`
-  subcommand may fit better than `smftools experiment basecall`. Deferred until
-  Phase 2 shows how much of the stage machinery a config-free path would lose.
 - **What happens when the selected source and the POD5s disagree?** A
   `basecalls/` directory can be stale relative to the signal beside it. Checksums
-  detect it, but the right response — refuse, warn, or prefer the signal — is
-  not obvious and depends on whether the user is re-analysing or re-basecalling.
+  detect it, but the right response — refuse, warn, or prefer the signal — is not
+  obvious and depends on whether the user is re-analysing or re-basecalling.
+- **What identifies a config-free basecall's output as belonging to a run?** The
+  config form has the run root and the experiment identity. The config-free form
+  has only `--output`, so the manifest's link back to the signal it consumed is
+  the only provenance it carries. Whether that is enough for an experiment to
+  adopt it later without ambiguity is unresolved, and is the main thing `BCS-10`
+  has to get right.
