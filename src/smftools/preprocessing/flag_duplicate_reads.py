@@ -192,6 +192,144 @@ def _choose_keeper_with_demux_preference(
     return candidates[0]
 
 
+def _plan_anchor_windows(
+    coverage_start: np.ndarray,
+    coverage_end: np.ndarray,
+    *,
+    n_sites: int,
+    anchor_window_sites: int,
+    anchor_window_stride_sites: int,
+    max_anchor_windows: int,
+    min_overlap_positions: int = 20,
+    enabled: bool = True,
+) -> list[tuple[int, int, np.ndarray]]:
+    """Plan span-agnostic anchor windows and the reads that fully cover each.
+
+    Tiles the site axis and, for each tile, selects the reads whose measured
+    extent spans the whole tile. Those reads all measure every column in the
+    tile, so a sort key built from the tile's columns alone carries no
+    unmeasured-position fill and orders reads by content rather than by span
+    (see `F51`).
+
+    Args:
+        coverage_start: Per-read index of the first measured column.
+        coverage_end: Per-read exclusive index of the last measured column.
+        n_sites: Number of comparison columns in the group.
+        anchor_window_sites: Width of each anchor window, in columns. ``0`` (the
+            default) derives the width from ``min_overlap_positions``.
+        anchor_window_stride_sites: Distance between consecutive window starts;
+            ``0`` or less derives the stride alongside the width.
+        max_anchor_windows: Ceiling on planned windows. The stride is widened to
+            fit rather than truncating the reference, so coverage stays even --
+            but widening it past the reach condition below costs recall on the
+            shortest overlaps, which is logged when it happens.
+        min_overlap_positions: The shortest overlap a comparison is allowed to
+            score. Sets the derived geometry.
+        enabled: When False, returns no windows and the caller's behaviour is
+            unchanged.
+
+    Returns:
+        list of tuples: ``(anchor_start, anchor_end, row_indices)`` for every
+        window covered by at least two reads. Empty when disabled, when the
+        window is wider than the group, or when no window has two covering reads.
+    """
+    if not enabled:
+        return []
+
+    # The reach condition. Windows start at multiples of the stride, so a pair
+    # whose overlap is V positions long shares a window only if some aligned
+    # window falls entirely inside that overlap -- which, in the worst phase,
+    # requires `V >= width + stride - 1`. A pair overlapping by less than that
+    # is never banded together no matter how well its calls agree.
+    #
+    # `min_overlap_positions` is the user's own statement of the shortest
+    # overlap worth scoring, so the geometry is derived from it rather than
+    # guessed: any pair the comparison would accept can reach a window. The
+    # first version of this pass defaulted to a 100-site window at stride 100,
+    # needing 199 positions of overlap -- ten times the declared minimum. On
+    # randomly fragmented input that recovered 0.08 of duplicate pairs
+    # overlapping by 50-99 positions, against 1.00 once the geometry was derived.
+    reach = max(1, int(min_overlap_positions))
+    width = int(anchor_window_sites)
+    stride = int(anchor_window_stride_sites)
+    if width <= 0:
+        # Derived geometry: halve the reach so width and stride together satisfy
+        # `width + stride - 1 <= reach`.
+        width = max(1, (reach + 1) // 2)
+        if stride <= 0:
+            stride = max(1, reach - width + 1)
+    elif stride <= 0:
+        # An explicit width keeps the predictable non-overlapping tiling rather
+        # than silently deriving a stride of 1 to compensate for it.
+        stride = width
+    if width > int(n_sites):
+        return []
+    if width + stride - 1 > reach:
+        logger.warning(
+            "duplicate detection: anchor geometry (width=%d, stride=%d) reaches only pairs "
+            "overlapping by %d+ positions, above min_overlap_positions=%d. Duplicate pairs "
+            "with shorter overlaps cannot share an anchor window and may be reported as "
+            "distinct; leave duplicate_detection_anchor_window_sites at 0 to derive a "
+            "geometry that reaches every comparable pair.",
+            width,
+            stride,
+            width + stride - 1,
+            reach,
+        )
+
+    # A window wider than the reads themselves plans nothing and silently
+    # restores the behaviour this pass exists to fix -- the same invisible
+    # failure as `F51`. Narrow to the library when that happens.
+    spans = np.asarray(coverage_end, dtype=np.int64) - np.asarray(coverage_start, dtype=np.int64)
+    measured = spans[spans > 0]
+    if measured.size:
+        median_span = int(np.median(measured))
+        if width > median_span:
+            width = max(1, min(width, median_span // 2))
+            stride = max(1, min(stride, width))
+            logger.info(
+                "duplicate detection: narrowing anchor window to %d sites (stride %d); the "
+                "median measured read span is %d, so the configured width would leave most "
+                "reads in no anchor window.",
+                width,
+                stride,
+                median_span,
+            )
+    if width <= 0 or width > int(n_sites):
+        return []
+
+    span = int(n_sites) - width + 1
+    if int(max_anchor_windows) > 0:
+        capped_stride = max(stride, -(-span // int(max_anchor_windows)))
+        if capped_stride > stride:
+            # Widen rather than truncate: dropping the tail would leave one end
+            # of the reference with no anchored pass at all. Say so when the
+            # widened stride breaks the reach condition -- a silent recall loss
+            # on short overlaps is how this class of bug hides.
+            if width + capped_stride - 1 > reach:
+                logger.warning(
+                    "duplicate detection: max_anchor_windows=%d widened the anchor stride "
+                    "%d -> %d, so anchored banding now reaches only pairs overlapping by "
+                    "%d+ positions rather than the configured min_overlap_positions=%d. "
+                    "Duplicate pairs with shorter overlaps may be reported as distinct; "
+                    "raise max_anchor_windows to restore the guarantee.",
+                    int(max_anchor_windows),
+                    stride,
+                    capped_stride,
+                    width + capped_stride - 1,
+                    reach,
+                )
+            stride = capped_stride
+
+    windows: list[tuple[int, int, np.ndarray]] = []
+    for anchor_start in range(0, span, stride):
+        anchor_end = anchor_start + width
+        covering = np.flatnonzero((coverage_start <= anchor_start) & (coverage_end >= anchor_end))
+        if len(covering) >= 2:
+            windows.append((anchor_start, anchor_end, covering))
+    return windows
+
+
 def _process_group(args: dict) -> Optional[dict]:
     """Process a single (sample, ref) group for duplicate detection.
 
@@ -230,6 +368,10 @@ def _process_group(args: dict) -> Optional[dict]:
     demux_types = args["demux_types"]
     n_permutation_passes = int(args.get("n_permutation_passes", 0))
     permutation_seed = int(args.get("permutation_seed", 0))
+    span_agnostic_banding = bool(args.get("span_agnostic_banding", True))
+    anchor_window_sites = int(args.get("anchor_window_sites", 0))
+    anchor_window_stride_sites = int(args.get("anchor_window_stride_sites", 0))
+    max_anchor_windows = int(args.get("max_anchor_windows", 512))
 
     N, n_sites = X_sub.shape
     if N < 2:
@@ -243,6 +385,13 @@ def _process_group(args: dict) -> Optional[dict]:
     sortable_int8 = np.full(X_sub.shape, -1, dtype=np.int8)
     sortable_int8[valid] = X_sub[valid].astype(np.int8)
     calls_u64, valid_u64 = pack_calls_and_valid_mask(X_sub)
+    # Each read's measured extent, kept before the dense array is dropped. This
+    # is what makes span-agnostic banding possible: the sort key below fills
+    # unmeasured positions with -1, so a read's span, not its overlapping
+    # content, dominates the natural-order key (F51).
+    any_valid = valid.any(axis=1)
+    coverage_start = np.where(any_valid, valid.argmax(axis=1), 0).astype(np.int64)
+    coverage_end = np.where(any_valid, n_sites - valid[:, ::-1].argmax(axis=1), 0).astype(np.int64)
     del X_sub, valid
 
     # per-read nearest distances
@@ -253,7 +402,9 @@ def _process_group(args: dict) -> Optional[dict]:
     local_hamming_dists: list = []
     hierarchical_found_dists: list = []
 
-    def cluster_pass(column_order, *, reverse, window=int(window_size), record_distances=False):
+    def cluster_pass(
+        column_order, *, reverse, window=int(window_size), record_distances=False, rows=None
+    ):
         """One windowed pass: sort rows by a column_order-prioritized key, compare
         adjacent-in-sort-order reads via bit-packed popcount Hamming distance.
 
@@ -264,14 +415,24 @@ def _process_group(args: dict) -> Optional[dict]:
         permutations are a near-linear generalization that catches duplicate
         pairs an unlucky single sort order would separate (see
         dev/duplicate_detection_scaling.md).
+
+        ``column_order`` need not cover every site: anchored passes pass only the
+        columns of one anchor window. ``rows`` restricts the pass to a subset of
+        reads (again group-global indices), which is what lets an anchored pass
+        band only the reads that actually cover its window.
         """
-        key_source = sortable_int8[:, column_order]
+        row_indices = np.arange(N) if rows is None else np.asarray(rows, dtype=np.int64)
+        if len(row_indices) < 2:
+            return []
+        key_source = sortable_int8[np.ix_(row_indices, np.asarray(column_order))]
         _u8 = np.ascontiguousarray((key_source + np.int8(1)).astype(np.uint8))
         _dt = np.dtype(",".join(["u1"] * _u8.shape[1]))
-        sorted_idx_np = np.argsort(_u8.view(_dt).ravel(), kind="stable")
+        order_within_subset = np.argsort(_u8.view(_dt).ravel(), kind="stable")
         if reverse:
-            sorted_idx_np = sorted_idx_np[::-1]
-        sorted_idx = sorted_idx_np.tolist()
+            order_within_subset = order_within_subset[::-1]
+        # Sort positions index into ``row_indices``; every downstream use is in
+        # group-global row terms, so map back immediately.
+        sorted_idx = row_indices[order_within_subset].tolist()
         cluster_pairs_local = []
 
         for i in range(len(sorted_idx)):
@@ -327,6 +488,38 @@ def _process_group(args: dict) -> Optional[dict]:
         column_order = rng.permutation(n_sites)
         all_pairs.extend(cluster_pass(column_order, reverse=False))
         all_pairs.extend(cluster_pass(column_order, reverse=True))
+
+    # Anchor-window passes: the span-agnostic banding mechanism (F51).
+    #
+    # The keys above are built across every loaded column, with unmeasured
+    # positions filled as -1. Two reads that agree perfectly on their overlap
+    # but differ in span therefore diverge in the leading key columns and sort
+    # far apart, so the comparison window never brings them together -- even
+    # though ``popcount_hamming_windowed`` scores only overlapping positions and
+    # would call them duplicates. Recall on such pairs collapsed to ~2% once the
+    # hierarchical top-up (the only span-blind step) started being skipped above
+    # its representative cap.
+    #
+    # Each anchor window keys *only* on its own columns, over *only* the reads
+    # whose measured extent covers the whole window. Every read in that subset
+    # measures every key column, so the -1 fill cannot appear in the key and
+    # span drops out of the ordering entirely. Distances are unchanged --
+    # comparison still runs over each pair's full overlap, not just the anchor.
+    # A read covering several windows is banded in each; union-find composes
+    # those merges exactly as it already composes chunks, rounds and passes.
+    for anchor_start, anchor_end, anchor_rows in _plan_anchor_windows(
+        coverage_start,
+        coverage_end,
+        n_sites=n_sites,
+        anchor_window_sites=anchor_window_sites,
+        anchor_window_stride_sites=anchor_window_stride_sites,
+        max_anchor_windows=max_anchor_windows,
+        min_overlap_positions=min_overlap_positions,
+        enabled=span_agnostic_banding,
+    ):
+        anchor_columns = np.arange(anchor_start, anchor_end)
+        all_pairs.extend(cluster_pass(anchor_columns, reverse=False, rows=anchor_rows))
+        all_pairs.extend(cluster_pass(anchor_columns, reverse=True, rows=anchor_rows))
 
     # initial union-find based on lex pairs
     uf = UnionFind(N)
@@ -401,10 +594,22 @@ def _process_group(args: dict) -> Optional[dict]:
     rep_global_indices = sorted(set(keeper_for_cluster.values()))
     if do_hierarchical and len(rep_global_indices) > 1:
         if len(rep_global_indices) > hierarchical_max_representatives:
-            warnings.warn(
-                f"duplicate detection: skipping hierarchical top-up for sample={sample} "
-                f"ref={ref} -- {len(rep_global_indices)} representatives exceeds "
-                f"hierarchical_max_representatives={hierarchical_max_representatives}"
+            # Logged, not warned: `default.yaml` has always described this skip
+            # as logged, but `warnings.warn` never reached the run log (nothing
+            # calls `logging.captureWarnings`), so the pass silently stopped
+            # running on exactly the large groups that most needed it (`F51`).
+            logger.warning(
+                "duplicate detection: skipping hierarchical top-up for sample=%s ref=%s -- "
+                "%d representatives exceeds hierarchical_max_representatives=%d. "
+                "Span-agnostic anchor banding is %s.",
+                sample,
+                ref,
+                len(rep_global_indices),
+                hierarchical_max_representatives,
+                "enabled"
+                if span_agnostic_banding
+                else "DISABLED, so reads with "
+                "matching overlap but differing spans may be reported as distinct",
             )
         elif not SKLEARN_AVAILABLE:
             warnings.warn("sklearn not available; skipping PCA/hierarchical pass.")

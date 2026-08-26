@@ -296,6 +296,10 @@ duplicate_detection_max_rounds: 6 # Hard cap on chunk+reduce rounds per group be
 duplicate_detection_min_progress_rounds_before_stop: 1 # Consecutive zero-new-merge rounds required to declare a group's duplicate detection converged.
 duplicate_detection_chunk_presort_metric: "Fraction_any_C_site_modified" # Obs column used to order reads before round-1 chunk splitting; true duplicates have near-identical aggregate metrics, so this front-loads recall into round 1.
 duplicate_detection_round_shuffle_seed: 0 # Base seed for the reshuffle used to plan chunk boundaries in rounds after the first.
+duplicate_detection_span_agnostic_banding: True # Add anchor-window banding passes that key only on columns every banded read measures, so reads with different spans but matching overlap still cluster (F51). Disable to restore pre-fix candidate generation.
+duplicate_detection_anchor_window_sites: 0 # Width, in comparison columns, of each span-agnostic anchor window. 0 derives it from duplicate_detection_min_overlapping_positions so that every pair the comparison would accept can reach a window; set explicitly only to trade recall on short overlaps for speed.
+duplicate_detection_anchor_window_stride_sites: 0 # Distance between anchor window starts; 0 derives it alongside the width. Width + stride - 1 must not exceed the minimum overlap, or short-overlap pairs can never share a window.
+duplicate_detection_max_anchor_windows: 512 # Ceiling on anchor windows per group. The stride widens to fit rather than leaving one end of the reference uncovered, and a widening that breaks the reach guarantee above is logged.
 duplicate_detection_hierarchical_max_representatives: 5000 # Skip the hierarchical top-up pass (logged) above this many representatives -- exact pdist+linkage is O(n^2), unsafe above a few thousand points.
 
 # Position QC params

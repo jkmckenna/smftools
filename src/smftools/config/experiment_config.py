@@ -1177,6 +1177,10 @@ class ExperimentConfig:
     duplicate_detection_chunk_presort_metric: str = "Fraction_any_C_site_modified"
     duplicate_detection_round_shuffle_seed: int = 0
     duplicate_detection_hierarchical_max_representatives: int = 5000
+    duplicate_detection_span_agnostic_banding: bool = True
+    duplicate_detection_anchor_window_sites: int = 0
+    duplicate_detection_anchor_window_stride_sites: int = 0
+    duplicate_detection_max_anchor_windows: int = 512
 
     # Preprocessing - Position QC
     position_max_nan_threshold: float = 0.1
@@ -2648,6 +2652,18 @@ class ExperimentConfig:
                 _parse_numeric(
                     merged.get("duplicate_detection_hierarchical_max_representatives", 5000), 5000
                 )
+            ),
+            duplicate_detection_span_agnostic_banding=_parse_bool(
+                merged.get("duplicate_detection_span_agnostic_banding", True)
+            ),
+            duplicate_detection_anchor_window_sites=int(
+                _parse_numeric(merged.get("duplicate_detection_anchor_window_sites", 0), 0)
+            ),
+            duplicate_detection_anchor_window_stride_sites=int(
+                _parse_numeric(merged.get("duplicate_detection_anchor_window_stride_sites", 0), 0)
+            ),
+            duplicate_detection_max_anchor_windows=int(
+                _parse_numeric(merged.get("duplicate_detection_max_anchor_windows", 512), 512)
             ),
             position_max_nan_threshold=merged.get("position_max_nan_threshold", 0.1),
             correlation_matrix_types=merged.get(
