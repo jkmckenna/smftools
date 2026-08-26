@@ -64,6 +64,7 @@ A plan with no implementation branch yet.
 | document | scope |
 |---|---|
 | `agent_files_plan.md` | restructuring the repo's `AGENTS.md`/`CLAUDE.md` files; explicitly not deployed |
+| `basecall_stage_and_source_selection_implementation_plan.md` | `BCS` basecalling as a stage, read-source selection by model, and the archive round trip |
 
 ## `logs/` — not tracked
 
