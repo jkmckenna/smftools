@@ -121,6 +121,46 @@ hold beside. The two must not become two ways to do one thing: if an experiment
 already has a raw generation, changing the model is an `SRB` lineage operation,
 and `basecall` should say so rather than quietly producing a second answer.
 
+### When basecalls and signal disagree
+
+A `basecalls/` directory can stop describing the signal beside it, and smftools
+is one of the causes: `max_basecall_reads` and `subsample_pod5_for_basecalling`
+deliberately basecall a random subset. POD5s also get added by a resumed run,
+pruned after archiving, or copied from the wrong run.
+
+"Mismatch" is therefore not one condition. It has three shapes with opposite
+correct answers, so the policy classifies before it responds:
+
+| shape | meaning | response |
+|---|---|---|
+| basecalls ⊃ signal | references POD5s no longer present | **proceed**, silently |
+| basecalls ⊂ signal | covers fewer reads than the signal present | **proceed only if the subsetting was recorded as deliberate**, else refuse |
+| disjoint | different reads entirely | **refuse** |
+
+The superset case is not a defect -- it is the end state this program exists to
+reach, where the signal has been pruned because its derivative is enough. A
+blanket refusal on mismatch would break exactly the workflow being built.
+
+The subset case is the dangerous one, and the reason it cannot simply warn: a
+run silently analysed at a fraction of its depth reports fewer molecules, which
+reads as a biological result rather than a defect. So it is allowed only when the
+basecall manifest records that the subsetting was intended -- `max_basecall_reads`
+in force at the time, with the sampled count and seed. Absent that record, it
+refuses and names the sources it cannot account for.
+
+This turns a judgement call into a recorded fact, the same move that separated
+`offline` from `missing` in `PSR-01`: the state that looks ambiguous from the
+outside is unambiguous to whoever wrote it, so write it down at the point of
+knowledge rather than inferring it later.
+
+**A detection gap has to close first.** The current spec records
+`artifact_checksum(cfg.input_data_path)` -- one digest over the whole input path,
+which distinguishes *different* from *same* but carries no shape. Classifying
+subset against disjoint needs per-source checksums. The resolved input manifest
+already records a `sha256` per row, so the primitive exists; the basecall step
+simply does not use it yet. `BCS-07` owns that, since it is the same record that
+lets a generation validate without re-reading signal.
+
 ### Two ways to invoke it
 
 Basecalling a drawer of runs off an archive drive is data preparation, not
@@ -233,6 +273,7 @@ archive and stays fine.
 | `BCS-08` archive write-back command and layout | proposed | -- |
 | `BCS-09` batch I/O policy: no interleaved read and write on one volume | proposed | -- |
 | `BCS-10` config-free `basecall --input/--output` invocation | proposed | -- |
+| `BCS-11` classify basecall/signal mismatch and respond per shape | proposed | -- |
 
 ### Phase 1 — selection (`BCS-01`–`BCS-04`)
 
@@ -263,6 +304,8 @@ not satisfy selection while an equivalent local one does.
   re-reads signal.
 - `BCS-10` — the config-free entry point, sharing the core and the published
   artifact with the config form.
+- `BCS-11` — mismatch classification, which depends on `BCS-07`'s per-source
+  identity record to tell a subset from a disjoint set at all.
 
 **Risk.** Adding a stage touches the workflow contract, `experiment plan`
 targets, `full_summary.json`, and the acceptance criteria files. The migration
@@ -283,13 +326,12 @@ behaviour anyway and can ship first.
 - **`basecall` takes either an experiment config or plain input/output paths plus
   model parameters** (2026-08-26). One command, one core, the same published
   artifact either way. See "Two ways to invoke it".
+- **A basecalls/signal mismatch is classified, not judged** (2026-08-26). Superset
+  proceeds, disjoint refuses, subset proceeds only against a recorded deliberate
+  subsample. See "When basecalls and signal disagree".
 
 ## Open questions
 
-- **What happens when the selected source and the POD5s disagree?** A
-  `basecalls/` directory can be stale relative to the signal beside it. Checksums
-  detect it, but the right response — refuse, warn, or prefer the signal — is not
-  obvious and depends on whether the user is re-analysing or re-basecalling.
 - **What identifies a config-free basecall's output as belonging to a run?** The
   config form has the run root and the experiment identity. The config-free form
   has only `--output`, so the manifest's link back to the signal it consumed is
