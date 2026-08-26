@@ -68,6 +68,15 @@ def _args_with_early_divergent_pair(n_permutation_passes: int, *, n_sites: int =
         "demux_types": None,
         "n_permutation_passes": n_permutation_passes,
         "permutation_seed": 0,
+        # Off deliberately: span-agnostic anchor banding (`F51`) also catches
+        # this pair, since read0/read1 are identical everywhere except column 0
+        # and any anchor window past it keys them together. Leaving it on would
+        # make the negative control below vacuous -- these tests isolate the
+        # permutation passes' own contribution.
+        "span_agnostic_banding": False,
+        "anchor_window_sites": 100,
+        "anchor_window_stride_sites": 0,
+        "max_anchor_windows": 64,
     }
 
 

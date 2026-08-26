@@ -54,6 +54,7 @@ An active branch, some items merged and others open.
 | `experiment_storage_schema.md` | formal parquet/zarr storage schema; phases 1-2 implemented |
 | `project_sample_and_set_stores.md` | project-level per-sample and set stores; set store v2 implemented |
 | `generation_lifecycle_and_naming_implementation_plan.md` | `EGL` generation lifecycle and experiment naming; the NKG rollout and the findings log are split out into `logs/` |
+| `duplicate_detection_span_agnostic_implementation_plan.md` | `DSA` span-agnostic duplicate detection; drafted, `DSA-05` real-data qualification open |
 
 ## `proposed/`
 

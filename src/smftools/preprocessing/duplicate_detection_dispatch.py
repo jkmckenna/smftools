@@ -190,6 +190,16 @@ def execute_duplicate_detection_chunk_task(
                 getattr(cfg, "duplicate_detection_n_permutation_passes", 4)
             ),
             "permutation_seed": int(getattr(cfg, "duplicate_detection_permutation_seed", 0)),
+            "span_agnostic_banding": bool(
+                getattr(cfg, "duplicate_detection_span_agnostic_banding", True)
+            ),
+            "anchor_window_sites": int(
+                getattr(cfg, "duplicate_detection_anchor_window_sites", 0)
+            ),
+            "anchor_window_stride_sites": int(
+                getattr(cfg, "duplicate_detection_anchor_window_stride_sites", 0)
+            ),
+            "max_anchor_windows": int(getattr(cfg, "duplicate_detection_max_anchor_windows", 512)),
         }
     )
 

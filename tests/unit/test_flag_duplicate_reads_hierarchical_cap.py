@@ -7,6 +7,8 @@ dev/duplicate_detection_scaling.md.
 
 from __future__ import annotations
 
+import logging
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -51,7 +53,7 @@ def _distinct_reads_args(n_reads: int, *, hierarchical_max_representatives: int)
     }
 
 
-def test_hierarchical_topup_skipped_above_representative_cap(monkeypatch):
+def test_hierarchical_topup_skipped_above_representative_cap(monkeypatch, caplog):
     import smftools.preprocessing.flag_duplicate_reads as module
 
     linkage_calls = []
@@ -59,9 +61,12 @@ def test_hierarchical_topup_skipped_above_representative_cap(monkeypatch):
         module.sch, "linkage", lambda *a, **k: (linkage_calls.append(1), np.zeros((0, 4)))[1]
     )
 
-    with pytest.warns(UserWarning, match="skipping hierarchical top-up"):
+    with caplog.at_level(logging.WARNING, logger=module.__name__):
         result = _process_group(_distinct_reads_args(50, hierarchical_max_representatives=10))
 
+    # Logged, not warned: `warnings.warn` never reached the run log, so the skip
+    # was invisible on exactly the large groups it fired for (`F51`).
+    assert any("skipping hierarchical top-up" in record.message for record in caplog.records)
     assert result is not None
     assert linkage_calls == []
 
