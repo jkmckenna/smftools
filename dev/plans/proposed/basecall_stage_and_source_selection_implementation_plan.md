@@ -1,0 +1,340 @@
+# Basecalling as a stage, and choosing a read source (`BCS`)
+
+**Status:** proposed. No implementation branch.
+
+**Repository state reviewed:** `69c24e4` — recorded while writing.
+
+## Problem
+
+An experiment's data directory usually holds more than one representation of the
+same reads: `pod5/`, a `fastq_pass/` tree, and sometimes a `basecalls/` directory
+of BAMs from whichever model was run. Today that directory cannot be used as
+`input_data_path` at all — discovery recurses by default, finds more than one
+recognized kind, and `ExperimentConfig.from_var_dict` refuses with
+`input_data_path contains mixed recognized input types`. The working practice is
+to point at one subdirectory by hand and record the reason in a config comment.
+
+What a user actually wants to express is a *model*, not a path: use the reads for
+the configured basecalling model if they already exist, and basecall from signal
+only when they do not.
+
+Two things follow, and this plan covers both because neither is coherent alone:
+
+- **Source selection.** Given a directory with several representations, pick the
+  one that satisfies the configured model and the experiment's capability needs.
+- **Basecalling as a stage.** Selection's "otherwise, basecall" branch is
+  currently an unnamed step buried inside raw, so it cannot be run, skipped,
+  inventoried, pinned, or archived on its own.
+
+## Current behaviour (verified at `69c24e4`)
+
+**Basecalling is inside raw.** `load_adata_core` (`cli/load_adata.py`) decides
+`basecall = cfg.input_type == "pod5"` and runs `canoncall`/`modcall` inline.
+There is no `basecall` command; `full` runs `raw -> preprocess -> spatial -> hmm
+-> latent` (`cli/recipes.py`).
+
+**Its output is an intermediate, not an artifact.** The result lands under
+`<run>/raw_outputs/intermediates/dorado-basecalling/<revision>/`, addressed by an
+`IntermediateSpec` whose identity is the model, the options, and
+`artifact_checksum(pod5_input)`. Reuse works, but the outputs are not stage
+generations: `smftools experiment generations` does not list them, they cannot be
+pinned, and nothing treats them as a durable product.
+
+**Reuse requires the signal.** Because the spec's identity checksums the POD5
+input, deciding "these basecalls are still valid" re-reads the POD5s. With the
+archive detached that check cannot run, so `PSR-01` lets the config load and the
+work still cannot proceed.
+
+**The provenance primitives already exist**, spread across three places:
+
+| source | where the model is recorded | already read by |
+|---|---|---|
+| FASTQ | `basecall_model_version_id=` in the read header comment | nothing |
+| BAM | `basecall_model=` inside `@RG` `DS:` | `pipeline/rebasecall_basecall.py` |
+| POD5 | run conditions -> resolved model name | `informatics/dorado_model.py` |
+
+`dorado_model.py` already turns a short name (`hac`) into a concrete model for
+given run conditions, and `_model_version_key` already orders versions.
+
+## Design
+
+### Selection is a policy, stated once
+
+A source satisfies the config when **all** of:
+
+1. **Model matches.** A bare short name (`hac`) is satisfied by any version of
+   that family, newest winning. An explicitly versioned name must match exactly.
+   Ordering comes from the existing `_model_version_key`.
+
+   **The Dorado version does not participate.** A basecaller release that leaves
+   the model identity unchanged does not invalidate a match: gating on it would
+   force a re-basecall of every archived run on each instrument software update,
+   for reads the model says are equivalent. The observed Dorado version is
+   recorded in the basecall manifest and reported, so a difference stays visible
+   and auditable, but it never causes selection to reject a source or a stage to
+   recompute. Decided 2026-08-26; previously an open question.
+2. **Capability suffices.** Model identity alone is not enough. A canonical FASTQ
+   carries no MM/ML, which is fine for `deaminase` and `conversion` but
+   disqualifying for `direct` — a rule the config layer already enforces for
+   FASTQ input. The resolved input manifest already records
+   `modification_capability` per source; selection reads it rather than
+   re-deriving it.
+3. **The bytes are reachable.** A source whose volume is detached does not
+   satisfy anything. This only exists as a state because of `PSR-01`, and it is
+   why selection must consult availability instead of picking a path it cannot
+   read.
+
+Where several sources qualify, prefer **BAM over FASTQ** (tags, read groups and
+any alignment survive) and **pass over fail**. A `fastq_fail` tree is never a
+selectable source; sweeping it in is one of the things the current manual
+workaround exists to avoid.
+
+If nothing qualifies and POD5 is present, basecall. If nothing qualifies and
+POD5 is absent, that is an error naming what was found, which model each source
+carries, and which of the three rules it failed — never a bare "no supported
+input files".
+
+### `basecall` becomes a stage
+
+It is promoted out of raw and given the same lifecycle every other stage got in
+2.21.0: a `basecall_outputs/` directory publishing immutable, checksummed
+generations selected by `current.json`.
+
+The division of labour becomes clean, and is worth stating because it is the
+whole point of the split:
+
+```text
+basecall   signal -> reads        (expensive, GPU, reusable across experiments)
+raw        reads  -> ragged store (cheap, CPU, experiment-specific)
+```
+
+`full` becomes `basecall -> raw -> preprocess -> spatial -> hmm -> latent`, where
+`basecall` skips whenever selection finds a satisfying source — which is every
+run that was basecalled on the instrument. A FASTQ-input experiment therefore
+sees no behaviour change at all.
+
+**This is deliberately not the re-basecalling program.** `SRB` re-basecalls an
+*already-ingested* experiment and publishes the result as a lineage held beside
+the original, because changing the reads under a finished analysis is a new
+interpretation of it. `BCS` covers the first ingestion, where there is nothing to
+hold beside. The two must not become two ways to do one thing: if an experiment
+already has a raw generation, changing the model is an `SRB` lineage operation,
+and `basecall` should say so rather than quietly producing a second answer.
+
+### When basecalls and signal disagree
+
+A `basecalls/` directory can stop describing the signal beside it, and smftools
+is one of the causes: `max_basecall_reads` and `subsample_pod5_for_basecalling`
+deliberately basecall a random subset. POD5s also get added by a resumed run,
+pruned after archiving, or copied from the wrong run.
+
+"Mismatch" is therefore not one condition. It has three shapes with opposite
+correct answers, so the policy classifies before it responds:
+
+| shape | meaning | response |
+|---|---|---|
+| basecalls ⊃ signal | references POD5s no longer present | **proceed**, silently |
+| basecalls ⊂ signal | covers fewer reads than the signal present | **proceed only if the subsetting was recorded as deliberate**, else refuse |
+| disjoint | different reads entirely | **refuse** |
+
+The superset case is not a defect -- it is the end state this program exists to
+reach, where the signal has been pruned because its derivative is enough. A
+blanket refusal on mismatch would break exactly the workflow being built.
+
+The subset case is the dangerous one, and the reason it cannot simply warn: a
+run silently analysed at a fraction of its depth reports fewer molecules, which
+reads as a biological result rather than a defect. So it is allowed only when the
+basecall manifest records that the subsetting was intended -- `max_basecall_reads`
+in force at the time, with the sampled count and seed. Absent that record, it
+refuses and names the sources it cannot account for.
+
+This turns a judgement call into a recorded fact, the same move that separated
+`offline` from `missing` in `PSR-01`: the state that looks ambiguous from the
+outside is unambiguous to whoever wrote it, so write it down at the point of
+knowledge rather than inferring it later.
+
+**A detection gap has to close first.** The current spec records
+`artifact_checksum(cfg.input_data_path)` -- one digest over the whole input path,
+which distinguishes *different* from *same* but carries no shape. Classifying
+subset against disjoint needs per-source checksums. The resolved input manifest
+already records a `sha256` per row, so the primitive exists; the basecall step
+simply does not use it yet. `BCS-07` owns that, since it is the same record that
+lets a generation validate without re-reading signal.
+
+### Two ways to invoke it
+
+Basecalling a drawer of runs off an archive drive is data preparation, not
+experiment work, and demanding a full experiment config per run to do it is
+friction that pushes people back to calling Dorado by hand. So `basecall` takes
+either form:
+
+```shell
+smftools basecall <config.csv>
+smftools basecall --input <pod5-dir> --output <dir> --model hac --model-dir <dir> \
+    [--kit <barcode-kit>] [--modifications 5mC_5hmC] [--device auto]
+```
+
+One command and one core, not two implementations. The config form supplies the
+same model parameters the config already carries — `model`, `model_dir`,
+`barcode_kit`, `barcode_both_ends`, `trim`, `device`, `emit_moves`, and
+`mod_list` for a `direct` experiment — and explicit flags override them where
+both are given.
+
+**Both forms publish the same artifact.** The config-free form writes a basecall
+generation into `--output` exactly as the config form writes one into the run
+root, which is what makes the batch workflow work: basecall a drawer of runs with
+no configs in sight, then point experiments at the results and have selection
+(`BCS-03`) recognise them like any other source. A config-free run is not a
+lesser product.
+
+It is a **top-level command rather than a member of `experiment` or `project`**,
+because in its config-free form it is scoped to neither. Per
+`src/smftools/cli/AGENTS.md` that choice is the first step of adding a command,
+so it is recorded here deliberately.
+
+**Overriding the model against an already-ingested experiment is refused**, with
+a pointer to `SRB`. That combination — an existing raw generation plus a
+different model — is exactly a re-basecalling lineage, and silently producing a
+second set of reads beside a finished analysis is the failure that boundary
+exists to prevent.
+
+### Surviving a detached archive
+
+A published basecall generation records the POD5 identity it consumed —
+checksums and durable origin identity, which `SRB` already established in 2.21.0
+— so validating it never needs to re-read the signal. This is the same shape as
+`PSR-01`'s recorded-identity recovery, and for the same reason: an identity that
+must be re-derived from the source is an identity that stops working the moment
+the source is archived.
+
+Once that holds, a run whose basecalls live in the analysis tree can be
+processed end to end with the POD5 archive unplugged.
+
+### Getting basecalls back to the archive
+
+Basecalls are derived and regenerable, so archiving them is an optimisation
+rather than a duty. It is a large one: it is what makes the POD5s optional for
+everything downstream.
+
+Layout, as a sibling of the signal rather than mixed into it:
+
+```text
+data/<run>/
+├── pod5/
+└── basecalls/
+    └── <model>@<version>/
+        ├── basecall_manifest.json   # model, dorado version, POD5 identity, checksums
+        └── *.bam
+```
+
+Keying the directory by model is what lets several models coexist and what lets
+selection answer "is there a derivative for this model?" from the directory
+listing, before opening anything.
+
+Write-back is an explicit command, never automatic, and is idempotent and
+checksum-verified so an interrupted transfer resumes rather than duplicating.
+
+### Batch basecalling must not thrash the archive
+
+Basecalling a batch of experiments off one HDD has a failure mode that has
+nothing to do with correctness. Reading the next run's POD5 is a large sequential
+read; writing the previous run's basecalls is a large sequential write. On one
+spindle, interleaving them turns both into seek storms and can cost more
+throughput than the basecalling itself saves.
+
+The policy is therefore structural rather than advisory:
+
+- **Basecalls are always written to the analysis tree first** — local disk or
+  SSD — never straight to the archive volume.
+- **Write-back is a separate phase**, run after the batch, so the archive sees
+  one long read phase and then one long write phase instead of alternating.
+  Making it a distinct command rather than a flag inside the batch loop is what
+  makes this the default rather than a thing to remember.
+- **Overlap is permitted only across devices.** `PSR-08`'s volume identity is
+  what makes this checkable: if source and destination resolve to different
+  volume ids, concurrent read and write is fine and should not be prevented.
+- **Write-back processes one run at a time**, keeping each run's output
+  contiguous rather than interleaving several.
+
+Prefetching the next run's POD5 while the GPU works is read-only against the
+archive and stays fine.
+
+## Work items
+
+| item | status | evidence |
+|---|---|---|
+| `BCS-01` accept a mixed-source directory as `input_data_path` | proposed | -- |
+| `BCS-02` read basecall-model provenance from FASTQ, BAM and POD5 | proposed | -- |
+| `BCS-03` model-match and capability policy | proposed | -- |
+| `BCS-04` preference ordering, availability-aware | proposed | -- |
+| `BCS-05` `basecall` as a generation-publishing stage | proposed | -- |
+| `BCS-06` `full` runs basecall before raw and skips it when unneeded | proposed | -- |
+| `BCS-07` validate a basecall generation without re-reading POD5 | proposed | -- |
+| `BCS-08` archive write-back command and layout | proposed | -- |
+| `BCS-09` batch I/O policy: no interleaved read and write on one volume | proposed | -- |
+| `BCS-10` config-free `basecall --input/--output` invocation | proposed | -- |
+| `BCS-11` classify basecall/signal mismatch and respond per shape | proposed | -- |
+
+### Phase 1 — selection (`BCS-01`–`BCS-04`)
+
+Deliverable on its own: a run directory becomes a valid `input_data_path`, and
+the config expresses a model instead of a hand-picked subdirectory. No stage
+changes, no new commands.
+
+`BCS-02` is the item with hidden work. Three formats record the model three
+ways, and FASTQ provenance is not read anywhere today. The reader must be shared
+with whatever `BCS-05` writes, so that a basecall smftools produced and one the
+instrument produced are interrogated by the same code.
+
+**Tests.** A directory holding POD5, `fastq_pass` and BAMs resolves to the BAM
+when its model matches; to the FASTQ when only that matches; to basecalling when
+neither does. `fastq_fail` is never selected. A `direct` experiment refuses a
+canonical FASTQ even when the model matches. A source on a detached volume does
+not satisfy selection while an equivalent local one does.
+
+### Phase 2 — the stage (`BCS-05`–`BCS-07`)
+
+- `BCS-05` — `basecall_outputs/` with generations, `current.json`, retention, and
+  an entry in `smftools experiment generations`. The existing
+  `dorado-basecalling` intermediate becomes the stage's internal execution step
+  rather than the product.
+- `BCS-06` — `full` gains the stage ahead of raw. A FASTQ-input experiment must
+  produce byte-identical results to today, with `basecall` reporting `skipped`.
+- `BCS-07` — a published generation records POD5 identity so validation never
+  re-reads signal.
+- `BCS-10` — the config-free entry point, sharing the core and the published
+  artifact with the config form.
+- `BCS-11` — mismatch classification, which depends on `BCS-07`'s per-source
+  identity record to tell a subset from a disjoint set at all.
+
+**Risk.** Adding a stage touches the workflow contract, `experiment plan`
+targets, `full_summary.json`, and the acceptance criteria files. The migration
+question is what happens to runs whose basecalls exist only as the old
+intermediate: they should be adoptable into a generation rather than recomputed,
+and if that proves unreliable, recomputation must be explicit rather than silent.
+
+### Phase 3 — the archive round trip (`BCS-08`–`BCS-09`)
+
+Depends on `PSR-08` volume identity for the cross-device check in `BCS-09`.
+Without it, `BCS-09` degrades to "always defer write-back", which is the safe
+behaviour anyway and can ship first.
+
+## Decided
+
+- **A Dorado version difference does not invalidate a model match** (2026-08-26).
+  Recorded and reported, never gating. See the model-match rule above.
+- **`basecall` takes either an experiment config or plain input/output paths plus
+  model parameters** (2026-08-26). One command, one core, the same published
+  artifact either way. See "Two ways to invoke it".
+- **A basecalls/signal mismatch is classified, not judged** (2026-08-26). Superset
+  proceeds, disjoint refuses, subset proceeds only against a recorded deliberate
+  subsample. See "When basecalls and signal disagree".
+
+## Open questions
+
+- **What identifies a config-free basecall's output as belonging to a run?** The
+  config form has the run root and the experiment identity. The config-free form
+  has only `--output`, so the manifest's link back to the signal it consumed is
+  the only provenance it carries. Whether that is enough for an experiment to
+  adopt it later without ambiguity is unresolved, and is the main thing `BCS-10`
+  has to get right.
