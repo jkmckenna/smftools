@@ -1,7 +1,7 @@
 # Portable storage roots, volume identity, and offline raw data (`PSR`)
 
-**Status:** in progress. Phase 1 (`PSR-01`-`PSR-03`) implemented on
-`feature/psr-01-offline-input-state`; Phases 2-4 remain proposed.
+**Status:** in progress. Phase 1 (`PSR-01`-`PSR-03`) merged; Phases 2-5
+remain proposed.
 
 **Repository state reviewed:** `bf6e9b1` — recorded while writing. The
 "Current behaviour" section below is a direct investigation of the code at that
@@ -171,6 +171,83 @@ user's machines, and is rebuildable from attached drives by `smftools data scan`
 It is never required: a missing catalog degrades to Layer 2, and a missing
 roots file degrades to Layer 1.
 
+### Layer 4 — a root is a set of locations, and locality is tracked per run
+
+Layers 2 and 3 assume one root binds to one path. Real trees are not shaped that
+way: `data/` is simultaneously where new collection lands *and* where archive
+drives mount, and `analyses/` holds some runs locally and others on an external
+SSD. A root is therefore an **ordered set of locations**, and resolution searches
+them in priority order rather than expanding to a single path.
+
+**The unit of placement is one run directory.** Never split a run's analysis tree
+across volumes. Everything inside a run already resolves by relative path and
+works today; keeping the unit at the run preserves that while making locality a
+per-run property — coarse enough to reason about, fine enough to be useful.
+
+**Raw replicas and analysis copies are not the same thing.** Two raw replicas are
+interchangeable: identical by checksum, so any attached one will do. Two copies
+of a run's *analysis* tree can legitimately differ, because each may hold
+different generations. Reusing the replica model on the analysis side would let a
+stale local copy silently shadow a newer one on an SSD. The analysis side needs
+one authoritative location per run, with duplicates detected and reported.
+
+#### "Newer" means generations, never timestamps
+
+Every stage directory publishes `generations/<id>/` selected by a `current.json`
+recording `generation_id` and `manifest_sha256`. That is the comparison basis.
+Modification times are not: `cp` does not preserve them, exFAT rounds to two
+seconds, and clocks drift between machines, so an mtime rule would silently
+prefer the wrong copy exactly when two machines have both been working.
+
+Comparing one run's stage between two locations gives four states:
+
+| state | meaning | response |
+|---|---|---|
+| identical | same generation set, same pointer | nothing to do |
+| ahead / behind | one side's generation set contains the other's | the superset wins; sync is additive |
+| diverged | each side holds generations the other lacks | **classify, do not resolve** |
+| pointer conflict | same generations, different `current.json` | ask; a pointer is a decision, not a copy |
+
+Divergence is ordinary — analyse locally, analyse again elsewhere — and it is
+never resolved by picking a side. This is the same rule `BCS-11` applies to
+basecalls against signal, for the same reason: a state that looks ambiguous from
+outside is unambiguous to whoever created it, so it must be reported rather than
+guessed.
+
+#### Sync is additive because generations are immutable
+
+Generations are content-addressed and never edited after publication, so copying
+one that a destination lacks cannot corrupt anything and can resume after an
+interruption. Sync therefore copies missing generations freely in either
+direction and **never** moves a `current.json` on its own. Advancing a pointer is
+a separate, explicit act.
+
+#### State updates should not depend on remembering
+
+The catalog is updated **in band** by the work itself: a stage that publishes a
+generation records its location as it writes. That covers collecting new data and
+running new analyses, which is most of what happens.
+
+`smftools data scan` exists for everything smftools did not do itself — a manual
+`rsync` to an SSD, a drive that was worked on from another machine, an archive
+copy made with the Finder. It is a reconciliation tool, not the primary
+mechanism, and it must be incremental so that running it over an attached archive
+is cheap enough to do reflexively.
+
+#### Project operations become locality-aware
+
+`PSR-01` gave raw input a `present`/`offline`/`missing` state and project
+operations got none of it. Verified at `d0a6b5e`: `list_experiments` resolves
+registry paths with no reachability check, and the one existence test in
+`project/catalog.py` silently `continue`s past a missing index.
+
+So with an SSD detached, `project list` reports experiments as though present,
+and a cross-experiment `materialize` either fails on a raw path or returns a
+pooled result quietly missing whichever experiments were unreachable. **The
+silent partial answer is the serious one** — a pooled result short several
+experiments reads as a biological result, not a defect. A partial selection must
+be refused by default, and labelled in the result when explicitly allowed.
+
 ### CLI surface
 
 `smftools data` — a third top-level group alongside `experiment` and `project`.
@@ -187,6 +264,8 @@ decision is the first step of adding a command and is recorded here deliberately
 | `data locate <experiment/dataset>` | replicas, and which are attached |
 | `data verify <dataset>` | checksum a replica against its manifest |
 | `data localize <config>` | copy small referenced inputs into the run directory |
+| `data status` | where every run's data and analyses are, what is attached, and what is ahead, behind or diverged |
+| `data sync <run>` | copy missing generations between two locations; never moves a pointer |
 
 `data localize` is the cheapest adoption win in the plan: copying `fasta`, the
 bed files, the sample sheet, and any barcode/UMI YAML into the experiment
@@ -212,6 +291,11 @@ volumes, and no catalog.
 | `PSR-13` `data localize` | proposed | — |
 | `PSR-14` `data init` scaffold for a new lab tree | proposed | — |
 | `PSR-15` docs + migration of existing absolute configs | proposed | — |
+| `PSR-16` a root resolves over an ordered set of locations | proposed | — |
+| `PSR-17` per-run analysis locality, with duplicate detection | proposed | — |
+| `PSR-18` locality state in `project list`/`materialize`; refuse silent partial answers | proposed | — |
+| `PSR-19` in-band catalog updates on publish; incremental `data scan`; `data status` | proposed | — |
+| `PSR-20` `data sync`: additive generation copy, divergence classified not resolved | proposed | — |
 
 ### Phase 1 — offline tolerance (`PSR-01`–`PSR-03`)
 
@@ -317,6 +401,29 @@ that is what the checksums are for.
   `docs/source/tutorials/directory_organization.md` around the three layers, and
   ship a migration note for `PSR-05`.
 
+### Phase 5 — many locations per root (`PSR-16`–`PSR-20`)
+
+Depends on `PSR-08` volume identity to say *where* a copy is in a way that
+survives remounting, and on `PSR-10`'s catalog to hold it.
+
+- `PSR-18` is separable and should come first. It is a correctness fix for
+  behaviour that exists today, needs none of the union-root machinery, and the
+  failure it removes — a quietly partial pooled result — is the worst one in this
+  document.
+- `PSR-19` is what makes the rest usable rather than a thing to remember.
+  In-band updates cover the common cases; `scan` reconciles what happened outside
+  smftools.
+- `PSR-20` must not gain a `--force-newer` flag that resolves divergence by
+  timestamp. If that appears, the generation-set comparison has been abandoned
+  and the tool is guessing again.
+
+**Tests.** Two locations of one run, one holding a generation the other lacks,
+classify as ahead/behind and sync additively; each holding a distinct generation
+classifies as diverged and refuses; equal generation sets with different
+`current.json` classify as a pointer conflict. A detached experiment makes
+`project materialize` refuse rather than pool a subset, and `project list` shows
+it as unreachable rather than present.
+
 ## Rejected alternatives
 
 **A symlink farm** — `data/<run>` as a symlink into the current mount. Low-tech
@@ -337,6 +444,19 @@ between terminals is a bad place for the only pointer to where the data is.
 needs to be: diffable, hand-inspectable, copyable between machines, and
 rebuildable from the drives themselves. Revisit only if a real user's catalog
 outgrows JSON.
+
+**Resolving divergence by modification time.** The obvious answer to "which copy
+is newer", and it is what a user would reach for. Rejected because the signal is
+not trustworthy where it matters most: `cp` does not preserve mtimes, exFAT
+rounds to two seconds, and clocks drift between machines — so it is least
+reliable in exactly the two-machine case that produces divergence. Generation
+sets are an exact answer to the same question and are already on disk.
+
+**Treating analysis copies as replicas.** Reusing Layer 3's replica model on the
+analysis side would be less code and is tempting for symmetry. Rejected because
+replicas are interchangeable by checksum and analysis trees are not: two copies
+can hold different generations, and "any attached one will do" would let a stale
+local copy shadow a newer SSD one.
 
 **Recording replicas per experiment instead of centrally** — the natural first
 instinct, since the experiment already has a manifest. Rejected because
