@@ -62,6 +62,7 @@ A plan with no implementation branch yet.
 | document | scope |
 |---|---|
 | `agent_files_plan.md` | restructuring the repo's `AGENTS.md`/`CLAUDE.md` files; explicitly not deployed |
+| `portable_storage_roots_implementation_plan.md` | `PSR` portable storage roots, volume identity, and offline raw data |
 
 ## `logs/` — not tracked
 
