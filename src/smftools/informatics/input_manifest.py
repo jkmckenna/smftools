@@ -507,16 +507,28 @@ def _validate_declarations(
 
 
 def inspect_input_manifest(
-    manifest_path: str | Path, *, alignment_mode: str = "align"
+    manifest_path: str | Path, *, alignment_mode: str = "align", require_sources: bool = True
 ) -> InspectedInputManifest:
-    """Validate manifest structure without hashing or writing task state."""
+    """Validate manifest structure without hashing or writing task state.
+
+    Args:
+        manifest_path: Path to the declared input manifest.
+        alignment_mode: Alignment mode the declarations must satisfy.
+        require_sources: Whether every declared source must exist. Config loading
+            passes ``False`` when the sources are on a detached volume, so the
+            manifest's structure and input type still resolve while its bytes are
+            archived (`PSR-01`). Structural validation is unaffected either way.
+
+    Returns:
+        InspectedInputManifest: The resolved manifest path, sources, and type.
+    """
     path = Path(manifest_path).expanduser().resolve(strict=False)
     declarations = _read_csv_declarations(path)
     kind, source_paths = _validate_declarations(
         declarations, alignment_mode, explicit_manifest=True
     )
     for source_path in source_paths:
-        if not source_path.is_file():
+        if require_sources and not source_path.is_file():
             raise InputManifestError(f"Input source is missing or not a file: {source_path}")
     input_type = "bam" if kind in {"unaligned_bam", "aligned_bam", "cram"} else kind
     return InspectedInputManifest(path=path, source_paths=source_paths, input_type=input_type)

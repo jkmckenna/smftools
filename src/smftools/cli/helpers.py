@@ -54,6 +54,13 @@ _NON_SEMANTIC_STAGE_CONFIG_KEYS = {
     "max_memory_gb",
     "max_memory_percent",
     "target_task_memory_mb",
+    # Whether the raw input happens to be attached to this machine right now is
+    # not a property of the experiment. Hashing it would make the same config
+    # incompatible with its own outputs depending on whether an archive volume
+    # is mounted (`PSR-01`).
+    "input_availability",
+    "input_unavailable_volume",
+    "input_unavailable_detail",
 }
 #: Settings that only change how results are *displayed*, never what is
 #: computed (`F30`). `reindex_references_adata` adds a `<reference>_reindexed`

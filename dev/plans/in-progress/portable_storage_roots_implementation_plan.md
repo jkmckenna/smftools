@@ -1,6 +1,7 @@
 # Portable storage roots, volume identity, and offline raw data (`PSR`)
 
-**Status:** proposed. No implementation branch.
+**Status:** in progress. Phase 1 (`PSR-01`-`PSR-03`) implemented on
+`feature/psr-01-offline-input-state`; Phases 2-4 remain proposed.
 
 **Repository state reviewed:** `bf6e9b1` — recorded while writing. The
 "Current behaviour" section below is a direct investigation of the code at that
@@ -196,9 +197,9 @@ volumes, and no catalog.
 
 | item | status | evidence |
 |---|---|---|
-| `PSR-01` input resolution state (`present`/`offline`/`missing`) | proposed | — |
-| `PSR-02` defer input discovery to consuming stages | proposed | — |
-| `PSR-03` actionable offline error naming the volume | proposed | — |
+| `PSR-01` input resolution state (`present`/`offline`/`missing`) | implemented | `tests/unit/config/test_input_availability.py` |
+| `PSR-02` skip discovery when offline; recover identity from the run | implemented | `test_offline_run_hashes_identically_to_the_attached_run` |
+| `PSR-03` actionable offline error naming the volume | implemented | `test_stage_requiring_raw_input_refuses_while_offline` |
 | `PSR-04` root variable expansion in config values | proposed | — |
 | `PSR-05` config-relative resolution of bare relative paths | proposed | — |
 | `PSR-06` machine-local roots file + `SMFTOOLS_ROOT_<NAME>` | proposed | — |
@@ -225,15 +226,53 @@ the archival workflow on its own.
   where one is known, and the fact that the volume appears unattached rather than
   the path deleted.
 
-**Tests.** A config naming an unattached path parses; `hmm`/`spatial`/
-`plot-current`/`export-bundle` run to completion against an existing run tree
-with that config; `raw` fails with the actionable message; a genuinely deleted
-path under an attached volume still fails as `missing`.
+**Tests.** A config naming an unattached path parses; `raw` fails with the
+actionable message; a genuinely deleted path under an attached volume still
+fails as `missing`; and an offline load hashes identically to an attached one.
+
+**`plot-current` was wrong in this list.** It reads POD5 signal directly from
+`input_data_path` (`cli/plot_current.py`), so it is a *consuming* stage and
+refuses while the input is archived, alongside `raw` and `load`. The stages that
+run offline are preprocess, variant, chimeric, spatial, hmm, latent,
+export-bundle and export-fastq. Re-basecalling is out of scope here: it resolves
+POD5 through its own durable-origin identity rather than `cfg.input_data_path`.
+
+**What discovery actually needed.** The plan said to move discovery out of
+`from_var_dict` entirely. Implementation kept it there for the `present` case and
+skipped it only when the volume is detached. Every structural check discovery
+feeds -- mixed types, unsupported SAM, CRAM alignment mode, direct-versus-FASTQ
+-- is worth keeping at config load when the data is reachable, and `missing`
+still raises there, so a mistyped path is caught exactly as early as before.
+Only the offline case defers.
+
+**The hash was the real blocker, and the plan did not anticipate it.**
+`input_type` and `input_files` feed each stage's config hash. Unset while the
+volume is detached, they moved raw's hash from `c40b924b8b11b4af` to
+`0dd065eb8fba68cc`, so a finished raw generation read as incompatible and every
+downstream stage -- all of which re-enter raw's gate through the dependency walk
+-- tried to re-ingest data it could not reach. Parsing succeeding was therefore
+not sufficient on its own.
+
+Two fixes were considered. Excluding the derived fields from the hash is more
+principled (they are a function of `input_data_path`, which stays hashed, and
+content identity is separately covered by `input_artifact_ids` and the input
+manifest's sha256) but removing keys changes the hash for everyone and would
+invalidate **every existing raw generation**, forcing a rebuild from
+FASTQ/POD5. Instead the offline branch recovers `input_type`/`input_files` from
+the run's own `resolved_input_manifest.json`, which reproduces the attached hash
+exactly and invalidates nothing.
+
+That recovery reads the resolved input manifest, **not** the experiment
+manifest's config snapshot: the snapshot records `input_type` after the
+FASTQ-to-BAM rewrite has replaced it, so it would not reproduce the hash. The
+three new availability fields are excluded from the stage hash for the same
+reason the recovery exists -- whether a drive is plugged in is not a property of
+the experiment.
 
 **Risk.** Deferring discovery moves the point where a real typo in
-`input_data_path` is caught, from config load to the ingestion stage. `PSR-03`'s
-`missing` classification is what keeps that from being a regression, so it is
-part of this phase rather than a follow-up.
+`input_data_path` is caught. `PSR-03`'s `missing` classification keeps that from
+being a regression: a path absent while its volume is attached still raises at
+config load.
 
 ### Phase 2 — named roots (`PSR-04`–`PSR-07`)
 

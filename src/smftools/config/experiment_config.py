@@ -30,8 +30,15 @@ from smftools.constants import (
 from smftools.informatics.alignment_adapters import adapter_names
 from smftools.informatics.experiment_identity import resolve_experiment_id
 from smftools.informatics.input_manifest import inspect_input_manifest
+from smftools.logging_utils import get_logger
 
 from .discover_input_files import discover_input_files
+from .input_availability import (
+    INPUT_OFFLINE,
+    INPUT_PRESENT,
+    resolve_input_availability,
+    restore_offline_input_identity,
+)
 
 # Optional dependency for YAML handling
 try:
@@ -41,6 +48,8 @@ except Exception:
 
 import numpy as np
 import pandas as pd
+
+logger = get_logger(__name__)
 
 AlignmentMode = Literal["align", "existing"]
 InputSourceRole = Literal["raw_signal", "reads", "alignment"]
@@ -832,6 +841,12 @@ class ExperimentConfig:
     recursive_input_search: bool = True
     input_type: Optional[str] = None
     input_files: Optional[List[Path]] = None
+    # Whether the configured raw input can be read right now. `offline` means the
+    # path is on a detached volume -- expected once raw data is archived, and only
+    # an error for the stages that actually consume it (`PSR-01`).
+    input_availability: str = INPUT_PRESENT
+    input_unavailable_volume: Optional[str] = None
+    input_unavailable_detail: Optional[str] = None
     alignment_mode: AlignmentMode = "align"
     input_source_role: Optional[InputSourceRole] = None
     informatics_outputs_dir: str = INFORMATICS_OUTPUTS_DIR
@@ -1711,10 +1726,36 @@ class ExperimentConfig:
             )
 
         input_manifest_path = None
+        input_availability_state = resolve_input_availability(None)
         if has_manifest_path:
+            # A manifest commonly lives in the analyses tree while its sources sit
+            # on the archive volume, so classify the sources and keep parsing when
+            # only they are offline (`PSR-01`).
+            manifest_availability = resolve_input_availability(raw_input_manifest_path)
             inspected = inspect_input_manifest(
-                raw_input_manifest_path, alignment_mode=alignment_mode
+                raw_input_manifest_path,
+                alignment_mode=alignment_mode,
+                require_sources=manifest_availability.is_present,
             )
+            if manifest_availability.is_present:
+                offline_sources = [
+                    resolve_input_availability(source) for source in inspected.source_paths
+                ]
+                input_availability_state = next(
+                    (state for state in offline_sources if not state.is_present),
+                    input_availability_state,
+                )
+            else:
+                input_availability_state = manifest_availability
+            if not input_availability_state.is_present:
+                if input_availability_state.state != INPUT_OFFLINE:
+                    raise ValueError(input_availability_state.detail)
+                logger.warning(
+                    "input is offline: %s. Stages that read raw input will refuse "
+                    "until volume %s is attached; every other stage runs normally.",
+                    input_availability_state.path,
+                    input_availability_state.volume,
+                )
             input_manifest_path = inspected.path
             input_files = list(inspected.source_paths)
             input_type = inspected.input_type
@@ -1730,64 +1771,105 @@ class ExperimentConfig:
             input_type = None
             input_files = None
 
-            input_is_directory = input_data_path.is_dir()
-            found = discover_input_files(
-                input_data_path,
-                bam_suffix=merged.get("bam_suffix", BAM_SUFFIX),
-                recursive=bool(merged.get("recursive_input_search", True)),
-            )
-            recognized_counts = _recognized_discovery_counts(found)
-            if len(recognized_counts) > 1:
-                detail = ", ".join(
-                    f"{kind}={recognized_counts[kind]}"
-                    for kind in _DISCOVERY_KIND_ORDER
-                    if kind in recognized_counts
-                )
-                raise ValueError(
-                    "input_data_path contains mixed recognized input types "
-                    f"({detail}). Use one homogeneous source type per experiment."
-                )
-            if not recognized_counts:
-                raise ValueError(
-                    f"input_data_path contains no supported input files: {input_data_path}"
-                )
-
-            input_type = next(iter(recognized_counts))
-            input_files = found[f"{input_type}_paths"]
-            if input_type == "sam":
-                raise ValueError(
-                    f"{input_type.upper()} input is not supported yet. Convert it to BAM and use "
-                    "alignment_mode='existing' for an already-produced alignment, or "
-                    "alignment_mode='align' to realign its reads."
-                )
-            if input_type == "cram" and alignment_mode != "existing":
-                raise ValueError("CRAM input requires alignment_mode='existing'.")
-            if input_is_directory and input_type in {"bam", "cram"}:
-                raise ValueError(
-                    "Alignment directory input is ambiguous. Supply one BAM/CRAM file or an "
-                    "explicit input manifest for validated source partitions."
-                )
-            if alignment_mode == "existing":
-                if input_type not in {"bam", "cram"}:
-                    raise ValueError(
-                        "alignment_mode='existing' requires aligned BAM or CRAM input."
+            # Classify before discovering. `discover_input_files` raises on an
+            # absent path, which used to make every stage command fail the moment
+            # an archive volume was detached -- including the stages that read no
+            # raw input at all (`PSR-01`). An offline volume is an expected state
+            # and parsing continues; a path missing while its volume is attached
+            # is still an error here, so a mistyped path is caught exactly as
+            # early as it always was.
+            input_availability_state = resolve_input_availability(input_data_path)
+            if not input_availability_state.is_present:
+                if input_availability_state.state == INPUT_OFFLINE:
+                    logger.warning(
+                        "input is offline: %s. Stages that read raw input will refuse "
+                        "until volume %s is attached; every other stage runs normally.",
+                        input_data_path,
+                        input_availability_state.volume,
                     )
-            modality = str(merged.get("smf_modality") or "").strip().lower()
-            if modality == "direct" and input_type == "fastq":
-                raise ValueError(
-                    "Direct-modification analysis requires raw signal or modification-tagged "
-                    "BAM input; FASTQ is sequence-only and cannot preserve MM/ML probabilities."
+                    # `input_type`/`input_files` feed each stage's config hash, so
+                    # leaving them unset would make a finished raw generation look
+                    # incompatible and send every downstream stage back to
+                    # ingestion for data it cannot reach.
+                    restored = restore_offline_input_identity(
+                        merged.get("output_directory"),
+                        bam_suffix=merged.get("bam_suffix", BAM_SUFFIX),
+                    )
+                    if restored is not None:
+                        input_type, input_files = restored
+                        logger.info(
+                            "Recovered offline input identity from the run's resolved input "
+                            "manifest: %d %s source(s)",
+                            len(input_files),
+                            input_type,
+                        )
+                    else:
+                        logger.warning(
+                            "No resolved input manifest under %s, so the offline input's "
+                            "identity is unknown. Stages will treat raw as incomplete.",
+                            merged.get("output_directory"),
+                        )
+                else:
+                    raise ValueError(input_availability_state.detail)
+            else:
+                input_is_directory = input_data_path.is_dir()
+                found = discover_input_files(
+                    input_data_path,
+                    bam_suffix=merged.get("bam_suffix", BAM_SUFFIX),
+                    recursive=bool(merged.get("recursive_input_search", True)),
                 )
+                recognized_counts = _recognized_discovery_counts(found)
+                if len(recognized_counts) > 1:
+                    detail = ", ".join(
+                        f"{kind}={recognized_counts[kind]}"
+                        for kind in _DISCOVERY_KIND_ORDER
+                        if kind in recognized_counts
+                    )
+                    raise ValueError(
+                        "input_data_path contains mixed recognized input types "
+                        f"({detail}). Use one homogeneous source type per experiment."
+                    )
+                if not recognized_counts:
+                    raise ValueError(
+                        f"input_data_path contains no supported input files: {input_data_path}"
+                    )
 
-            if input_is_directory:
-                print(
-                    f"Found {found['all_files_searched']} files; "
-                    f"fastq={len(found['fastq_paths'])}, "
-                    f"bam={len(found['bam_paths'])}, "
-                    f"pod5={len(found['pod5_paths'])}, "
-                    f"fast5={len(found['fast5_paths'])}, "
-                    f"h5ad={len(found['h5ad_paths'])}"
-                )
+                input_type = next(iter(recognized_counts))
+                input_files = found[f"{input_type}_paths"]
+                if input_type == "sam":
+                    raise ValueError(
+                        f"{input_type.upper()} input is not supported yet. Convert it to BAM and use "
+                        "alignment_mode='existing' for an already-produced alignment, or "
+                        "alignment_mode='align' to realign its reads."
+                    )
+                if input_type == "cram" and alignment_mode != "existing":
+                    raise ValueError("CRAM input requires alignment_mode='existing'.")
+                if input_is_directory and input_type in {"bam", "cram"}:
+                    raise ValueError(
+                        "Alignment directory input is ambiguous. Supply one BAM/CRAM file or an "
+                        "explicit input manifest for validated source partitions."
+                    )
+                if alignment_mode == "existing":
+                    if input_type not in {"bam", "cram"}:
+                        raise ValueError(
+                            "alignment_mode='existing' requires aligned BAM or CRAM input."
+                        )
+                modality = str(merged.get("smf_modality") or "").strip().lower()
+                if modality == "direct" and input_type == "fastq":
+                    raise ValueError(
+                        "Direct-modification analysis requires raw signal or modification-tagged "
+                        "BAM input; FASTQ is sequence-only and cannot preserve MM/ML probabilities."
+                    )
+
+                if input_is_directory:
+                    print(
+                        f"Found {found['all_files_searched']} files; "
+                        f"fastq={len(found['fastq_paths'])}, "
+                        f"bam={len(found['bam_paths'])}, "
+                        f"pod5={len(found['pod5_paths'])}, "
+                        f"fast5={len(found['fast5_paths'])}, "
+                        f"h5ad={len(found['h5ad_paths'])}"
+                    )
         else:
             input_data_path = None
             input_type = None
@@ -2224,6 +2306,13 @@ class ExperimentConfig:
             annotate_secondary_supplementary=merged.get("annotate_secondary_supplementary", True),
             smf_modality=merged.get("smf_modality"),
             input_data_path=input_data_path,
+            input_availability=input_availability_state.state,
+            input_unavailable_volume=(
+                str(input_availability_state.volume)
+                if input_availability_state.volume is not None
+                else None
+            ),
+            input_unavailable_detail=input_availability_state.detail or None,
             input_manifest_path=input_manifest_path,
             input_manifest_digest=merged.get("input_manifest_digest"),
             recursive_input_search=bool(merged.get("recursive_input_search", True)),
@@ -3088,6 +3177,33 @@ class ExperimentConfig:
                     errs.append(f"Feature range for {g}:{fname} is invalid: {rng}")
         return errs
 
+    def require_input_available(self, stage: str) -> None:
+        """Refuse to run a stage that reads raw input when the input cannot be read.
+
+        Stages that consume raw sequencing input (`raw`, `load`, `plot-current`,
+        re-basecalling) call this; stages downstream of ingestion do not, which is
+        what lets an experiment be analysed with its raw data archived (`PSR-01`).
+
+        Args:
+            stage: The stage name, named in the error.
+
+        Raises:
+            FileNotFoundError: If the input is offline or missing.
+        """
+        from .input_availability import InputAvailability, require_input_available
+
+        require_input_available(
+            InputAvailability(
+                state=self.input_availability,
+                path=Path(self.input_data_path) if self.input_data_path else None,
+                volume=(
+                    Path(self.input_unavailable_volume) if self.input_unavailable_volume else None
+                ),
+                detail=self.input_unavailable_detail or "",
+            ),
+            stage=stage,
+        )
+
     def validate(self, require_paths: bool = True, raise_on_error: bool = True) -> List[str]:
         """
         Validate the config. If require_paths True, check paths (input_data_path, fasta) exist;
@@ -3117,7 +3233,11 @@ class ExperimentConfig:
                 errors.append("experiment_id is required but missing.")
 
         if require_paths:
-            if self.input_data_path and not Path(self.input_data_path).exists():
+            if (
+                self.input_data_path
+                and self.input_availability == INPUT_PRESENT
+                and not Path(self.input_data_path).exists()
+            ):
                 errors.append(f"input_data_path does not exist: {self.input_data_path}")
             if self.input_manifest_path and not Path(self.input_manifest_path).exists():
                 errors.append(f"input_manifest_path does not exist: {self.input_manifest_path}")
@@ -3154,7 +3274,10 @@ class ExperimentConfig:
         if raise_on_error and errors:
             raise ValueError("ExperimentConfig validation failed:\n  " + "\n  ".join(errors))
 
-        errs = _validate_hmm_features_structure(self.hmm_feature_sets)
+        # Qualified: this is a `@staticmethod` on the class, so the bare name
+        # raised `NameError` on every call to `validate()`, whatever the config.
+        # Found by the first test to call `validate()`; unrelated to `PSR-01`.
+        errs = self._validate_hmm_features_structure(self.hmm_feature_sets)
         errors.extend(errs)
 
         return errors

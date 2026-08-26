@@ -53,6 +53,7 @@ An active branch, some items merged and others open.
 | `selective_pod5_rebasecalling_implementation_plan.md` | `SRB` |
 | `experiment_storage_schema.md` | formal parquet/zarr storage schema; phases 1-2 implemented |
 | `project_sample_and_set_stores.md` | project-level per-sample and set stores; set store v2 implemented |
+| `portable_storage_roots_implementation_plan.md` | `PSR` portable storage roots; Phase 1 (offline raw data) implemented, Phases 2-4 proposed |
 | `generation_lifecycle_and_naming_implementation_plan.md` | `EGL` generation lifecycle and experiment naming; the NKG rollout and the findings log are split out into `logs/` |
 | `duplicate_detection_span_agnostic_implementation_plan.md` | `DSA` span-agnostic duplicate detection; drafted, `DSA-05` real-data qualification open |
 
@@ -63,7 +64,6 @@ A plan with no implementation branch yet.
 | document | scope |
 |---|---|
 | `agent_files_plan.md` | restructuring the repo's `AGENTS.md`/`CLAUDE.md` files; explicitly not deployed |
-| `portable_storage_roots_implementation_plan.md` | `PSR` portable storage roots, volume identity, and offline raw data |
 
 ## `logs/` — not tracked
 

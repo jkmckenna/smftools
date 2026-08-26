@@ -36,7 +36,9 @@ def plot_current(config_path: str) -> None:
             "No read IDs specified. Set 'plot_current_read_ids' in your experiment config."
         )
 
-    # POD5 directory from input_data_path
+    # POD5 directory from input_data_path. This stage reads raw signal, so it is
+    # one of the few that cannot run with the input archived (`PSR-01`).
+    cfg.require_input_available("plot-current")
     pod5_dir = cfg.input_data_path
 
     # Reference coordinates (from config or derived from adata.var)
