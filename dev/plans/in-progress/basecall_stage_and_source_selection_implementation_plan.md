@@ -4,8 +4,10 @@
 `feature/bcs-01-source-selection`. Of Phase 2, `BCS-05` (`basecall` as a
 generation-publishing stage) is implemented on
 `feature/bcs-05-basecall-stage`, standalone -- see its note for what it
-deliberately does not yet integrate with. `BCS-06`, `BCS-07`, `BCS-10`,
-`BCS-11`, and all of Phase 3 remain proposed.
+deliberately does not yet integrate with. `BCS-06` (`full` runs it ahead of
+raw) is implemented on `feature/bcs-06-full-recipe` -- see its note for the
+narrower shape that shipped. `BCS-07`, `BCS-10`, `BCS-11`, and all of Phase 3
+remain proposed.
 
 **Repository state reviewed:** `69c24e4` — recorded while writing.
 
@@ -273,7 +275,7 @@ archive and stays fine.
 | `BCS-03` model-match and capability policy | implemented | `test_direct_modality_refuses_a_canonical_fastq`, `test_bare_selector_accepts_any_version_of_its_family` |
 | `BCS-04` preference ordering, availability-aware | implemented | `test_bam_is_preferred_over_fastq_when_both_qualify`, `test_fastq_fail_is_never_selected` |
 | `BCS-05` `basecall` as a generation-publishing stage | implemented | `tests/unit/informatics/test_basecall_generation.py`, `tests/unit/informatics/test_basecall_execution.py`, `tests/unit/test_basecall_cli.py` |
-| `BCS-06` `full` runs basecall before raw and skips it when unneeded | proposed | -- |
+| `BCS-06` `full` runs basecall before raw and skips it when unneeded | implemented | `tests/unit/test_full_recipe.py` (`test_full_flow_runs_raw_preprocess_spatial_hmm_latent_in_order`, `test_full_summary_links_stage_logs_and_outcomes`) |
 | `BCS-07` validate a basecall generation without re-reading POD5 | proposed | -- |
 | `BCS-08` archive write-back command and layout | proposed | -- |
 | `BCS-09` batch I/O policy: no interleaved read and write on one volume | proposed | -- |
@@ -373,7 +375,42 @@ underlying execution is shared, not the artifact model -- but the plan's
 core worry (redundant GPU work between the two paths) does not apply even
 before `BCS-06` unifies them properly.
 
-Two further simplifications, both intentional and both `BCS-06`/`BCS-07`
+**`BCS-06` shipped as a `full`-only pre-step, not a DAG node.** `full_flow`
+now calls a new `cli.basecall.basecall_stage(cfg)` before
+`execute_experiment_target`, entirely outside `pipeline/experiment_graph.py`'s
+semantic DAG -- `EXPERIMENT_STAGES`, `_STAGE_DEPENDENCIES`,
+`EXPERIMENT_NODE_IDS`, `experiment plan` targets, and `raw`'s own inline
+basecalling call site are all untouched. That is narrower than "needs to
+touch `raw`'s call ordering" above: registering basecall as a real DAG
+predecessor of `raw` would mean adding it to every one of those per-stage
+metadata dicts, plus `experiment plan`/`experiment run --target basecall`,
+for a benefit (skippable-by-the-graph, individually targetable) this
+increment does not need. The two behaviors the work item actually asked for
+both hold without that: a FASTQ/BAM-input experiment's `full` run is
+byte-identical to before (`basecall_stage` catches
+`BasecallInputError` and returns without calling anything downstream), and
+that stage reports `skipped` in `full_summary.json` (a new `"basecall":
+BASECALL_DIR` entry in `cli.recipes.FULL_STAGE_DIRECTORIES`, populated by
+`basecall_stage`'s own `setup_stage_logging`/`mark_stage_outcome("skipped",
+...)` call, read back the same way every other stage's outcome is). For
+POD5/FAST5 input, `basecall_stage` runs for real ahead of `raw`, publishing
+into `basecall_outputs/` before `raw`'s own inline dorado call reuses the
+same `IntermediateSpec` commit BCS-05 already made cache-compatible, so nothing
+gets basecalled twice.
+
+The standalone `smftools basecall` command's behavior did not change: it
+still raises `BasecallInputError` for non-signal input rather than skipping
+quietly, since a direct invocation on the wrong kind of input is more likely
+a mistake worth surfacing than a `full` run's ordinary "nothing to do here."
+`basecall_core` stays the shared implementation either way; only
+`basecall_stage` adds the catch-and-skip behavior and the stage logging.
+
+`workflow_contract.py`'s `run_experiment_workflow` needed no separate change
+for `target == "full"` -- it already delegates to `recipes.full_flow` (not
+its own DAG call), so it picks up `basecall_stage` for free; verified by
+reading its dispatch rather than assumed.
+
+Two further simplifications, both intentional and both `BCS-07`
 territory to remove: idempotent reruns compare `stage_config_hash(cfg)` with
 no `stage=` argument (the coarse, unnarrowed hash) rather than a
 `basecall`-specific semantic key registered in `cli/helpers.py`'s

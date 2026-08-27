@@ -58,12 +58,15 @@ def test_full_flow_runs_raw_preprocess_spatial_hmm_latent_in_order(tmp_path, mon
     summary = json.loads((tmp_path / "full_summary.json").read_text())
     assert summary["outcome"] == "completed"
     assert [item["stage"] for item in summary["stages"]] == [
+        "basecall",
         "raw",
         "preprocess",
         "spatial",
         "hmm",
         "latent",
     ]
+    basecall_entry = next(item for item in summary["stages"] if item["stage"] == "basecall")
+    assert basecall_entry["outcome"] == "skipped"
 
 
 def test_full_cli_invokes_recipe(tmp_path, monkeypatch):
@@ -115,15 +118,23 @@ def test_full_summary_links_stage_logs_and_outcomes(tmp_path, monkeypatch):
     recipes.full_flow("experiment.csv")
 
     summary = json.loads((tmp_path / "full_summary.json").read_text())
-    assert [item["outcome"] for item in summary["stages"]] == [
-        "completed",
-        "skipped",
-        "completed",
-        "completed",
-        "completed",
+    assert [item["stage"] for item in summary["stages"]] == [
+        "basecall",
+        "raw",
+        "preprocess",
+        "spatial",
+        "hmm",
+        "latent",
     ]
-    assert summary["stages"][0]["human_log"] == "raw_outputs/logs/run_log.log"
-    assert summary["stages"][1]["performance_log"] == (
+    outcomes = {item["stage"]: item["outcome"] for item in summary["stages"]}
+    assert outcomes["basecall"] == "skipped"
+    assert outcomes["raw"] == "completed"
+    assert outcomes["preprocess"] == "skipped"
+    assert outcomes["spatial"] == "completed"
+    assert outcomes["hmm"] == "completed"
+    assert outcomes["latent"] == "completed"
+    assert summary["stages"][1]["human_log"] == "raw_outputs/logs/run_log.log"
+    assert summary["stages"][2]["performance_log"] == (
         "preprocess_adata_outputs/logs/run_perf.jsonl"
     )
 

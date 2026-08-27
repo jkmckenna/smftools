@@ -4,11 +4,12 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from ..constants import HMM_DIR, LATENT_DIR, PREPROCESS_DIR, RAW_DIR, SPATIAL_DIR
+from ..constants import BASECALL_DIR, HMM_DIR, LATENT_DIR, PREPROCESS_DIR, RAW_DIR, SPATIAL_DIR
 
 FULL_SUMMARY_FILENAME = "full_summary.json"
 FULL_SUMMARY_SCHEMA_VERSION = 2
 FULL_STAGE_DIRECTORIES = {
+    "basecall": BASECALL_DIR,
     "raw": RAW_DIR,
     "preprocess": PREPROCESS_DIR,
     "spatial": SPATIAL_DIR,
@@ -148,6 +149,7 @@ def full_flow(config_path: str):
     from smftools.constants import PARTITIONED_STAGE_REQUIRED_ARTIFACTS
 
     from ..pipeline.experiment_graph import execute_experiment_target
+    from .basecall import basecall_stage
     from .helpers import (
         get_adata_paths,
         load_experiment_config,
@@ -161,6 +163,7 @@ def full_flow(config_path: str):
     paths = get_adata_paths(cfg)
     with stage_lifecycle(cfg, "full") as lifecycle:
         try:
+            basecall_stage(cfg)
             execution = execute_experiment_target(
                 config_path,
                 "full",

@@ -132,10 +132,16 @@ already used them, and there is nothing for this command to do. Producing a
 *different* basecall of an already-ingested experiment is a re-basecalling
 lineage (`smftools experiment rebasecall`, above), not this.
 
-`raw`'s own inline basecalling is unchanged by this: `full` does not yet run
-`basecall` as its own step ahead of `raw`, and `raw` does not yet consult a
-published basecall generation before basecalling from POD5 itself. That
-integration is still to come.
+`smftools experiment full` (and `experiment run --target full`) runs this
+stage first, ahead of `raw`, reporting its outcome in `full_summary.json`
+alongside every other stage. For POD5/FAST5 input it publishes a
+`basecall_outputs/` generation the same way the standalone command does; for
+any other input it reports `skipped` and does nothing further, so a
+FASTQ/BAM-input experiment's `full` run is unchanged from before this stage
+existed. `raw`'s own inline basecalling is still a separate call site -- it
+does not yet consult a published basecall generation before basecalling from
+POD5 itself -- but the two share the same underlying `dorado-basecalling`
+intermediate, so running `full` on POD5 input never basecalls twice.
 
 ## Named experiment sets
 
