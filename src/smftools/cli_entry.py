@@ -2344,4 +2344,53 @@ def plot_current(config_path):
     plot_current_fn(config_path)
 
 
+####### Volume- and machine-scoped storage operations ###########
+@cli.group("data")
+def data_group():
+    """Machine- and volume-scoped storage operations (portable storage roots).
+
+    Below any single experiment and across all projects -- see PSR in
+    dev/plans/in-progress/portable_storage_roots_implementation_plan.md.
+    """
+
+
+@data_group.command("init-volume")
+@click.argument("mount", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.option("--label", required=True, help="Human-readable name for this volume.")
+@click.option(
+    "--kind",
+    type=click.Choice(["working", "archive", "backup"], case_sensitive=False),
+    default="archive",
+    show_default=True,
+    help="What role this volume plays.",
+)
+def data_init_volume_cmd(mount: Path, label: str, kind: str):
+    """Stamp MOUNT with a permanent volume identity.
+
+    Writes .smftools-volume.json at the volume root. The stamp is written
+    once and never rewritten: re-running this command on an already-stamped
+    volume leaves it untouched and reports its existing identity, so a
+    drive keeps its volume_id even if it is later relabeled or reattached
+    under a different mount point.
+    """
+    from .cli.data_cmd import data_init_volume
+
+    try:
+        stamp, created, warnings = data_init_volume(mount, label=label, kind=kind.lower())
+    except (FileNotFoundError, ValueError) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    if created:
+        click.echo(
+            f"Stamped {mount} as volume {stamp['volume_id']} ({stamp['label']}, {stamp['kind']})"
+        )
+    else:
+        click.echo(
+            f"{mount} is already stamped as volume {stamp['volume_id']} "
+            f"({stamp['label']}, {stamp['kind']}, created {stamp['created']})"
+        )
+    for warning in warnings:
+        click.echo(f"  WARNING: {warning}")
+
+
 ##########################################
