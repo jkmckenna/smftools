@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 import json
+import uuid
 from pathlib import Path
 
 import pytest
 
+from smftools.data.analysis_catalog import locations_for
 from smftools.data.replica_catalog import replicas_for
-from smftools.data.volume_scan import scan_and_catalog, scan_volume
+from smftools.data.volume_scan import (
+    scan_and_catalog,
+    scan_and_catalog_analysis_locations,
+    scan_volume,
+    scan_volume_for_analysis_locations,
+)
 from smftools.data.volume_stamp import init_volume
 from smftools.informatics.input_manifest import resolve_input_manifest
 
@@ -17,6 +24,14 @@ def _write(path: Path, content: bytes) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(content)
     return path
+
+
+def _set_identity(run_root: Path, experiment_uid: str | None) -> None:
+    run_root.mkdir(parents=True, exist_ok=True)
+    payload: dict = {"schema_version": 1}
+    if experiment_uid is not None:
+        payload["experiment_uid"] = experiment_uid
+    (run_root / "experiment_manifest.json").write_text(json.dumps(payload), encoding="utf-8")
 
 
 def _publish_run(run_root: Path, *, source_name: str = "sample.fastq") -> str:
@@ -130,3 +145,93 @@ def test_scan_and_catalog_does_not_mutate_the_input_catalog(tmp_path: Path) -> N
     scan_and_catalog(mount, original)
 
     assert original == {}
+
+
+# --- analysis-location scanning (PSR-19) -------------------------------------
+
+
+def test_scan_volume_for_analysis_locations_finds_a_run(tmp_path: Path) -> None:
+    mount = tmp_path / "mount"
+    uid = str(uuid.uuid4())
+    _set_identity(mount / "exp1", uid)
+
+    found = scan_volume_for_analysis_locations(mount)
+
+    assert len(found) == 1
+    assert found[0].relative_path == "exp1"
+    assert found[0].experiment_uid == uid
+    assert found[0].warning is None
+
+
+def test_scan_volume_for_analysis_locations_prunes_generations(tmp_path: Path) -> None:
+    mount = tmp_path / "mount"
+    buried = mount / "generations" / "fake-run"
+    buried.mkdir(parents=True)
+    (buried / "experiment_manifest.json").write_text(
+        json.dumps({"experiment_uid": str(uuid.uuid4())}), encoding="utf-8"
+    )
+
+    assert scan_volume_for_analysis_locations(mount) == []
+
+
+def test_scan_volume_for_analysis_locations_does_not_nest_into_a_found_run_root(
+    tmp_path: Path,
+) -> None:
+    mount = tmp_path / "mount"
+    outer_uid = str(uuid.uuid4())
+    _set_identity(mount / "outer", outer_uid)
+    # Should never be reached -- an experiment does not nest inside another.
+    _set_identity(mount / "outer" / "raw_outputs" / "nested", str(uuid.uuid4()))
+
+    found = scan_volume_for_analysis_locations(mount)
+
+    assert [run.relative_path for run in found] == ["outer"]
+
+
+def test_scan_volume_for_analysis_locations_reports_missing_uid_as_a_warning(
+    tmp_path: Path,
+) -> None:
+    mount = tmp_path / "mount"
+    _set_identity(mount / "legacy-run", None)
+
+    found = scan_volume_for_analysis_locations(mount)
+
+    assert len(found) == 1
+    assert found[0].experiment_uid == ""
+    assert found[0].warning is not None
+
+
+def test_scan_and_catalog_analysis_locations_requires_a_stamped_mount(tmp_path: Path) -> None:
+    mount = tmp_path / "mount"
+    mount.mkdir()
+
+    with pytest.raises(ValueError, match="has not been stamped"):
+        scan_and_catalog_analysis_locations(mount, {})
+
+
+def test_scan_and_catalog_analysis_locations_registers_a_location(tmp_path: Path) -> None:
+    mount = tmp_path / "mount"
+    mount.mkdir()
+    stamp, _ = init_volume(mount, label="ssd-01", kind="working")
+    uid = str(uuid.uuid4())
+    _set_identity(mount / "exp1", uid)
+
+    catalog, runs = scan_and_catalog_analysis_locations(mount, {})
+
+    assert len(runs) == 1
+    locations = locations_for(catalog, uid)
+    assert len(locations) == 1
+    assert locations[0].volume_id == stamp.volume_id
+    assert locations[0].path == "exp1"
+
+
+def test_scan_and_catalog_analysis_locations_skips_a_missing_uid(tmp_path: Path) -> None:
+    mount = tmp_path / "mount"
+    mount.mkdir()
+    init_volume(mount, label="ssd-01", kind="working")
+    _set_identity(mount / "legacy-run", None)
+
+    catalog, runs = scan_and_catalog_analysis_locations(mount, {})
+
+    assert len(runs) == 1
+    assert catalog == {}

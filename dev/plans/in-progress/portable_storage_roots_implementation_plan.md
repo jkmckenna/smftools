@@ -3,7 +3,9 @@
 **Status:** in progress. Phases 1-4 (`PSR-01`-`PSR-15`) implemented. Of Phase
 5, `PSR-16` (ordered-set-of-locations roots), `PSR-17` (per-run analysis
 locality/duplicate detection), and `PSR-18` (project locality) are
-implemented; `PSR-19`, `PSR-20` remain proposed.
+implemented; `PSR-19` (`data status` + scan-based population) is partially
+implemented -- in-band publish hooks were not built, see its note; `PSR-20`
+remains proposed.
 
 **Repository state reviewed:** `bf6e9b1` — recorded while writing. The
 "Current behaviour" section below is a direct investigation of the code at that
@@ -296,7 +298,7 @@ volumes, and no catalog.
 | `PSR-16` a root resolves over an ordered set of locations | implemented | `tests/unit/config/test_root_location_sets.py` |
 | `PSR-17` per-run analysis locality, with duplicate detection | implemented | `tests/unit/data/test_run_locality.py` |
 | `PSR-18` locality state in `project list`/`materialize`; refuse silent partial answers | implemented | `tests/unit/project/test_project_unreachable_selection.py` |
-| `PSR-19` in-band catalog updates on publish; incremental `data scan`; `data status` | proposed | — |
+| `PSR-19` in-band catalog updates on publish; incremental `data scan`; `data status` | partial | `tests/unit/data/test_analysis_catalog.py`, `tests/unit/data/test_volume_scan.py`, `tests/unit/test_data_cli.py` -- `data status` and scan-based population implemented; in-band publish hooks not built (see note) |
 | `PSR-20` `data sync`: additive generation copy, divergence classified not resolved | proposed | — |
 
 ### Phase 1 — offline tolerance (`PSR-01`–`PSR-03`)
@@ -729,6 +731,48 @@ survives remounting, and on `PSR-10`'s catalog to hold it.
 - `PSR-19` is what makes the rest usable rather than a thing to remember.
   In-band updates cover the common cases; `scan` reconciles what happened outside
   smftools.
+
+  **Shipped: the analysis-location catalog, `data status`, and scan-based
+  population. Deliberately not shipped: in-band updates.** A second catalog
+  (`smftools.data.analysis_catalog`, `analysis_catalog.json` next to
+  `roots.toml`) tracks where copies of a run's *analysis* tree are, keyed by
+  `experiment_uid` -- distinct from the replica catalog's dataset-digest key,
+  since analysis copies are not interchangeable the way raw replicas are
+  (`PSR-17`). `data scan`'s existing walk (`PSR-11`) was extended to
+  populate it: it already found every run root to check for a raw input
+  manifest, and `experiment_manifest.json` -- present at the root of every
+  modern run regardless of which stages completed -- turned out to be an
+  *easier* marker to walk for than the raw manifest, since nothing lives
+  below a run root that this scan needs once it's found (no
+  `raw_outputs`-specific descent rule was needed here at all). `data status`
+  combines both catalogs with `discover_volumes()` and `PSR-17`'s
+  `compare_run_locations`, run pairwise against the first attached location,
+  to report locations, attached status, per-stage locality, and (when at
+  least one location is reachable) the run's raw dataset and its replicas.
+
+  In-band updates -- a stage recording its own location as it publishes,
+  which the design calls the *primary* mechanism, not `scan` -- were not
+  built. Doing this honestly means threading a location-recording call
+  through every generation publisher (raw, preprocess, latent, project
+  embeddings -- the same four subsystems `generation_listing.py`'s own
+  docstring names as having "converged independently" on the shared
+  generations vocabulary), which is a materially larger and riskier change
+  than anything else in this plan: many call sites across files this session
+  never touched, each needing the same care given to the scan/catalog code
+  that did get built. `data scan` is a complete substitute in the meantime --
+  the design already treats it as a legitimate, if secondary, mechanism
+  ("a reconciliation tool, not the primary mechanism") -- so `data status`
+  is fully functional today, just not automatically current without a scan.
+  This gap is stated in `docs/source/cli.md`, not hidden.
+
+  **"Incremental" was already satisfied, not a separate task.** The design's
+  reason for `scan` needing to be incremental was cost: cheap enough to run
+  reflexively over an attached archive. Neither walk (`_iter_resolved_manifests`,
+  `_iter_run_roots`) hashes anything -- both just parse small JSON files they
+  find, and `add_replica`/`add_location` are idempotent updates-in-place -- so
+  a repeat scan was already cheap by construction from `PSR-11` onward. No
+  separate caching or change-tracking was added.
+
 - `PSR-20` must not gain a `--force-newer` flag that resolves divergence by
   timestamp. If that appears, the generation-set comparison has been abandoned
   and the tool is guessing again.
