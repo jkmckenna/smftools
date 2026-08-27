@@ -14,7 +14,7 @@ in dedup or a fitted HMM needs real multi-experiment data, and the
 protected-data validation profile needs `NKG-03` to regenerate more than the
 single pilot experiment. Both clear when the regeneration lane produces runs.
 See
-[generation_lifecycle_and_naming_implementation_plan.md](generation_lifecycle_and_naming_implementation_plan.md)
+[generation_lifecycle_and_naming_implementation_plan.md](../completed/generation_lifecycle_and_naming_implementation_plan.md)
 for `NKG-03`, which is the active lane across both programs.
 
 **Implementation baseline:** `d862e3a` on `main` (after `EGL-13`; `a6ff9b5` was
@@ -357,7 +357,7 @@ basecall manifests are additional dependencies, not encoded as fake POD5 input
 rows.
 
 **Amended 2026-08-14 by `D2` in
-[generation_lifecycle_and_naming_implementation_plan.md](generation_lifecycle_and_naming_implementation_plan.md):**
+[generation_lifecycle_and_naming_implementation_plan.md](../completed/generation_lifecycle_and_naming_implementation_plan.md):**
 `generation_kind` moves off this list and onto the **basecall** generation
 manifest — the artifact whose contents the selection actually determines. The
 descendant raw generation records `basecall_generation_id` and derives
@@ -393,7 +393,7 @@ experiment's scientific identity, or masquerade as adding a new replicate.
 Rollback is promotion of a prior complete lineage.
 
 **Amended 2026-08-14 by `D1` in
-[generation_lifecycle_and_naming_implementation_plan.md](generation_lifecycle_and_naming_implementation_plan.md):**
+[generation_lifecycle_and_naming_implementation_plan.md](../completed/generation_lifecycle_and_naming_implementation_plan.md):**
 this registry entry is the **only** cross-stage selector in either program, and
 the optional experiment-local `active.json` in the artifact layout below is
 dropped — two experiment-scoped selectors can disagree with no rule for which
@@ -923,7 +923,7 @@ refreshed QC, atomic lineage publication, and explicit promotion.
 Two questions that would otherwise have landed in `SRB-01` are already settled
 and should not be reopened here: where `generation_kind` lives (`D2`) and how
 lineage selection relates to EGL's `current.json` (`D1`). Both are recorded in
-[generation_lifecycle_and_naming_implementation_plan.md](generation_lifecycle_and_naming_implementation_plan.md)
+[generation_lifecycle_and_naming_implementation_plan.md](../completed/generation_lifecycle_and_naming_implementation_plan.md)
 and amended into the contracts above.
 
 ## Program completion definition
