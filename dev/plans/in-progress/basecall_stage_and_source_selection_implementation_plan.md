@@ -1,6 +1,7 @@
 # Basecalling as a stage, and choosing a read source (`BCS`)
 
-**Status:** proposed. No implementation branch.
+**Status:** in progress. Phase 1 (`BCS-01`-`BCS-04`) implemented on
+`feature/bcs-01-source-selection`; Phases 2-3 remain proposed.
 
 **Repository state reviewed:** `69c24e4` — recorded while writing.
 
@@ -263,10 +264,10 @@ archive and stays fine.
 
 | item | status | evidence |
 |---|---|---|
-| `BCS-01` accept a mixed-source directory as `input_data_path` | proposed | -- |
-| `BCS-02` read basecall-model provenance from FASTQ, BAM and POD5 | proposed | -- |
-| `BCS-03` model-match and capability policy | proposed | -- |
-| `BCS-04` preference ordering, availability-aware | proposed | -- |
+| `BCS-01` accept a mixed-source directory as `input_data_path` | implemented | `tests/unit/config/test_mixed_source_directory.py` |
+| `BCS-02` read basecall-model provenance from FASTQ, BAM and POD5 | implemented | `informatics/basecall_provenance.py`; verified on a real run's FASTQ and BAM |
+| `BCS-03` model-match and capability policy | implemented | `test_direct_modality_refuses_a_canonical_fastq`, `test_bare_selector_accepts_any_version_of_its_family` |
+| `BCS-04` preference ordering, availability-aware | implemented | `test_bam_is_preferred_over_fastq_when_both_qualify`, `test_fastq_fail_is_never_selected` |
 | `BCS-05` `basecall` as a generation-publishing stage | proposed | -- |
 | `BCS-06` `full` runs basecall before raw and skips it when unneeded | proposed | -- |
 | `BCS-07` validate a basecall generation without re-reading POD5 | proposed | -- |
@@ -286,11 +287,28 @@ ways, and FASTQ provenance is not read anywhere today. The reader must be shared
 with whatever `BCS-05` writes, so that a basecall smftools produced and one the
 instrument produced are interrogated by the same code.
 
-**Tests.** A directory holding POD5, `fastq_pass` and BAMs resolves to the BAM
-when its model matches; to the FASTQ when only that matches; to basecalling when
-neither does. `fastq_fail` is never selected. A `direct` experiment refuses a
-canonical FASTQ even when the model matches. A source on a detached volume does
-not satisfy selection while an equivalent local one does.
+**Tests.** All of the above, in
+`tests/unit/informatics/test_basecall_source_selection.py` and
+`tests/unit/config/test_mixed_source_directory.py`. Verified against a real run
+directory too: 58 FASTQ discovered across `fastq_pass` and `fastq_fail`, 28
+excluded, 30 selected, model read as `dna_r10.4.1_e8.2_400bps_hac@v5.0.0` from
+both the FASTQ headers and a BAM's `@RG DS`.
+
+**An IAR acceptance criterion was deliberately superseded, and is recorded as
+such rather than quietly rewritten.** `scenario.mixed_input_directory` required a
+mixed directory to fail before execution listing the conflicting types. That was
+right while there was no principled way to choose between representations of one
+set of reads, and it is what forced the hand-picked subdirectory. It is now
+`withdrawn` in `tests/acceptance/input_alignment_criteria.json` with the
+reasoning; `finding.iar_m1` stays automated, because the defect it guards --
+silent, priority-based selection -- is still prevented, just by a different
+mechanism.
+
+**One behaviour worth knowing.** A directory whose reads record no model at all
+falls through to basecalling from signal rather than failing. That is correct,
+but it is warned about, naming every rejected candidate, because a user who
+pointed at that directory expecting its reads to be used should not learn
+otherwise from a GPU bill.
 
 ### Phase 2 — the stage (`BCS-05`–`BCS-07`)
 
