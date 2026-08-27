@@ -501,3 +501,132 @@ def test_status_cli_json_output(tmp_path: Path, monkeypatch) -> None:
     payload = json.loads(result.output)
     assert payload["runs"][0]["experiment_uid"] == uid
     assert payload["runs"][0]["locations"][0]["attached"] is True
+
+
+def _two_attached_locations(tmp_path: Path, monkeypatch, uid: str):
+    """Two mounts, same experiment_uid, both stamped, scanned, and discoverable."""
+    from smftools.constants import RAW_DIR
+
+    mount_a = tmp_path / "mount_a"
+    mount_a.mkdir()
+    stamp_a, _ = init_volume(mount_a, label="ssd-a", kind="working")
+    run_a = mount_a / "exp1"
+    _set_identity(run_a, uid)
+    _publish_generation(run_a, RAW_DIR, "gen-1")
+    _publish_generation(run_a, RAW_DIR, "gen-2")
+
+    mount_b = tmp_path / "mount_b"
+    mount_b.mkdir()
+    stamp_b, _ = init_volume(mount_b, label="ssd-b", kind="working")
+    run_b = mount_b / "exp1"
+    _set_identity(run_b, uid)
+    _publish_generation(run_b, RAW_DIR, "gen-1")
+
+    monkeypatch.setenv(ENV_VOLUME_SEARCH_PATHS, os.pathsep.join([str(mount_a), str(mount_b)]))
+    catalog_path = tmp_path / "cat.json"
+    runner = CliRunner()
+    runner.invoke(cli, ["data", "scan", "--catalog-path", str(catalog_path)])
+    return run_a, run_b, stamp_a.volume_id, stamp_b.volume_id, catalog_path
+
+
+def test_sync_cli_copies_the_missing_generation(tmp_path: Path, monkeypatch) -> None:
+    import uuid
+
+    from smftools.constants import RAW_DIR
+    from smftools.informatics.generation_listing import GENERATIONS_SUBDIR
+
+    uid = str(uuid.uuid4())
+    run_a, run_b, _, _, catalog_path = _two_attached_locations(tmp_path, monkeypatch, uid)
+    runner = CliRunner()
+
+    result = runner.invoke(cli, ["data", "sync", uid])
+
+    assert result.exit_code == 0, result.output
+    assert (run_b / RAW_DIR / GENERATIONS_SUBDIR / "gen-2").is_dir()
+
+
+def test_sync_cli_dry_run_does_not_copy(tmp_path: Path, monkeypatch) -> None:
+    import uuid
+
+    from smftools.constants import RAW_DIR
+    from smftools.informatics.generation_listing import GENERATIONS_SUBDIR
+
+    uid = str(uuid.uuid4())
+    run_a, run_b, _, _, catalog_path = _two_attached_locations(tmp_path, monkeypatch, uid)
+    runner = CliRunner()
+
+    result = runner.invoke(cli, ["data", "sync", uid, "--dry-run"])
+
+    assert result.exit_code == 0, result.output
+    assert not (run_b / RAW_DIR / GENERATIONS_SUBDIR / "gen-2").exists()
+
+
+def test_sync_cli_accepts_explicit_from_to(tmp_path: Path, monkeypatch) -> None:
+    import uuid
+
+    from smftools.constants import RAW_DIR
+    from smftools.informatics.generation_listing import GENERATIONS_SUBDIR
+
+    uid = str(uuid.uuid4())
+    run_a, run_b, vol_a, vol_b, catalog_path = _two_attached_locations(tmp_path, monkeypatch, uid)
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli,
+        [
+            "data",
+            "sync",
+            uid,
+            "--from",
+            vol_a,
+            "--to",
+            vol_b,
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert (run_b / RAW_DIR / GENERATIONS_SUBDIR / "gen-2").is_dir()
+
+
+def test_sync_cli_refuses_without_exactly_two_attached_locations(tmp_path: Path) -> None:
+    import uuid
+
+    runner = CliRunner()
+
+    result = runner.invoke(cli, ["data", "sync", str(uuid.uuid4())])
+
+    assert result.exit_code != 0
+
+
+def test_sync_cli_diverged_exits_nonzero_and_copies_nothing(tmp_path: Path, monkeypatch) -> None:
+    import uuid
+
+    from smftools.constants import RAW_DIR
+    from smftools.informatics.generation_listing import GENERATIONS_SUBDIR
+
+    uid = str(uuid.uuid4())
+    mount_a = tmp_path / "mount_a"
+    mount_a.mkdir()
+    init_volume(mount_a, label="ssd-a", kind="working")
+    run_a = mount_a / "exp1"
+    _set_identity(run_a, uid)
+    _publish_generation(run_a, RAW_DIR, "gen-a-only")
+
+    mount_b = tmp_path / "mount_b"
+    mount_b.mkdir()
+    init_volume(mount_b, label="ssd-b", kind="working")
+    run_b = mount_b / "exp1"
+    _set_identity(run_b, uid)
+    _publish_generation(run_b, RAW_DIR, "gen-b-only")
+
+    monkeypatch.setenv(ENV_VOLUME_SEARCH_PATHS, os.pathsep.join([str(mount_a), str(mount_b)]))
+    catalog_path = tmp_path / "cat.json"
+    runner = CliRunner()
+    runner.invoke(cli, ["data", "scan", "--catalog-path", str(catalog_path)])
+
+    result = runner.invoke(cli, ["data", "sync", uid])
+
+    assert result.exit_code != 0
+    assert "diverged" in result.output
+    assert not (run_a / RAW_DIR / GENERATIONS_SUBDIR / "gen-b-only").exists()
+    assert not (run_b / RAW_DIR / GENERATIONS_SUBDIR / "gen-a-only").exists()

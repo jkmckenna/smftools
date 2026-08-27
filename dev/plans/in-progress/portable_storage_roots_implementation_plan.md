@@ -1,11 +1,10 @@
 # Portable storage roots, volume identity, and offline raw data (`PSR`)
 
-**Status:** in progress. Phases 1-4 (`PSR-01`-`PSR-15`) implemented. Of Phase
-5, `PSR-16` (ordered-set-of-locations roots), `PSR-17` (per-run analysis
-locality/duplicate detection), and `PSR-18` (project locality) are
-implemented; `PSR-19` (`data status` + scan-based population) is partially
-implemented -- in-band publish hooks were not built, see its note; `PSR-20`
-remains proposed.
+**Status:** every numbered work item (`PSR-01`-`PSR-20`) is implemented, with
+one deliberate exception: `PSR-19`'s in-band catalog updates on publish were
+not built (see its note) -- `data scan` is a full substitute in the meantime,
+and this is the one piece of the plan still worth picking up as a follow-on.
+Nothing else in this document describes unbuilt behavior.
 
 **Repository state reviewed:** `bf6e9b1` — recorded while writing. The
 "Current behaviour" section below is a direct investigation of the code at that
@@ -299,7 +298,7 @@ volumes, and no catalog.
 | `PSR-17` per-run analysis locality, with duplicate detection | implemented | `tests/unit/data/test_run_locality.py` |
 | `PSR-18` locality state in `project list`/`materialize`; refuse silent partial answers | implemented | `tests/unit/project/test_project_unreachable_selection.py` |
 | `PSR-19` in-band catalog updates on publish; incremental `data scan`; `data status` | partial | `tests/unit/data/test_analysis_catalog.py`, `tests/unit/data/test_volume_scan.py`, `tests/unit/test_data_cli.py` -- `data status` and scan-based population implemented; in-band publish hooks not built (see note) |
-| `PSR-20` `data sync`: additive generation copy, divergence classified not resolved | proposed | — |
+| `PSR-20` `data sync`: additive generation copy, divergence classified not resolved | implemented | `tests/unit/data/test_run_sync.py`, `tests/unit/test_data_cli.py` |
 
 ### Phase 1 — offline tolerance (`PSR-01`–`PSR-03`)
 
@@ -776,6 +775,29 @@ survives remounting, and on `PSR-10`'s catalog to hold it.
 - `PSR-20` must not gain a `--force-newer` flag that resolves divergence by
   timestamp. If that appears, the generation-set comparison has been abandoned
   and the tool is guessing again.
+
+  **Shipped exactly as scoped, with no `--force-newer` and no third option
+  beyond copy-or-refuse.** `smftools.data.run_sync.sync_run_locations`
+  reuses `PSR-17`'s `compare_run_locations` directly rather than
+  recomputing anything: `ahead`/`behind` copies the missing generation
+  directories (`shutil.copytree` into a `.{id}.syncing-<uuid>` staging
+  name, then `rename` into place -- the same stage-then-rename publish
+  pattern generation writers themselves already use, so a destination only
+  ever exists once fully copied); `diverged`/`pointer_conflict` copy
+  nothing and carry a human-readable `skipped_reason` instead of an
+  exception, since a partially-successful sync across several stages is the
+  normal case, not a failure. `current.json` is never written by this
+  module at all -- there is no code path that could move a pointer, not
+  merely a check that declines to. The CLI exits non-zero exactly when at
+  least one stage was left unresolved, so a script can tell "fully synced"
+  from "some stages need a human" without parsing output.
+
+  `--from`/`--to` (by `volume_id`) exist only to disambiguate when more than
+  two of a run's catalogued locations are attached at once; with exactly two
+  attached, sync runs on that pair with no flags needed. This is the only
+  addition beyond the CLI surface table's original `data sync <run>`, and it
+  is a refusal path (an explicit ambiguity error), not a way to skip
+  classification.
 
 **Tests.** Two locations of one run, one holding a generation the other lacks,
 classify as ahead/behind and sync additively; each holding a distinct generation

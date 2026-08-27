@@ -438,3 +438,79 @@ def data_status(
         for uid in experiment_uids
     ]
     return {"runs": runs}
+
+
+def data_sync(
+    target: str,
+    *,
+    from_volume: str | None = None,
+    to_volume: str | None = None,
+    dry_run: bool = False,
+    config_dir: str | Path | None = None,
+) -> dict:
+    """Additively sync generations between two attached locations of a run.
+
+    `from_volume`/`to_volume` name which two catalogued locations to sync,
+    by `volume_id`; both or neither. With neither, exactly two of the run's
+    catalogued locations must currently be attached, or the request is
+    refused rather than guessing which pair was meant.
+    """
+    from ..data.analysis_catalog import load_catalog as load_analysis_catalog
+    from ..data.analysis_catalog import locations_for
+    from ..data.run_sync import sync_run_locations
+    from ..data.volume_discovery import discover_volumes
+
+    if (from_volume is None) != (to_volume is None):
+        raise ValueError("--from and --to must be given together, or neither")
+
+    experiment_uid = _resolve_experiment_uid(target)
+    resolved_config_dir = Path(config_dir) if config_dir is not None else None
+    attached_by_id = {
+        found.stamp.volume_id: found for found in discover_volumes(config_dir=resolved_config_dir)
+    }
+    analysis_catalog = load_analysis_catalog()
+    locations = locations_for(analysis_catalog, experiment_uid)
+    attached = [
+        (location, attached_by_id[location.volume_id])
+        for location in locations
+        if location.volume_id in attached_by_id
+    ]
+
+    if from_volume is not None:
+        by_id = {location.volume_id: (location, found) for location, found in attached}
+        for volume_id in (from_volume, to_volume):
+            if volume_id not in by_id:
+                raise ValueError(
+                    f"volume {volume_id!r} is not an attached, catalogued analysis location "
+                    "of this run"
+                )
+        location_a, found_a = by_id[from_volume]
+        location_b, found_b = by_id[to_volume]
+    else:
+        if len(attached) != 2:
+            raise ValueError(
+                f"expected exactly 2 attached analysis locations to sync, found {len(attached)}; "
+                "disambiguate with --from/--to"
+            )
+        (location_a, found_a), (location_b, found_b) = attached
+
+    root_a = found_a.mount_path / location_a.path
+    root_b = found_b.mount_path / location_b.path
+    result = sync_run_locations(root_a, root_b, dry_run=dry_run)
+
+    return {
+        "experiment_uid": experiment_uid,
+        "location_a": {"volume_id": location_a.volume_id, "path": str(root_a)},
+        "location_b": {"volume_id": location_b.volume_id, "path": str(root_b)},
+        "dry_run": dry_run,
+        "stages": [
+            {
+                "kind": stage.kind,
+                "state": stage.state,
+                "copied_a_to_b": list(stage.copied_a_to_b),
+                "copied_b_to_a": list(stage.copied_b_to_a),
+                "skipped_reason": stage.skipped_reason,
+            }
+            for stage in result.stages
+        ],
+    }

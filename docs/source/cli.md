@@ -270,9 +270,21 @@ directory or a bare `experiment_uid`; omitted, every run `data scan` has
 found is reported.
 
 Divergence and pointer conflicts are reported, never resolved -- there is no
-flag that picks a side by timestamp or otherwise. `data sync`, which would
-resolve *ahead*/*behind* by copying whatever's missing (safe, since
-generations are immutable and additive), does not exist yet.
+flag that picks a side by timestamp or otherwise.
+
+`smftools data sync TARGET [--from VOLUME_ID --to VOLUME_ID] [--dry-run]`
+resolves *ahead*/*behind*, per stage, by copying whichever generations are
+missing from the location that lacks them -- safe and resumable, since
+generations are immutable and content-addressed, so a copy that is
+interrupted partway is simply retried whole on the next run rather than
+risking a corrupt partial directory. `current.json` is never moved by sync;
+advancing a pointer is a separate, explicit act. With no `--from`/`--to`,
+exactly two of `TARGET`'s catalogued locations must currently be attached, or
+the request is refused rather than guessing which pair was meant. A
+`diverged` or `pointer_conflict` stage copies nothing and is reported, the
+same as in `data status`; `data sync` exits non-zero when any stage was left
+unresolved this way, so a script can tell "fully synced" from "some stages
+need a human".
 
 **A known gap**: the catalogs above are populated by `data scan` walking
 attached volumes -- a reconciliation mechanism, explicitly by design, for
