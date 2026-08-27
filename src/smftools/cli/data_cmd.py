@@ -50,6 +50,28 @@ def data_list_volumes(*, config_dir: str | Path | None = None) -> list[dict]:
     return [{**item.stamp.to_dict(), "mount_path": str(item.mount_path)} for item in found]
 
 
+def data_roots_list(*, config_dir: str | Path | None = None) -> list[dict]:
+    """Every named root bound on this machine, as plain dicts.
+
+    Resolution order: `SMFTOOLS_ROOT_<NAME>` env vars, the user roots file,
+    then any `roots.toml` walked up from `config_dir` -- nearest layer
+    winning per name, so a root bound at more than one layer is only
+    reported once, from whichever layer actually supplied it (`source`).
+    """
+    from ..config.roots import known_roots
+
+    bindings = known_roots(config_dir=Path(config_dir) if config_dir is not None else None)
+    return [
+        {
+            "name": name,
+            "path": str(binding.path),
+            "source": binding.source,
+            "all_paths": [str(path) for path in binding.all_paths],
+        }
+        for name, binding in sorted(bindings.items())
+    ]
+
+
 def _resolve_dataset_digest(target: str) -> str:
     """A dataset digest from `target`: a literal digest, a run root, or a manifest path.
 

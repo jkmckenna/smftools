@@ -85,6 +85,7 @@ Below any single experiment and across all projects (portable storage roots — 
 | `init LAB_ROOT [--stamp-volume]` | `data_cmd.py` | `data_init` → `smftools.data.lab_init.scaffold_lab_root` | Scaffold `data/` + `analyses/{runs,projects}/` under a new lab root, mirroring `project init` one level up. `--stamp-volume` also stamps LAB_ROOT (PSR-08). |
 | `status [TARGET...]` | `data_cmd.py` | `data_status` → `smftools.data.analysis_catalog`, `smftools.data.run_locality` | Where every known run's data and analyses are, attached or not, and pairwise ahead/behind/diverged/pointer_conflict locality between attached copies. |
 | `sync TARGET [--from --to]` | `data_cmd.py` | `data_sync` → `smftools.data.run_sync.sync_run_locations` | Additively copy missing generations between two attached analysis locations of a run. Never moves `current.json`; diverged/pointer_conflict stages are reported, not resolved. |
+| `roots list` | `data_cmd.py` | `data_roots_list` → `smftools.config.roots.known_roots` | List every named root (`${root}` in a config) bound on this machine, its resolved path, and which resolution layer supplied it. Read-only; no `data roots set` yet. |
 
 Volume/data business logic lives in `smftools/data/` (parallel to `smftools/project/`),
 not under `cli/`; `data_cmd.py` is the same thin Click-facing translation layer as
