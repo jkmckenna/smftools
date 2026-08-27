@@ -402,29 +402,57 @@ def stage_input_artifact_ids(
     return identities
 
 
-def raw_input_artifact_ids(cfg: Any) -> list[str]:
-    """Return ordered content identities for raw sources and alignment reference."""
+def resolved_input_source_identities(cfg: Any) -> list[str]:
+    """Return per-source content identities for `cfg`'s resolved input manifest.
+
+    One `input-manifest:<digest>` entry for the whole resolved set, followed
+    by one `source:<source_id>:<sha256>` entry per row -- `source_id` is the
+    relocation-invariant identity `input_manifest.InputManifestRow.identity()`
+    hashes, `sha256` is the row's own content checksum. Per-source, not one
+    aggregate digest over the whole input path, so a caller can later tell a
+    superset/subset/disjoint change in the source set apart from "identical"
+    without re-reading anything this function did not already read (`BCS-07`).
+    """
     from ..informatics.input_manifest import resolve_input_manifest_readonly
-    from ..informatics.raw_intermediate_manifest import alignment_reference_bundle
 
     input_manifest_path = getattr(cfg, "input_manifest_path", None)
     input_files = getattr(cfg, "input_files", None)
-    identities: list[str] = []
-    if input_manifest_path or input_files:
-        resolved = resolve_input_manifest_readonly(
-            input_manifest_path=input_manifest_path,
-            input_paths=None if input_manifest_path else input_files,
-            alignment_mode=getattr(cfg, "alignment_mode", "align"),
-            modality=getattr(cfg, "smf_modality", ""),
-            barcode_map=getattr(cfg, "fastq_barcode_map", None),
-            auto_pair=bool(getattr(cfg, "fastq_auto_pairing", True)),
-        )
-        identities.append(f"input-manifest:{resolved.digest}")
-        identities.extend(f"source:{row.source_id}:{row.sha256}" for row in resolved.rows)
+    if not (input_manifest_path or input_files):
+        return []
+    resolved = resolve_input_manifest_readonly(
+        input_manifest_path=input_manifest_path,
+        input_paths=None if input_manifest_path else input_files,
+        alignment_mode=getattr(cfg, "alignment_mode", "align"),
+        modality=getattr(cfg, "smf_modality", ""),
+        barcode_map=getattr(cfg, "fastq_barcode_map", None),
+        auto_pair=bool(getattr(cfg, "fastq_auto_pairing", True)),
+    )
+    return [
+        f"input-manifest:{resolved.digest}",
+        *(f"source:{row.source_id}:{row.sha256}" for row in resolved.rows),
+    ]
+
+
+def raw_input_artifact_ids(cfg: Any) -> list[str]:
+    """Return ordered content identities for raw sources and alignment reference."""
+    from ..informatics.raw_intermediate_manifest import alignment_reference_bundle
+
+    identities = resolved_input_source_identities(cfg)
     if getattr(cfg, "fasta", None):
         reference = alignment_reference_bundle(cfg)
         identities.append(f"alignment-reference-bundle:{reference['digest']}")
     return identities
+
+
+def basecall_input_artifact_ids(cfg: Any) -> list[str]:
+    """Return per-source content identities for `cfg`'s POD5/FAST5 input.
+
+    Deliberately omits the alignment-reference-bundle entry `raw_input_artifact_ids`
+    adds: basecalling never consults the reference, so coupling its generation's
+    identity to it would invalidate reuse on a reference-only config change that
+    changes nothing about the resulting BAM.
+    """
+    return resolved_input_source_identities(cfg)
 
 
 def stage_lifecycle(
