@@ -18,9 +18,20 @@ Three states replace that single failure:
     path is simply absent. A real error, reported as early as it ever was.
 
 The volume test here is structural -- a path under a platform mount root whose
-mount directory is absent. `PSR-12` replaces it with an exact answer once
-volumes carry a durable identity; until then this is deliberately conservative,
-because misreading a deleted path as "offline" would silently skip ingestion.
+mount directory is absent. This is deliberately conservative, because
+misreading a deleted path as "offline" would silently skip ingestion.
+
+`PSR-12` adds an exact answer on top of it, when available: if the run has a
+published input manifest (identifying its dataset) and the volume catalog
+(`smftools.data.replica_catalog`, populated by `data scan`) knows a replica of
+that dataset, classification is decided from volume identity instead of a
+guess -- no attached replica is a confident ``offline`` even when the path
+does not match a recognized mount convention at all (a network share, say),
+and an attached replica that still resolves the specific path is ``present``
+even though it moved to a different mount point or name. Either input to this
+-- a published manifest, or a populated catalog -- being absent falls back to
+the structural guess exactly as before; a user who has never run `data scan`
+sees no change in behavior.
 """
 
 from __future__ import annotations
@@ -56,6 +67,11 @@ class InputAvailability:
     path: Optional[Path] = None
     volume: Optional[Path] = None
     detail: str = ""
+    #: The dataset's volume, by `volume_id`, when classification came from the
+    #: replica catalog (`PSR-12`) rather than the structural guess -- set only
+    #: when exactly one candidate volume is known, since `volume` above is a
+    #: mount *path* and an unattached volume has none to report.
+    volume_id: Optional[str] = None
 
     @property
     def is_present(self) -> bool:
@@ -88,13 +104,84 @@ def detached_volume_for(path: Path) -> Optional[Path]:
     return None
 
 
-def resolve_input_availability(path: str | Path | None) -> InputAvailability:
+def _exact_availability(
+    path: Path, output_directory: str | Path | None
+) -> Optional[InputAvailability]:
+    """Classify `path` from volume identity when the inputs for it exist (`PSR-12`).
+
+    Returns ``None`` -- deferring to the structural approximation -- whenever
+    any prerequisite is missing: no ``output_directory``, no published input
+    manifest for this run, no populated replica catalog, or nothing
+    catalogued for this manifest's dataset. That is the ordinary state for
+    anyone who has not run `data scan`, and must not become an error or a
+    behavior change for them.
+    """
+    if output_directory is None:
+        return None
+
+    from ..constants import RAW_DIR
+    from ..data.replica_catalog import load_catalog, replicas_for, resolve_replica
+    from ..data.volume_discovery import discover_volumes
+    from ..informatics.input_manifest import (
+        INPUT_MANIFEST_DIRNAME,
+        RESOLVED_INPUT_MANIFEST_JSON,
+        InputManifestError,
+        read_resolved_input_manifest,
+    )
+
+    manifest_path = (
+        Path(output_directory) / RAW_DIR / INPUT_MANIFEST_DIRNAME / RESOLVED_INPUT_MANIFEST_JSON
+    )
+    if not manifest_path.is_file():
+        return None
+    try:
+        manifest = read_resolved_input_manifest(manifest_path)
+    except InputManifestError:
+        return None
+
+    catalog = load_catalog()
+    replicas = replicas_for(catalog, manifest.digest)
+    if not replicas:
+        return None
+
+    resolved_replica = resolve_replica(catalog, manifest.digest, attached=discover_volumes())
+    if resolved_replica is None:
+        known_ids = sorted({replica.volume_id for replica in replicas})
+        return InputAvailability(
+            state=INPUT_OFFLINE,
+            path=path,
+            volume_id=known_ids[0] if len(known_ids) == 1 else None,
+            detail=(
+                f"{path} belongs to a dataset with {len(replicas)} known replica(s) "
+                f"(volume(s): {', '.join(known_ids)}), none of which is currently attached."
+            ),
+        )
+
+    try:
+        relative = path.resolve(strict=False).relative_to(
+            Path(manifest.base_directory).resolve(strict=False)
+        )
+    except ValueError:
+        return None
+    relocated = resolved_replica.resolved_path / relative
+    if not relocated.exists():
+        return None
+    return InputAvailability(state=INPUT_PRESENT, path=relocated)
+
+
+def resolve_input_availability(
+    path: str | Path | None, *, output_directory: str | Path | None = None
+) -> InputAvailability:
     """Classify one configured input path as present, offline, or missing.
 
     Args:
         path: The configured ``input_data_path`` or manifest path. ``None``
             resolves to ``present``, since an unset path is not a failure here;
             the caller decides whether one was required.
+        output_directory: The run's own output directory, used only to reach
+            its published input manifest for the exact classification path
+            (`PSR-12`). ``None`` (the default) skips that path entirely and
+            preserves the structural approximation's behavior unchanged.
 
     Returns:
         InputAvailability: The state, plus the detached volume and a
@@ -105,6 +192,10 @@ def resolve_input_availability(path: str | Path | None) -> InputAvailability:
     resolved = Path(path).expanduser()
     if resolved.exists():
         return InputAvailability(state=INPUT_PRESENT, path=resolved)
+
+    exact = _exact_availability(resolved, output_directory)
+    if exact is not None:
+        return exact
 
     volume = detached_volume_for(resolved)
     if volume is not None:
@@ -138,9 +229,10 @@ def require_input_available(availability: InputAvailability, *, stage: str) -> N
     if availability.is_present:
         return
     if availability.state == INPUT_OFFLINE:
+        known_as = availability.volume or availability.volume_id or "an unattached volume"
         raise FileNotFoundError(
             f"stage {stage!r} reads raw input, which is currently offline: "
-            f"{availability.path} is on volume {availability.volume}, which is not "
+            f"{availability.path} is on {known_as}, which is not "
             "attached. Attach the volume and re-run. Stages that do not read raw "
             "input (preprocess, spatial, hmm, latent, export-bundle) run without it."
         )

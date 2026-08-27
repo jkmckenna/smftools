@@ -8,6 +8,7 @@ unplugged -- including stages that read no raw input at all.
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -25,6 +26,16 @@ from smftools.config.input_availability import (
 )
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def isolated_volume_env(tmp_path, monkeypatch):
+    """Never let a `PSR-12` exact-availability test see this machine's real volumes/config."""
+    from smftools.data import volume_discovery
+
+    monkeypatch.setattr(volume_discovery, "platform_mount_root_candidates", lambda: [])
+    monkeypatch.delenv("SMFTOOLS_VOLUME_SEARCH_PATHS", raising=False)
+    monkeypatch.setenv("SMFTOOLS_CONFIG_DIR", str(tmp_path / "no-user-config"))
 
 
 def test_existing_path_is_present(tmp_path):
@@ -156,3 +167,112 @@ def test_classifier_agrees_with_directory_discovery(tmp_path, name, kind):
     found = discover_input_files(tmp_path)
     bucket = found[f"{kind}_paths"] if kind != "other" else found["other_paths"]
     assert [p.name for p in bucket] == [name]
+
+
+# --- PSR-12: exact classification via volume identity -----------------------
+
+
+def _publish_manifest(run_root: Path, source: Path) -> str:
+    from smftools.informatics.input_manifest import resolve_input_manifest
+
+    return resolve_input_manifest(output_directory=run_root, input_paths=[source]).digest
+
+
+def test_exact_check_is_skipped_without_output_directory(tmp_path):
+    """`output_directory` omitted must behave exactly like before `PSR-12`."""
+    availability = resolve_input_availability(tmp_path / "not-here")
+    assert availability.state == INPUT_MISSING
+
+
+def test_exact_check_defers_to_the_approximation_without_a_published_manifest(tmp_path):
+    run_root = tmp_path / "run"
+    run_root.mkdir()
+
+    availability = resolve_input_availability(
+        "/Volumes/ArchiveDrive/run/pod5", output_directory=run_root
+    )
+
+    assert availability.state == INPUT_OFFLINE
+    assert availability.volume == Path("/Volumes/ArchiveDrive")
+
+
+def test_exact_check_defers_to_the_approximation_without_a_catalog(tmp_path):
+    run_root = tmp_path / "run"
+    source = tmp_path / "orig" / "sample.fastq"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"@r\nAC\n+\n!!\n")
+    _publish_manifest(run_root, source)
+    source.unlink()
+
+    availability = resolve_input_availability(source, output_directory=run_root)
+
+    # No catalog exists at all, so this falls back to the structural guess,
+    # which does not recognize this path as a volume convention.
+    assert availability.state == INPUT_MISSING
+
+
+def test_exact_offline_with_no_attached_replica(tmp_path):
+    from smftools.data.replica_catalog import add_replica, save_catalog
+
+    run_root = tmp_path / "run"
+    source = tmp_path / "orig" / "sample.fastq"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"@r\nAC\n+\n!!\n")
+    digest = _publish_manifest(run_root, source)
+    source.unlink()
+
+    catalog = add_replica({}, digest, volume_id="archive-vol-1", path="orig")
+    save_catalog(catalog)  # default location, isolated by SMFTOOLS_CONFIG_DIR above
+
+    availability = resolve_input_availability(source, output_directory=run_root)
+
+    assert availability.state == INPUT_OFFLINE
+    assert availability.volume_id == "archive-vol-1"
+    assert "archive-vol-1" in availability.detail
+
+
+def test_exact_offline_beats_the_approximation_for_a_nonstandard_mount(tmp_path):
+    """A network share with no recognized mount convention was wrongly `missing`."""
+    from smftools.data.replica_catalog import add_replica, save_catalog
+
+    run_root = tmp_path / "run"
+    source = tmp_path / "custom-nas-share" / "data" / "sample.fastq"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"@r\nAC\n+\n!!\n")
+    digest = _publish_manifest(run_root, source)
+    shutil.rmtree(tmp_path / "custom-nas-share")
+
+    catalog = add_replica({}, digest, volume_id="nas-vol", path="data")
+    save_catalog(catalog)
+
+    availability = resolve_input_availability(source, output_directory=run_root)
+
+    assert availability.state == INPUT_OFFLINE  # not "missing", despite no mount-root match
+
+
+def test_exact_present_when_the_volume_reattached_elsewhere(tmp_path, monkeypatch):
+    """The dataset's volume moved to a different mount point/name (`PSR-08`/`PSR-09`)."""
+    from smftools.data.replica_catalog import add_replica, save_catalog
+    from smftools.data.volume_stamp import init_volume
+
+    run_root = tmp_path / "run"
+    original_base = tmp_path / "orig_mount" / "run1"
+    source = original_base / "sample.fastq"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"@r\nAC\n+\n!!\n")
+    digest = _publish_manifest(run_root, source)
+
+    new_mount = tmp_path / "new_mount"
+    new_mount.mkdir()
+    stamp, _ = init_volume(new_mount, label="renamed-drive", kind="archive")
+    shutil.copytree(original_base, new_mount / "run1")
+    shutil.rmtree(tmp_path / "orig_mount")  # the original mount point is gone
+
+    catalog = add_replica({}, digest, volume_id=stamp.volume_id, path="run1")
+    save_catalog(catalog)
+    monkeypatch.setenv("SMFTOOLS_VOLUME_SEARCH_PATHS", str(new_mount))
+
+    availability = resolve_input_availability(source, output_directory=run_root)
+
+    assert availability.state == INPUT_PRESENT
+    assert availability.path == new_mount / "run1" / "sample.fastq"
