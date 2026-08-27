@@ -2431,6 +2431,50 @@ def data_volumes_cmd(config_dir: Path | None, as_json: bool):
         )
 
 
+@data_group.group("roots")
+def data_roots_group():
+    """Inspect named root bindings (`${root}` in a config, PSR-04-PSR-07)."""
+
+
+@data_roots_group.command("list")
+@click.option(
+    "--config-dir",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Directory to walk up from for the third resolution layer (a roots.toml above it).",
+)
+@click.option(
+    "--json", "as_json", is_flag=True, help="Emit machine-readable JSON instead of a table."
+)
+def data_roots_list_cmd(config_dir: Path | None, as_json: bool):
+    """List every named root bound on this machine, and which layer supplied it.
+
+    Resolution order: SMFTOOLS_ROOT_<NAME> environment variables, the user
+    roots file ($SMFTOOLS_CONFIG_DIR/roots.toml or ~/.config/smftools/roots.toml),
+    then any roots.toml found walking up from --config-dir -- nearest layer
+    wins per name. A root bound to more than one candidate location
+    (PSR-16) shows every candidate, not just the one it currently resolves to.
+    """
+    from .cli.data_cmd import data_roots_list
+
+    roots = data_roots_list(config_dir=config_dir)
+    if as_json:
+        import json
+
+        click.echo(json.dumps(roots, sort_keys=True, indent=2))
+        return
+    if not roots:
+        click.echo("No named roots bound on this machine.")
+        return
+    click.echo("NAME            PATH                                     SOURCE")
+    for entry in roots:
+        click.echo(f"{entry['name']:<15} {entry['path']:<40} {entry['source']}")
+        if len(entry["all_paths"]) > 1:
+            for candidate in entry["all_paths"]:
+                marker = "*" if candidate == entry["path"] else " "
+                click.echo(f"  {marker} {candidate}")
+
+
 @data_group.command("scan")
 @click.argument("mounts", nargs=-1, type=click.Path(exists=True, file_okay=False, path_type=Path))
 @click.option(

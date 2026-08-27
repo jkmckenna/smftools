@@ -8,7 +8,7 @@ import pytest
 from click.testing import CliRunner
 
 from smftools.cli_entry import cli
-from smftools.config.roots import ENV_VOLUME_SEARCH_PATHS
+from smftools.config.roots import ENV_PREFIX, ENV_VOLUME_SEARCH_PATHS
 from smftools.data import volume_discovery
 from smftools.data.volume_stamp import STAMP_FILENAME, init_volume, read_volume_stamp
 from smftools.informatics.input_manifest import resolve_input_manifest
@@ -22,6 +22,9 @@ def no_real_mount_roots(tmp_path, monkeypatch):
     monkeypatch.setattr(volume_discovery, "platform_mount_root_candidates", lambda: [])
     monkeypatch.delenv(ENV_VOLUME_SEARCH_PATHS, raising=False)
     monkeypatch.setenv("SMFTOOLS_CONFIG_DIR", str(tmp_path / "no-user-config"))
+    for key in list(os.environ):
+        if key.startswith(ENV_PREFIX):
+            monkeypatch.delenv(key, raising=False)
 
 
 def test_init_volume_cli_stamps_a_fresh_mount(tmp_path: Path) -> None:
@@ -630,3 +633,81 @@ def test_sync_cli_diverged_exits_nonzero_and_copies_nothing(tmp_path: Path, monk
     assert "diverged" in result.output
     assert not (run_a / RAW_DIR / GENERATIONS_SUBDIR / "gen-b-only").exists()
     assert not (run_b / RAW_DIR / GENERATIONS_SUBDIR / "gen-a-only").exists()
+
+
+def test_roots_list_cli_reports_nothing_bound() -> None:
+    runner = CliRunner()
+
+    result = runner.invoke(cli, ["data", "roots", "list"])
+
+    assert result.exit_code == 0, result.output
+    assert "No named roots" in result.output
+
+
+def test_roots_list_cli_reports_an_env_bound_root(monkeypatch) -> None:
+    from smftools.config.roots import ENV_PREFIX
+
+    monkeypatch.setenv(f"{ENV_PREFIX}DATA", "/tmp/archive-01")
+    runner = CliRunner()
+
+    result = runner.invoke(cli, ["data", "roots", "list"])
+
+    assert result.exit_code == 0, result.output
+    assert "data" in result.output
+    assert "/tmp/archive-01" in result.output
+    assert f"{ENV_PREFIX}DATA" in result.output
+
+
+def test_roots_list_cli_reports_a_file_bound_root(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("SMFTOOLS_CONFIG_DIR", str(tmp_path / "user-config"))
+    (tmp_path / "user-config").mkdir()
+    (tmp_path / "user-config" / "roots.toml").write_text(
+        f'[roots]\nanalyses = "{tmp_path / "analyses"}"\n', encoding="utf-8"
+    )
+    runner = CliRunner()
+
+    result = runner.invoke(cli, ["data", "roots", "list"])
+
+    assert result.exit_code == 0, result.output
+    assert "analyses" in result.output
+    assert str(tmp_path / "analyses") in result.output
+
+
+def test_roots_list_cli_shows_every_candidate_of_a_multi_location_root(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("SMFTOOLS_CONFIG_DIR", str(tmp_path / "user-config"))
+    (tmp_path / "user-config").mkdir()
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    second.mkdir()
+    (tmp_path / "user-config" / "roots.toml").write_text(
+        f'[roots]\nanalyses = ["{first}", "{second}"]\n', encoding="utf-8"
+    )
+    runner = CliRunner()
+
+    result = runner.invoke(cli, ["data", "roots", "list"])
+
+    assert result.exit_code == 0, result.output
+    assert str(first) in result.output
+    assert str(second) in result.output
+
+
+def test_roots_list_cli_json_output(monkeypatch) -> None:
+    from smftools.config.roots import ENV_PREFIX
+
+    monkeypatch.setenv(f"{ENV_PREFIX}DATA", "/tmp/archive-01")
+    runner = CliRunner()
+
+    result = runner.invoke(cli, ["data", "roots", "list", "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload == [
+        {
+            "name": "data",
+            "path": "/tmp/archive-01",
+            "source": f"{ENV_PREFIX}DATA",
+            "all_paths": ["/tmp/archive-01"],
+        }
+    ]

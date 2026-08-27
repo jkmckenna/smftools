@@ -370,8 +370,11 @@ config load.
   gate it and state the migration in `PSR-15`.
 - `PSR-06` — resolution order as designed above. `known_roots()` reports which
   layer each binding came from (`RootBinding.source`), exercised directly by
-  `tests/unit/config/test_named_roots.py`; no `data roots list` command was
-  ever wired to it (noted, not fixed, while writing `PSR-15`'s docs).
+  `tests/unit/config/test_named_roots.py`. `data roots list` (a `data roots`
+  subgroup, with room left for a future `set`) was wired to it as a follow-up
+  after being noted-not-fixed while writing `PSR-15`'s docs -- a small,
+  contained gap with no open design questions once identified, so it did not
+  need to wait for a dedicated Phase.
 - `PSR-07` — implemented one level lower than planned, in
   `serialize_artifact_path`/`resolve_artifact_path` rather than in the registry
   alone, so every artifact pointer gains the encoding rather than just registry
@@ -635,10 +638,12 @@ carried the command-level reference for every `data` subcommand as each PSR
 landed; this tutorial is the conceptual walkthrough the CLI reference was
 never meant to replace.
 
-**One stale claim in `PSR-06`'s own note (above) was corrected while writing
-these docs**: it said `data roots list` shipped, and no such command exists
-(`known_roots()`, the function it would call, does -- just never wired to a
-CLI command). The tutorial was written to not repeat that claim.
+**One stale claim in `PSR-06`'s own note (above) was found while writing
+these docs, and later fixed rather than left corrected-in-prose**: it said
+`data roots list` shipped, and at the time no such command existed
+(`known_roots()`, the function it would call, did -- just never wired to a
+CLI command). That gap was small and well-scoped enough to close directly as
+a follow-up rather than stay a documented limitation; see `PSR-06`'s note.
 
 ### Phase 5 — many locations per root (`PSR-16`–`PSR-20`)
 

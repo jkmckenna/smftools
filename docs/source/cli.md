@@ -187,6 +187,19 @@ being silently reused. Add `--stale` to show only stale or invalid entries, or
 `--json` for the versioned machine-readable inventory. The command never rewrites
 or removes caches.
 
+## Named roots
+
+`smftools data roots list [--config-dir DIR] [--json]` lists every named root
+(`${root}` in a config, `PSR-04`-`PSR-07`) bound on this machine, with the
+path it currently resolves to and which layer supplied the binding --
+`SMFTOOLS_ROOT_<NAME>`, the user roots file, or a `roots.toml` walked up from
+`--config-dir`. A root bound to more than one candidate location (`PSR-16`,
+`analyses = ["path/a", "path/b"]`) shows every candidate underneath its name,
+marking whichever one it currently resolves to. See the directory
+organization tutorial's Portability section for the full resolution story;
+this command only ever reads bindings, it does not set them -- there is no
+`data roots set` yet.
+
 ## Volume identity
 
 `smftools data` is a third top-level group, below any single experiment and
