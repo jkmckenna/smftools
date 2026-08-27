@@ -293,7 +293,7 @@ volumes, and no catalog.
 | `PSR-15` docs + migration of existing absolute configs | proposed | — |
 | `PSR-16` a root resolves over an ordered set of locations | proposed | — |
 | `PSR-17` per-run analysis locality, with duplicate detection | proposed | — |
-| `PSR-18` locality state in `project list`/`materialize`; refuse silent partial answers | proposed | — |
+| `PSR-18` locality state in `project list`/`materialize`; refuse silent partial answers | implemented | `tests/unit/project/test_project_unreachable_selection.py` |
 | `PSR-19` in-band catalog updates on publish; incremental `data scan`; `data status` | proposed | — |
 | `PSR-20` `data sync`: additive generation copy, divergence classified not resolved | proposed | — |
 
@@ -406,10 +406,22 @@ that is what the checksums are for.
 Depends on `PSR-08` volume identity to say *where* a copy is in a way that
 survives remounting, and on `PSR-10`'s catalog to hold it.
 
-- `PSR-18` is separable and should come first. It is a correctness fix for
-  behaviour that exists today, needs none of the union-root machinery, and the
-  failure it removes — a quietly partial pooled result — is the worst one in this
-  document.
+- `PSR-18` is separable and came first, as planned. Implemented ahead of the rest
+  of Phase 5, needing none of the union-root machinery.
+
+  **The characterisation in this plan was half wrong, and the code was worse in
+  one place and better in another.** Pooling did *not* silently drop experiments:
+  `resolve_experiment_spine` never checked existence, so an unreachable
+  experiment stayed a member and `iter_set_parts` failed inside `materialize` —
+  mid-stream, after earlier parts had been yielded and, for
+  `export_project_partitions`, written. The genuinely silent loss was in
+  `ProjectCatalog`'s three union methods, which dropped an absent path and
+  returned the union of what remained.
+
+  Both are fixed: unreachable experiments are classified before any read,
+  `resolve_set_members` refuses by default, `allow_unreachable=True` *excludes*
+  them and says so rather than deferring the failure, the union methods name what
+  they omit, and `project list` reports `locality` per experiment.
 - `PSR-19` is what makes the rest usable rather than a thing to remember.
   In-band updates cover the common cases; `scan` reconciles what happened outside
   smftools.

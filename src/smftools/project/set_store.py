@@ -57,9 +57,14 @@ def resolve_set_members(
     modality=None,
     experiments=None,
     stage: str | None = None,
+    allow_unreachable: bool = False,
 ) -> list[dict]:
     """Resolve which ``(experiment, stage, spine_path, reference_strands)`` a set query
-    selects, right now -- cheap (registry + in-memory alias table, no matrices)."""
+    selects, right now -- cheap (registry + in-memory alias table, no matrices).
+
+    ``allow_unreachable`` proceeds past experiments whose files cannot be read,
+    producing an explicitly partial selection (`PSR-18`).
+    """
     from .catalog import ProjectCatalog
     from .catalog import resolve_set_members as _resolve
 
@@ -71,6 +76,7 @@ def resolve_set_members(
         modality=modality,
         experiments=experiments,
         stage=stage,
+        allow_unreachable=allow_unreachable,
     )
 
 
@@ -123,6 +129,7 @@ def iter_set_parts(
     end: int | None = None,
     read_metrics: bool = False,
     lazy: bool | None = None,
+    allow_unreachable: bool = False,
 ):
     """Stream one projected AnnData slice per member experiment of a set.
 
@@ -150,6 +157,7 @@ def iter_set_parts(
         modality=modality,
         experiments=experiments,
         stage=stage,
+        allow_unreachable=allow_unreachable,
     )
     if not members:
         raise ValueError(
