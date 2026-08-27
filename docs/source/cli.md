@@ -314,7 +314,7 @@ dataset with no attached replica anywhere (confidently `offline`, even for a
 path under no recognized mount convention) from one whose volume simply
 reattached under a different mount point or name (`present`, transparently,
 at its new location) -- falling back to the structural guess exactly as
-before whenever either input is missing. See `dev/plans/in-progress/
+before whenever either input is missing. See `dev/plans/completed/
 portable_storage_roots_implementation_plan.md`'s `PSR-12` for the detail.
 
 ## Localizing a config's small inputs

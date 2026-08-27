@@ -2350,7 +2350,7 @@ def data_group():
     """Machine- and volume-scoped storage operations (portable storage roots).
 
     Below any single experiment and across all projects -- see PSR in
-    dev/plans/in-progress/portable_storage_roots_implementation_plan.md.
+    dev/plans/completed/portable_storage_roots_implementation_plan.md.
     """
 
 

@@ -2,7 +2,7 @@
 
 A stamp file travels with the drive so plugging it into any machine identifies
 it with no per-machine configuration -- see `PSR-08` in
-`dev/plans/in-progress/portable_storage_roots_implementation_plan.md`.
+`dev/plans/completed/portable_storage_roots_implementation_plan.md`.
 """
 
 from __future__ import annotations
