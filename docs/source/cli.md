@@ -204,6 +204,17 @@ recorded), so a drive keeps its `volume_id` even if it is relabeled at the OS
 level or reattached under a different mount point. `label` and `kind` are
 user-facing metadata only; nothing derives `volume_id` from them.
 
+`smftools data volumes [--config-dir DIR] [--json]` lists every stamped volume
+currently attached to this machine. Discovery scans the platform's mount roots
+(`/Volumes` on macOS; `/mnt`, `/media/<user>`, `/run/media/<user>` on Linux)
+plus any `[volumes]` `extra_search_paths` configured in `roots.toml` (or the
+`SMFTOOLS_VOLUME_SEARCH_PATHS` environment variable, which takes priority and
+replaces rather than adds to the file-configured paths) -- the mechanism a
+network mount needs, since it usually lives outside those conventions. This
+reports only what is attached right now; a stamped volume that is not
+reachable is invisible here until a future replica catalog exists to
+remember it.
+
 ## External workflow contract
 
 Workflow engines should use `smftools experiment run` instead of rewriting an

@@ -32,3 +32,17 @@ def data_init_volume(mount: str | Path, *, label: str, kind: str) -> tuple[dict,
                 f"requested kind {kind!r} ignored; volume is already kind {stamp.kind!r}"
             )
     return stamp.to_dict(), created, warnings
+
+
+def data_list_volumes(*, config_dir: str | Path | None = None) -> list[dict]:
+    """Every stamped volume currently attached to this machine, as plain dicts.
+
+    Scans platform mount roots plus any configured `extra_search_paths`
+    (`PSR-09`). Reports only what is attached right now -- a volume that is
+    stamped but not currently reachable is invisible here until `PSR-10`'s
+    catalog exists to remember it.
+    """
+    from ..data.volume_discovery import discover_volumes
+
+    found = discover_volumes(config_dir=Path(config_dir) if config_dir is not None else None)
+    return [{**item.stamp.to_dict(), "mount_path": str(item.mount_path)} for item in found]

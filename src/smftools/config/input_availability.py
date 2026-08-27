@@ -37,7 +37,10 @@ INPUT_MISSING = "missing"
 #: Mount roots by platform, mapped to the depth at which the *volume* directory
 #: sits beneath them. macOS mounts at ``/Volumes/<label>``; Linux uses
 #: ``/mnt/<label>``, ``/media/<user>/<label>``, or ``/run/media/<user>/<label>``.
-_MOUNT_ROOTS: tuple[tuple[tuple[str, ...], int], ...] = (
+#: Public (not underscore-prefixed) because ``smftools.data.volume_discovery``
+#: (`PSR-09`) reuses it as the single source of truth for platform mount
+#: conventions rather than duplicating this table.
+MOUNT_ROOTS: tuple[tuple[tuple[str, ...], int], ...] = (
     (("/", "Volumes"), 1),
     (("/", "mnt"), 1),
     (("/", "media"), 2),
@@ -72,7 +75,7 @@ def detached_volume_for(path: Path) -> Optional[Path]:
         not exist, otherwise ``None``.
     """
     parts = Path(path).parts
-    for root, depth in _MOUNT_ROOTS:
+    for root, depth in MOUNT_ROOTS:
         if parts[: len(root)] != root:
             continue
         volume_parts = parts[: len(root) + depth]
