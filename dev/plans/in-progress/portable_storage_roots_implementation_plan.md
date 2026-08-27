@@ -1,7 +1,8 @@
 # Portable storage roots, volume identity, and offline raw data (`PSR`)
 
-**Status:** in progress. Phases 1-2 (`PSR-01`-`PSR-07`) implemented; Phases 3-5
-remain proposed.
+**Status:** in progress. Phases 1-2 (`PSR-01`-`PSR-07`) implemented. `PSR-08`
+(volume stamp file) and `PSR-18` (project locality) are also implemented, each
+ahead of the rest of their phase; the remainder of Phases 3-5 remain proposed.
 
 **Repository state reviewed:** `bf6e9b1` — recorded while writing. The
 "Current behaviour" section below is a direct investigation of the code at that
@@ -283,7 +284,7 @@ volumes, and no catalog.
 | `PSR-05` config-relative resolution of bare relative paths | implemented | `test_relative_paths_anchor_to_the_config_not_the_cwd`, `test_working_directory_fallback_keeps_pre_psr05_configs_working` |
 | `PSR-06` machine-local roots file + `SMFTOOLS_ROOT_<NAME>` | implemented | `test_environment_binding_wins`, `test_nearest_roots_file_wins` |
 | `PSR-07` root-qualified artifact/registry pointers | implemented | `test_path_under_a_bound_root_is_qualified`, `test_all_three_encodings_resolve` |
-| `PSR-08` volume stamp file + `data init-volume` | proposed | — |
+| `PSR-08` volume stamp file + `data init-volume` | implemented | `tests/unit/data/test_volume_stamp.py`, `tests/unit/test_data_cli.py` |
 | `PSR-09` mount discovery, macOS + Linux | proposed | — |
 | `PSR-10` replica catalog keyed by dataset digest | proposed | — |
 | `PSR-11` `data scan` / `locate` / `verify` | proposed | — |
@@ -398,6 +399,20 @@ reading wins, which is the only case that still changes meaning.
   manifests; `locate` answers while the drive is *unplugged*, which is the point;
   `verify` re-checksums.
 - `PSR-12` — replaces the Phase 1 approximation with an exact answer.
+
+**`PSR-08`'s "never rewritten" is literal, not just for `volume_id`.** The whole
+`.smftools-volume.json` is immutable once written, including `label` and `kind`:
+`data init-volume` on an already-stamped mount is idempotent and returns the
+existing stamp untouched, warning if the requested `--label`/`--kind` differ
+rather than applying them. "A stamped volume that reappears with a changed
+label keeps its `volume_id`" falls out of this for free -- discovery (`PSR-09`)
+will only ever read `volume_id` back out of the stamp, never derive it from the
+OS-reported volume name, so an OS-level rename can't touch identity regardless
+of whether `init-volume` is ever re-run. `kind` is constrained to
+`{working, archive, backup}`, matching the working/archive preference ordering
+Layer 3 already commits to for replica resolution -- there's nowhere else in
+the plan a fourth kind is used, so this list is not meant to be treated as
+closed if one turns up.
 
 **What the stamp is not.** It is an identifier, not an integrity guarantee.
 Nothing may treat a matching `volume_id` as evidence that the data is intact;

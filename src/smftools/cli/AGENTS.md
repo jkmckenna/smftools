@@ -22,7 +22,7 @@ raw ingestion and dense-cache loading share the same underlying function.
 
 ## Command map
 
-`smftools --help` is authoritative; this is a summary. Two top-level groups:
+`smftools --help` is authoritative; this is a summary. Three top-level groups:
 
 ### `smftools experiment <config_path>` — pipeline stages for a single experiment
 
@@ -70,6 +70,18 @@ task-local execution and result/validation contracts live in `workflow_contract.
 `run --target` dispatches to `run_project_{materialization,sample_analysis,embedding}_workflow`
 there; `selection` is a planning-only dependency of the other three and is deliberately
 not executable.
+
+### `smftools data` — machine- and volume-scoped storage operations
+
+Below any single experiment and across all projects (portable storage roots — `PSR`).
+
+| Command | Module | Core function | Purpose |
+|---|---|---|---|
+| `init-volume` | `data_cmd.py` | `data_init_volume` → `smftools.data.volume_stamp.init_volume` | Stamp a drive with a permanent `volume_id` (`.smftools-volume.json`). Idempotent: rerunning on an already-stamped mount reports the existing identity rather than rewriting it. |
+
+Volume/data business logic lives in `smftools/data/` (parallel to `smftools/project/`),
+not under `cli/`; `data_cmd.py` is the same thin Click-facing translation layer as
+`project_cmd.py`.
 
 ## Shared helpers
 

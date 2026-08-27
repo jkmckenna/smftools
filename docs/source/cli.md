@@ -187,6 +187,23 @@ being silently reused. Add `--stale` to show only stale or invalid entries, or
 `--json` for the versioned machine-readable inventory. The command never rewrites
 or removes caches.
 
+## Volume identity
+
+`smftools data` is a third top-level group, below any single experiment and
+across all projects, for machine- and volume-scoped storage operations (portable
+storage roots -- `PSR`). `smftools data init-volume MOUNT --label LABEL [--kind
+{working,archive,backup}]` stamps a drive with a permanent `.smftools-volume.json`
+identity file at its mount root. Because the stamp travels with the drive, it
+identifies the volume on any machine it is later attached to, independent of
+mount point or OS-reported volume name.
+
+The stamp is written once and never rewritten: re-running `init-volume` on an
+already-stamped mount leaves it untouched and reports its existing identity
+(warning if the requested `--label`/`--kind` differ from what is already
+recorded), so a drive keeps its `volume_id` even if it is relabeled at the OS
+level or reattached under a different mount point. `label` and `kind` are
+user-facing metadata only; nothing derives `volume_id` from them.
+
 ## External workflow contract
 
 Workflow engines should use `smftools experiment run` instead of rewriting an
