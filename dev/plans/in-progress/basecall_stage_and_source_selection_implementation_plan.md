@@ -310,6 +310,17 @@ but it is warned about, naming every rejected candidate, because a user who
 pointed at that directory expecting its reads to be used should not learn
 otherwise from a GPU bill.
 
+**Docs gap closed after the fact.** Phase 1 shipped with no docs changes at
+all (verified: the merge commit touches no file under `docs/`), leaving the
+tutorial's own input-contract bullet stating the old behaviour --
+"directories must contain one recognized input kind" -- directly
+contradicting the code. Fixed in `docs/source/tutorials/experiment_config.md`
+(a new "Choosing a read source from a mixed-source directory" subsection,
+plus the stale bullet corrected) and `docs/source/cli.md` (a pointer
+distinguishing this from `SRB`'s re-basecall planner, which is a different
+thing entirely -- picking an existing representation at first ingestion
+versus producing a *new* basecall of an already-ingested experiment).
+
 ### Phase 2 — the stage (`BCS-05`–`BCS-07`)
 
 - `BCS-05` — `basecall_outputs/` with generations, `current.json`, retention, and

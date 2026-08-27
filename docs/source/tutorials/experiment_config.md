@@ -62,7 +62,10 @@ Below are some of the most commonly edited fields and how they affect the CLI wo
   `experiment_name` continue to work and promote it to `experiment_id`, but when both fields are
   present they must match. If neither is set, smftools derives the id from `output_directory` and
   emits a warning; the former date-based `YYMMDD_SMF_experiment` default is no longer used.
-- `model_dir` / `model`: Dorado basecalling model configuration (nanopore runs).
+- `model_dir` / `model`: Dorado basecalling model configuration (nanopore runs). Also drives
+  which representation of the reads gets used when `input_data_path` is a directory holding more
+  than one (POD5 signal, a `fastq_pass` tree, BAMs from a prior basecall) — see
+  [Choosing a read source from a mixed-source directory](#choosing-a-read-source-from-a-mixed-source-directory).
 - `demux_backend`: Demultiplexing backend (`dorado` or `smftools`).
 - `barcode_kit`: Barcode kit name. Required for `dorado`; for `smftools`, use either a known alias or
   `custom` plus `custom_barcode_yaml`.
@@ -79,8 +82,14 @@ Below are some of the most commonly edited fields and how they affect the CLI wo
 Input discovery fails before creating an output directory or invoking an external tool when the
 source is ambiguous or unsupported:
 
-- Directories must contain one recognized input kind. Mixed POD5, FAST5, FASTQ, BAM, SAM, CRAM,
-  or H5AD collections are rejected with per-kind counts instead of silently selecting one kind.
+- A directory holding exactly one recognized input kind is used as-is. A directory holding more
+  than one is resolved by model-based source selection rather than rejected outright: for the
+  common MinKNOW shape — POD5 signal beside a `fastq_pass` tree, and sometimes BAMs from an
+  earlier basecall — this picks the representation that satisfies the configured `model`. See
+  [Choosing a read source from a mixed-source directory](#choosing-a-read-source-from-a-mixed-source-directory).
+  A mix that selection cannot resolve (nothing satisfies the model, and no signal to basecall
+  from; or a kind selection does not consider at all, like a stray SAM or H5AD file) still fails,
+  now with per-candidate verdicts instead of a bare kind-count list.
 - Implicit BAM/CRAM directories remain rejected. Supply one alignment file or an explicit input
   manifest whose rows declare compatible BAM/CRAM source partitions and namespaces.
 - SAM input remains unsupported. CRAM is supported only with `alignment_mode: existing` and must
@@ -145,6 +154,84 @@ prepared_fasta, bundle_manifest = prepare_alignment_reference_bundle(
     strands=["top", "bottom"],
 )
 ```
+
+### Choosing a read source from a mixed-source directory
+
+A run directory straight off the instrument usually holds more than one
+representation of the same reads — POD5 signal, a `fastq_pass` tree, sometimes
+BAMs from whichever model already ran, and often a `fastq_fail` tree of reads
+the instrument itself rejected:
+
+```text
+my_run/
+├── pod5/
+│   └── signal.pod5
+├── fastq_pass/
+│   └── reads_0.fastq.gz
+└── fastq_fail/
+    └── reads_0.fastq.gz
+```
+
+Pointing `input_data_path` straight at `my_run/` used to fail outright —
+"contains mixed recognized input types" — so the practice was to point at one
+subdirectory by hand and leave a comment explaining why. What a user actually
+wants to express is a *model*, not a path: use the reads for the configured
+model if they already exist, and basecall from signal only when they do not.
+Set `model` (bare, e.g. `hac`, or fully qualified, e.g.
+`dna_r10.4.1_e8.2_400bps_hac@v5.0.0`) and point `input_data_path` at the whole
+run directory; source selection picks the representation for you.
+
+**How a candidate is judged.** Every discovered BAM/CRAM and FASTQ file is
+checked against three rules, in order, and all three must hold:
+
+1. **The model matches.** A bare selector (`hac`) is satisfied by any version
+   of that family, newest version winning when several qualify. A fully
+   qualified name (`dna_r10.4.1_e8.2_400bps_hac@v5.0.0`) must match exactly.
+   The model is read from where each format already records it —
+   `basecall_model_version_id=` in a FASTQ read header comment,
+   `basecall_model=` inside a BAM/CRAM read group's `DS` field — never
+   re-derived. **The Dorado version does not participate**: a basecaller
+   release that leaves the model identity unchanged does not invalidate a
+   match, so an instrument software update never forces every archived run to
+   be re-basecalled for reads the model itself says are equivalent.
+2. **Its capabilities suffice.** A `direct`-modality experiment reads
+   modification probabilities from `MM`/`ML` tags, so a source that cannot
+   carry them cannot serve it however well its model matches. FASTQ is always
+   sequence-only and therefore never qualifies for `direct` (it remains fine
+   for `conversion` and `deaminase`, which read base identity, not tags). A
+   BAM/CRAM qualifies only if its reads actually carry `MM`/`ML`.
+3. **Its bytes are reachable right now.** A source on a detached archive
+   volume satisfies nothing (see the portability guide's
+   [Archived raw input is not an error](directory_organization.md#archived-raw-input-is-not-an-error)) —
+   selection consults reachability rather than choosing a path it cannot read.
+
+**Where more than one source qualifies**, BAM/CRAM is preferred over FASTQ
+(tags, read groups, and any existing alignment survive the choice), and only
+`fastq_pass` is ever eligible — a `fastq_fail`/`fail`/`pod5_skip` directory is
+never selected, regardless of what its reads claim.
+
+**If nothing qualifies**, the outcome depends on what else is present:
+
+- POD5 or FAST5 signal is present → source selection falls through to
+  basecalling from signal, exactly as an ordinary signal-only
+  `input_data_path` would. This is logged as a warning, naming every
+  candidate that was found and why it was rejected, so a directory that
+  silently fails to produce the expected reads is never mistaken for one that
+  simply matched — you should not have to discover a mismatch from a GPU
+  bill.
+- No signal is present either → config loading fails, naming every discovered
+  candidate, its recorded model (if any), and which of the three rules it
+  failed.
+
+**This is not the re-basecalling workflow.** Source selection only ever
+chooses among representations that already exist when an experiment is first
+configured. Deliberately producing a *new* basecall of an already-ingested
+experiment — a different model, revisiting an old run — is a re-basecalling
+*lineage*, published beside the original rather than replacing it; see
+[Selective re-basecalling](selective_rebasecalling.md). There is currently no
+standalone `smftools basecall` command — basecalling from signal, when
+selection falls through to it, still happens inline as part of `experiment
+raw`/`experiment load`, the way it always has.
 
 ### Canonical input manifest schema 1
 
