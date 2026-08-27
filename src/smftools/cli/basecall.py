@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from smftools.constants import BASECALL_DIR
-from smftools.logging_utils import get_logger
+from smftools.logging_utils import get_logger, mark_stage_outcome, stage_logging_lifecycle
 
 logger = get_logger(__name__)
 
@@ -138,3 +138,29 @@ def basecall_core(cfg) -> dict[str, Any]:
         execution.reused,
     )
     return {**outputs, "reused_generation": False}
+
+
+@stage_logging_lifecycle
+def basecall_stage(cfg) -> dict[str, Any]:
+    """Run basecall as `full`'s stage ahead of raw (`BCS-06`).
+
+    Skips cleanly -- not an error -- when ``cfg.input_type`` is not POD5/FAST5
+    signal, so a FASTQ/BAM-input experiment's `full` run stays byte-identical
+    to today and this stage reports ``skipped`` in `full_summary.json`.
+    Standalone `smftools basecall` keeps its hard `BasecallInputError` for the
+    same input: a user invoking it directly on non-signal input has likely
+    made a mistake worth surfacing loudly, whereas most `full` runs simply
+    have nothing for this stage to do.
+    """
+    from ..logging_utils import setup_stage_logging
+
+    output_directory = Path(cfg.output_directory)
+    setup_stage_logging(cfg, output_directory / BASECALL_DIR)
+    try:
+        result = basecall_core(cfg)
+    except BasecallInputError as exc:
+        mark_stage_outcome("skipped", reason=str(exc))
+        return {"reused_generation": True, "generation_id": None, "skipped": True}
+    if result.get("reused_generation"):
+        mark_stage_outcome("skipped", reason="basecall generation already current")
+    return result
