@@ -274,6 +274,22 @@ Re-running `--apply` is safe: a destination that already holds byte-identical
 content is left alone, and only a destination with genuinely different
 content raises rather than being silently overwritten.
 
+## Scaffolding a new lab tree
+
+`smftools data init LAB_ROOT [--stamp-volume [--label LABEL] [--kind KIND]]`
+creates `data/` and `analyses/{runs,projects}/` under `LAB_ROOT`, mirroring
+`project init` one level up -- see
+[Organizing data, experiments, and projects](tutorials/directory_organization.md)
+for what belongs in each. Idempotent: re-running it only fills in whatever is
+still missing, and it never touches data already collected under `data/`.
+
+`--stamp-volume` also gives `LAB_ROOT` a permanent volume identity
+(`data init-volume`, `PSR-08`). This only makes `LAB_ROOT` discoverable by
+`data volumes`/`data scan` elsewhere on the machine when `LAB_ROOT` *is* the
+removable volume's own mount point (e.g. `/Volumes/lab-drive`) rather than a
+subdirectory of a larger one -- discovery only looks one level below a
+platform mount root.
+
 ## External workflow contract
 
 Workflow engines should use `smftools experiment run` instead of rewriting an

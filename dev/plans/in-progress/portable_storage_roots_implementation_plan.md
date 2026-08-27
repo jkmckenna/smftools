@@ -1,9 +1,9 @@
 # Portable storage roots, volume identity, and offline raw data (`PSR`)
 
 **Status:** in progress. Phases 1-3 (`PSR-01`-`PSR-12`) implemented. Of Phase 4,
-`PSR-13` (`data localize`) is implemented; `PSR-14`/`PSR-15` remain proposed.
-`PSR-18` (project locality) is also implemented, ahead of the rest of Phase 5.
-The rest of Phase 5 remains proposed.
+`PSR-13` (`data localize`) and `PSR-14` (`data init`) are implemented; only
+`PSR-15` (docs/migration) remains. `PSR-18` (project locality) is also
+implemented, ahead of the rest of Phase 5. The rest of Phase 5 remains proposed.
 
 **Repository state reviewed:** `bf6e9b1` — recorded while writing. The
 "Current behaviour" section below is a direct investigation of the code at that
@@ -291,7 +291,7 @@ volumes, and no catalog.
 | `PSR-11` `data scan` / `locate` / `verify` | implemented | `tests/unit/data/test_volume_scan.py`, `tests/unit/data/test_volume_verify.py`, `tests/unit/test_data_cli.py` |
 | `PSR-12` exact `offline` vs `missing` via volume identity | implemented | `tests/unit/config/test_input_availability.py`, `tests/unit/config/test_offline_input_config.py` |
 | `PSR-13` `data localize` | implemented | `tests/unit/data/test_localize.py`, `tests/unit/test_data_cli.py` |
-| `PSR-14` `data init` scaffold for a new lab tree | proposed | — |
+| `PSR-14` `data init` scaffold for a new lab tree | implemented | `tests/unit/data/test_lab_init.py`, `tests/unit/test_data_cli.py` |
 | `PSR-15` docs + migration of existing absolute configs | proposed | — |
 | `PSR-16` a root resolves over an ordered set of locations | proposed | — |
 | `PSR-17` per-run analysis locality, with duplicate detection | proposed | — |
@@ -591,6 +591,29 @@ stamp, `PSR-10`'s replica de-duplication). Only a destination with *different*
 content raises, since silently overwriting it would either corrupt a prior,
 unrelated localization or mask the fact that the source file itself changed
 since the last `--apply`.
+
+**`PSR-14` skipped the interactive "offers to stamp" the CLI table's wording
+implies.** No command anywhere in `smftools` prompts interactively (`grep` for
+`click.confirm`/`click.prompt` across `src/` turns up nothing); adding the
+first one for this alone would make `data init` hang under any non-interactive
+caller (CI, a script, an agent) unless every such caller remembered a
+`--yes`-style escape hatch that doesn't exist yet either. `--stamp-volume` is
+the flag-driven equivalent instead, off by default, with a printed hint
+pointing at it (or at `data init-volume` directly) when it is not passed --
+"offers" in the sense of telling the user the option exists, not blocking on
+an answer.
+
+`--stamp-volume` stamps `LAB_ROOT` itself, not any enclosing directory --
+matching `data init-volume`'s own contract of stamping exactly the path it is
+given, with no attempt to walk up to find "the real" OS mount point (there is
+no portable, dependency-free way to ask an OS for that, and none of `PSR-08`/
+`PSR-09` needed one). The consequence, stated in both the CLI help and the
+docs rather than hidden: the stamp is only found by `data volumes`/`data scan`
+elsewhere if `LAB_ROOT` **is** the volume's own mount point, since discovery
+(`PSR-09`) only looks one level below a platform mount root. A lab root nested
+inside a larger drive can still be stamped, it just will not be discoverable
+that way -- an honest limitation of the discovery mechanism, not something
+`PSR-14` could paper over on its own.
 
 ### Phase 5 — many locations per root (`PSR-16`–`PSR-20`)
 

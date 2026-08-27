@@ -284,3 +284,44 @@ def test_localize_cli_reports_nothing_when_no_fields_declared(tmp_path: Path) ->
 
     assert result.exit_code == 0, result.output
     assert "Nothing to localize" in result.output
+
+
+def test_init_cli_scaffolds_a_fresh_lab_root(tmp_path: Path) -> None:
+    lab_root = tmp_path / "lab"
+    runner = CliRunner()
+
+    result = runner.invoke(cli, ["data", "init", str(lab_root)])
+
+    assert result.exit_code == 0, result.output
+    assert (lab_root / "data").is_dir()
+    assert (lab_root / "analyses" / "runs").is_dir()
+    assert (lab_root / "analyses" / "projects").is_dir()
+    assert "Not stamped" in result.output
+    assert not (lab_root / STAMP_FILENAME).exists()
+
+
+def test_init_cli_rerun_reports_nothing_to_create(tmp_path: Path) -> None:
+    lab_root = tmp_path / "lab"
+    runner = CliRunner()
+    runner.invoke(cli, ["data", "init", str(lab_root)])
+
+    result = runner.invoke(cli, ["data", "init", str(lab_root)])
+
+    assert result.exit_code == 0, result.output
+    assert "already scaffolded" in result.output
+
+
+def test_init_cli_with_stamp_volume_scaffolds_and_stamps(tmp_path: Path) -> None:
+    lab_root = tmp_path / "lab"
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli, ["data", "init", str(lab_root), "--stamp-volume", "--label", "lab-drive"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Stamped" in result.output
+    stamp = read_volume_stamp(lab_root)
+    assert stamp is not None
+    assert stamp.label == "lab-drive"
+    assert stamp.kind == "working"

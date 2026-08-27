@@ -2659,4 +2659,62 @@ def data_localize_cmd(
         click.echo("Dry run -- pass --apply to copy these files and write a localized config.")
 
 
+@data_group.command("init")
+@click.argument("lab_root", type=click.Path(path_type=Path))
+@click.option(
+    "--stamp-volume",
+    is_flag=True,
+    help="Also stamp the volume LAB_ROOT is on (see data init-volume).",
+)
+@click.option(
+    "--label",
+    default=None,
+    help="Label for the stamp, with --stamp-volume (default: LAB_ROOT's name).",
+)
+@click.option(
+    "--kind",
+    type=click.Choice(["working", "archive", "backup"], case_sensitive=False),
+    default="working",
+    show_default=True,
+    help="Kind for the stamp, with --stamp-volume.",
+)
+def data_init_cmd(lab_root: Path, stamp_volume: bool, label: str | None, kind: str):
+    """Scaffold a new lab directory tree at LAB_ROOT: data/ + analyses/{runs,projects}/.
+
+    Mirrors `project init`, one level up: LAB_ROOT holds immutable raw
+    instrument output under data/ and regenerable pipeline output under
+    analyses/, per the directory organization tutorial. Idempotent --
+    re-running only fills in whatever is still missing, and never touches
+    data already collected under data/.
+
+    --stamp-volume also gives LAB_ROOT a permanent volume identity
+    (PSR-08), so it can be found on any machine it is later attached to
+    regardless of mount point or name -- only discoverable that way if
+    LAB_ROOT is itself the volume's own mount point, not a subdirectory of
+    a larger drive.
+    """
+    from .cli.data_cmd import data_init
+
+    created, stamp_result = data_init(
+        lab_root, stamp_volume=stamp_volume, label=label, kind=kind.lower()
+    )
+    if created:
+        click.echo(f"Created: {', '.join(created)}")
+    else:
+        click.echo(f"{lab_root} already scaffolded; nothing to create.")
+
+    if stamp_result is not None:
+        stamp_dict, was_created = stamp_result
+        verb = "Stamped" if was_created else "Already stamped"
+        click.echo(
+            f"{verb} volume for {lab_root}: {stamp_dict['volume_id']} "
+            f"({stamp_dict['label']}, {stamp_dict['kind']})"
+        )
+    else:
+        click.echo(
+            "Not stamped. Pass --stamp-volume, or run 'data init-volume' separately, to "
+            "give this drive a portable identity."
+        )
+
+
 ##########################################
