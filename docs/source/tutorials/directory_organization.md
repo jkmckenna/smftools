@@ -363,6 +363,21 @@ Expansion applies to the path values you write by hand (`input_data_path`,
 `custom_barcode_yaml`, `umi_yaml`) and to nothing else; every other path is
 derived from `output_directory`.
 
+**A binding can also be an ordered list of locations**, for a root that
+doesn't live in exactly one place — `analyses` might hold some runs on an
+internal disk and others on an external SSD:
+
+```toml
+[roots]
+analyses = ["/Users/you/analyses", "/Volumes/WorkSSD/analyses"]
+```
+
+`${analyses}` expands to whichever location currently exists, checked in the
+listed order (falling back to the first when creating a new run, since
+nothing exists yet). One run's own tree always resolves under a single
+location — never split across two — since everything it names is checked
+together as it's substituted.
+
 ### Relative paths anchor to the config
 
 A bare relative path in a config now resolves against **the config file's own

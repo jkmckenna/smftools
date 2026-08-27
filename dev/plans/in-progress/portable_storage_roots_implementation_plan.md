@@ -1,8 +1,8 @@
 # Portable storage roots, volume identity, and offline raw data (`PSR`)
 
-**Status:** in progress. Phases 1-4 (`PSR-01`-`PSR-15`) implemented. `PSR-18`
-(project locality) is also implemented, ahead of the rest of Phase 5. The rest
-of Phase 5 (`PSR-16`, `PSR-17`, `PSR-19`, `PSR-20`) remains proposed.
+**Status:** in progress. Phases 1-4 (`PSR-01`-`PSR-15`) implemented. Of Phase
+5, `PSR-16` (ordered-set-of-locations roots) and `PSR-18` (project locality)
+are implemented; `PSR-17`, `PSR-19`, `PSR-20` remain proposed.
 
 **Repository state reviewed:** `bf6e9b1` — recorded while writing. The
 "Current behaviour" section below is a direct investigation of the code at that
@@ -292,7 +292,7 @@ volumes, and no catalog.
 | `PSR-13` `data localize` | implemented | `tests/unit/data/test_localize.py`, `tests/unit/test_data_cli.py` |
 | `PSR-14` `data init` scaffold for a new lab tree | implemented | `tests/unit/data/test_lab_init.py`, `tests/unit/test_data_cli.py` |
 | `PSR-15` docs + migration of existing absolute configs | implemented | `docs/source/tutorials/directory_organization.md`'s Portability section |
-| `PSR-16` a root resolves over an ordered set of locations | proposed | — |
+| `PSR-16` a root resolves over an ordered set of locations | implemented | `tests/unit/config/test_root_location_sets.py` |
 | `PSR-17` per-run analysis locality, with duplicate detection | proposed | — |
 | `PSR-18` locality state in `project list`/`materialize`; refuse silent partial answers | implemented | `tests/unit/project/test_project_unreachable_selection.py` |
 | `PSR-19` in-band catalog updates on publish; incremental `data scan`; `data status` | proposed | — |
@@ -642,6 +642,31 @@ CLI command). The tutorial was written to not repeat that claim.
 
 Depends on `PSR-08` volume identity to say *where* a copy is in a way that
 survives remounting, and on `PSR-10`'s catalog to hold it.
+
+- `PSR-16` — a root resolves over an ordered set of locations, not one.
+
+  **This was already three-quarters built during Phase 2, deliberately.**
+  `config/roots.py`'s `_binding_path` already accepted a list-valued binding
+  and picked "first that exists, falling back to first" -- exactly `PSR-16`'s
+  resolution rule -- because its own docstring said so at the time: "so that
+  when `PSR-16` makes a root an ordered set of locations the file format does
+  not have to change under anyone." What was missing was not resolution; it
+  was the write-back direction. `qualify_with_root` (used when serializing an
+  artifact pointer, `PSR-07`) checked containment against only `RootBinding`'s
+  single winning `.path`, not every candidate a list binding names. A path
+  living under a *second* candidate location -- e.g. a run whose analysis
+  tree sits on an SSD that happens to be detached right now, while the root's
+  first-listed candidate exists but is irrelevant -- would silently fail to
+  qualify and fall back to an absolute or relative-walk pointer, defeating the
+  entire point of naming that root. `RootBinding` gained `all_paths` (every
+  candidate, in order) alongside the existing `path` (the winner), and
+  `qualify_with_root` now checks every candidate of every root rather than
+  just the winning one. `resolve_root`/`expand_roots` (the read direction)
+  needed no change: picking one winning path for substitution was already
+  correct, since a run's own tree still always resolves under a single,
+  consistent location -- this item never required splitting one run across
+  volumes, only allowing *different* runs under the same root name to live in
+  different places.
 
 - `PSR-18` is separable and came first, as planned. Implemented ahead of the rest
   of Phase 5, needing none of the union-root machinery.
