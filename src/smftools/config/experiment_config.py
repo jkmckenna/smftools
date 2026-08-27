@@ -28,6 +28,10 @@ from smftools.constants import (
     TRIM,
 )
 from smftools.informatics.alignment_adapters import adapter_names
+from smftools.informatics.basecall_source_selection import (
+    describe_rejection,
+    select_read_source,
+)
 from smftools.informatics.experiment_identity import resolve_experiment_id
 from smftools.informatics.input_manifest import inspect_input_manifest
 from smftools.logging_utils import get_logger
@@ -1818,17 +1822,58 @@ class ExperimentConfig:
                     bam_suffix=merged.get("bam_suffix", BAM_SUFFIX),
                     recursive=bool(merged.get("recursive_input_search", True)),
                 )
+                # Kept unmodified for reporting; `found` may be narrowed below.
+                discovered = dict(found)
                 recognized_counts = _recognized_discovery_counts(found)
                 if len(recognized_counts) > 1:
-                    detail = ", ".join(
-                        f"{kind}={recognized_counts[kind]}"
-                        for kind in _DISCOVERY_KIND_ORDER
-                        if kind in recognized_counts
+                    # A run directory legitimately holds several representations
+                    # of one set of reads -- POD5 beside a fastq_pass tree beside
+                    # BAMs from whichever model ran. Refusing it outright forced
+                    # users to point at one subdirectory by hand and record the
+                    # reason in a config comment. Express a *model* instead and
+                    # let selection pick the representation that satisfies it
+                    # (`BCS-01`).
+                    selection = select_read_source(
+                        found,
+                        model_selector=str(merged.get("model", "hac")),
+                        modality=str(merged.get("smf_modality") or ""),
                     )
-                    raise ValueError(
-                        "input_data_path contains mixed recognized input types "
-                        f"({detail}). Use one homogeneous source type per experiment."
-                    )
+                    if selection.resolved:
+                        input_type = selection.kind
+                        input_files = list(selection.paths)
+                        recognized_counts = {input_type: len(input_files)}
+                        found = {**found, f"{input_type}_paths": input_files}
+                        logger.info(
+                            "Mixed-source directory resolved to %d %s file(s) for model %r",
+                            len(input_files),
+                            input_type,
+                            merged.get("model", "hac"),
+                        )
+                    elif selection.must_basecall:
+                        signal = "pod5" if found.get("pod5_paths") else "fast5"
+                        input_type = signal
+                        input_files = found[f"{signal}_paths"]
+                        recognized_counts = {signal: len(input_files)}
+                        # Warned, not merely noted: reads were discovered and
+                        # every one was rejected. Falling through to basecalling
+                        # is correct, but a user who pointed at this directory
+                        # expecting its reads to be used should be told why they
+                        # were not, rather than discovering it from a GPU bill.
+                        logger.warning(
+                            "No discovered read source satisfies model %r, so %d %s "
+                            "signal file(s) will be basecalled. Rejected: %s",
+                            merged.get("model", "hac"),
+                            len(input_files),
+                            signal,
+                            "; ".join(candidate.describe() for candidate in selection.candidates)
+                            or "none",
+                        )
+                    else:
+                        raise ValueError(
+                            describe_rejection(
+                                selection, model_selector=str(merged.get("model", "hac"))
+                            )
+                        )
                 if not recognized_counts:
                     raise ValueError(
                         f"input_data_path contains no supported input files: {input_data_path}"
@@ -1862,14 +1907,25 @@ class ExperimentConfig:
                     )
 
                 if input_is_directory:
+                    # Reports what was *discovered*. Selection may narrow this --
+                    # excluding a fastq_fail tree, say -- and printing the
+                    # narrowed counts here would misreport the directory.
                     print(
-                        f"Found {found['all_files_searched']} files; "
-                        f"fastq={len(found['fastq_paths'])}, "
-                        f"bam={len(found['bam_paths'])}, "
-                        f"pod5={len(found['pod5_paths'])}, "
-                        f"fast5={len(found['fast5_paths'])}, "
-                        f"h5ad={len(found['h5ad_paths'])}"
+                        f"Found {discovered['all_files_searched']} files; "
+                        f"fastq={len(discovered['fastq_paths'])}, "
+                        f"bam={len(discovered['bam_paths'])}, "
+                        f"pod5={len(discovered['pod5_paths'])}, "
+                        f"fast5={len(discovered['fast5_paths'])}, "
+                        f"h5ad={len(discovered['h5ad_paths'])}"
                     )
+                    if input_files is not None and len(input_files) != len(
+                        discovered.get(f"{input_type}_paths", ())
+                    ):
+                        print(
+                            f"Selected {len(input_files)} of "
+                            f"{len(discovered[f'{input_type}_paths'])} {input_type} file(s) "
+                            f"for model {merged.get('model', 'hac')!r}"
+                        )
         else:
             input_data_path = None
             input_type = None

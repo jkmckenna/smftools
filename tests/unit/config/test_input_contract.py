@@ -79,23 +79,39 @@ def test_supported_homogeneous_directories_retain_input_type(tmp_path, suffix):
 
 
 @pytest.mark.parametrize("recursive", [False, True])
-def test_mixed_directory_fails_with_deterministic_counts(tmp_path, recursive):
+def test_mixed_directory_resolves_by_model_rather_than_failing(tmp_path, recursive, caplog):
+    """`BCS-01` deliberately replaced this contract.
+
+    2.20.0 refused a mixed directory outright, "listing the conflicting types
+    instead of silently picking one by priority". That was right while there was
+    no principled way to choose, and it forced users to point at one
+    subdirectory by hand. Selection now chooses by *basecalling model*, which is
+    neither silent nor priority-based: here no file records a model, so no read
+    source qualifies and the signal is basecalled instead -- and the fall-through
+    is warned about, naming every rejected candidate.
+    """
+    import logging
+
     input_dir = tmp_path / "inputs"
     _touch(input_dir / "reads.pod5")
     _touch(input_dir / "reads.fastq")
     _touch(input_dir / "reads.bam")
 
-    with pytest.raises(
-        ValueError,
-        match=r"mixed recognized input types \(pod5=1, fastq=1, bam=1\)",
-    ):
-        ExperimentConfig.from_var_dict(
+    with caplog.at_level(logging.WARNING, logger="smftools.config.experiment_config"):
+        config, _ = ExperimentConfig.from_var_dict(
             {
                 "input_data_path": str(input_dir),
                 "recursive_input_search": recursive,
             },
             defaults_map={},
         )
+
+    assert config.input_type == "pod5"
+    assert [path.name for path in config.input_files] == ["reads.pod5"]
+    assert any(
+        "does not satisfy" in record.message or "Rejected" in record.message
+        for record in caplog.records
+    )
 
 
 def test_bam_directory_fails_before_output_directory_creation(tmp_path):

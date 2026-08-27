@@ -54,6 +54,7 @@ An active branch, some items merged and others open.
 | document | scope |
 |---|---|
 | `selective_pod5_rebasecalling_implementation_plan.md` | `SRB` |
+| `basecall_stage_and_source_selection_implementation_plan.md` | `BCS` basecalling as a stage and read-source selection; Phase 1 (selection) implemented, Phases 2-3 proposed |
 | `portable_storage_roots_implementation_plan.md` | `PSR` portable storage roots and multi-location tracking; Phase 1 (offline raw data) merged, Phases 2-5 proposed |
 | `duplicate_detection_span_agnostic_implementation_plan.md` | `DSA` span-agnostic duplicate detection; drafted, `DSA-05` real-data qualification open |
 
@@ -64,7 +65,6 @@ A plan with no implementation branch yet.
 | document | scope |
 |---|---|
 | `agent_files_plan.md` | restructuring the repo's `AGENTS.md`/`CLAUDE.md` files; explicitly not deployed |
-| `basecall_stage_and_source_selection_implementation_plan.md` | `BCS` basecalling as a stage, read-source selection by model, and the archive round trip |
 
 ## `logs/` — not tracked
 
