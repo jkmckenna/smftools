@@ -987,6 +987,34 @@ def subsample_pod5_cmd(pod5_path, read_names, n_reads, outdir):
     )
 
 
+@cli.command("basecall")
+@click.argument("config_path", type=click.Path(exists=True))
+def basecall_cmd(config_path):
+    """Publish an immutable basecall generation from a config's POD5/FAST5 input.
+
+    A top-level command (not `experiment basecall`): the config-free
+    `--input/--output` invocation planned for it (`BCS-10`) will be scoped to
+    neither an experiment nor a project. Reuses a prior matching run rather
+    than re-invoking dorado, and leaves an already-current basecall
+    generation untouched rather than republishing it. Requires POD5/FAST5
+    input -- if reads already exist for the configured model, source
+    selection (`BCS-01`-`04`) already used them and there is nothing for this
+    command to do; producing a *different* basecall of an already-ingested
+    experiment is `smftools experiment rebasecall`, not this.
+    """
+    from .cli.basecall import basecall as basecall_fn
+
+    try:
+        result = basecall_fn(config_path)
+    except (ValueError, RuntimeError) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    if result.get("reused_generation"):
+        click.echo(f"Basecall generation {result['generation_id']} is already current.")
+    else:
+        click.echo(f"Published basecall generation {result['generation_id']}.")
+
+
 ##########################################
 
 

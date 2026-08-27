@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from ..constants import (
+    BASECALL_DIR,
     CHIMERIC_DIR,
     HMM_DIR,
     LATENT_DIR,
@@ -51,6 +52,7 @@ STAGING_SUBDIR = ".staging"
 #: deliberately: they are scanned, found to have none, and simply contribute no
 #: records -- so this table does not need editing when they gain one.
 STAGE_GENERATION_DIRS: dict[str, str] = {
+    "basecall": BASECALL_DIR,
     "raw": RAW_DIR,
     "preprocess": PREPROCESS_DIR,
     "variant": VARIANT_DIR,

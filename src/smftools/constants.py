@@ -143,6 +143,7 @@ MATE_COVERAGE_COUNT: Final[str] = "mate_coverage_count"
 OVERLAP_CONFLICT_MASK: Final[str] = "overlap_conflict_mask"
 
 LOAD_DIR: Final[str] = "load_adata_outputs"
+BASECALL_DIR: Final[str] = "basecall_outputs"
 RAW_DIR: Final[str] = "raw_outputs"
 PREPROCESS_DIR: Final[str] = "preprocess_adata_outputs"
 SPATIAL_DIR: Final[str] = "spatial_adata_outputs"
