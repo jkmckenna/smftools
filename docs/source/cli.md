@@ -212,8 +212,39 @@ plus any `[volumes]` `extra_search_paths` configured in `roots.toml` (or the
 replaces rather than adds to the file-configured paths) -- the mechanism a
 network mount needs, since it usually lives outside those conventions. This
 reports only what is attached right now; a stamped volume that is not
-reachable is invisible here until a future replica catalog exists to
-remember it.
+reachable is invisible to `data volumes` specifically, though `data locate`
+below can still name it by `volume_id` through the replica catalog.
+
+## Replica catalog: scan, locate, verify
+
+A **dataset** is identified by its input-manifest digest -- the same
+relocation-invariant digest `smftools.informatics.input_manifest` already
+computes -- and the **replica catalog** (a plain JSON file next to
+`roots.toml`) records which stamped volumes hold a copy of which dataset.
+
+`smftools data scan [MOUNT...] [--catalog-path FILE]` walks one or more
+stamped volumes for published input manifests
+(`raw_outputs/input_manifest/resolved_input_manifest.json`) and registers one
+replica per run root found: `(volume_id, run root's path relative to the
+volume's own mount point)`. With no `MOUNT` given, it scans every volume
+`data volumes` currently finds attached. Each named `MOUNT` must already be
+stamped (`data init-volume` first).
+
+`smftools data locate TARGET [--catalog-path FILE]` looks up every catalogued
+replica of `TARGET`'s dataset and reports which are currently attached --
+`TARGET` is a run root directory, a `resolved_input_manifest.json` path, or a
+bare SHA-256 digest. This answers while every replica's volume is unplugged,
+which is the point of a catalog.
+
+`smftools data verify TARGET [--volume VOLUME_ID] [--catalog-path FILE]`
+re-checksums a dataset's declared raw sources against every currently
+attached replica (or just one, with `--volume`), bypassing the checksum cache
+`resolve_input_manifest` uses for cheap re-ingestion -- a file corrupted
+without its mtime changing is exactly the failure mode checksum verification
+exists to catch, so the cache would defeat the point. A declared source that
+is not currently reachable is reported as `unreachable`, not a failure --
+archived raw input being offline is the expected case. Exits non-zero if any
+reachable source's checksum no longer matches its manifest.
 
 ## External workflow contract
 

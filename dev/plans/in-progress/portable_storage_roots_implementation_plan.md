@@ -1,9 +1,11 @@
 # Portable storage roots, volume identity, and offline raw data (`PSR`)
 
-**Status:** in progress. Phases 1-2 (`PSR-01`-`PSR-07`) implemented. `PSR-08`
-(volume stamp file), `PSR-09` (mount discovery), and `PSR-10` (replica catalog
-schema) are also implemented, as is `PSR-18` (project locality) ahead of the
-rest of Phase 5; the remainder of Phases 3-5 remain proposed.
+**Status:** in progress. Phases 1-2 (`PSR-01`-`PSR-07`) implemented. Of Phase 3,
+`PSR-08` (volume stamp file), `PSR-09` (mount discovery), `PSR-10` (replica
+catalog schema), and `PSR-11` (`data scan`/`locate`/`verify`) are implemented;
+only `PSR-12` (exact offline-vs-missing via volume identity) remains. `PSR-18`
+(project locality) is also implemented, ahead of the rest of Phase 5. Phase 4
+and the rest of Phase 5 remain proposed.
 
 **Repository state reviewed:** `bf6e9b1` — recorded while writing. The
 "Current behaviour" section below is a direct investigation of the code at that
@@ -288,7 +290,7 @@ volumes, and no catalog.
 | `PSR-08` volume stamp file + `data init-volume` | implemented | `tests/unit/data/test_volume_stamp.py`, `tests/unit/test_data_cli.py` |
 | `PSR-09` mount discovery, macOS + Linux | implemented | `tests/unit/data/test_volume_discovery.py`, `tests/unit/config/test_volume_search_paths.py`, `tests/unit/test_data_cli.py` |
 | `PSR-10` replica catalog keyed by dataset digest | implemented | `tests/unit/data/test_replica_catalog.py` |
-| `PSR-11` `data scan` / `locate` / `verify` | proposed | — |
+| `PSR-11` `data scan` / `locate` / `verify` | implemented | `tests/unit/data/test_volume_scan.py`, `tests/unit/data/test_volume_verify.py`, `tests/unit/test_data_cli.py` |
 | `PSR-12` exact `offline` vs `missing` via volume identity | proposed | — |
 | `PSR-13` `data localize` | proposed | — |
 | `PSR-14` `data init` scaffold for a new lab tree | proposed | — |
@@ -452,6 +454,39 @@ unrecognized kind sorts last rather than being dropped). A replica's `digest`
 is stored per-replica rather than assumed equal to the catalog key, so a
 replica that has drifted from its dataset (partial copy, bit rot) is
 something `PSR-11`'s `verify` can actually detect instead of taken on faith.
+
+**`PSR-11` reads "walks an attached volume for experiment manifests and input
+manifests" as one walk, not two.** A run root's identity for this purpose
+*is* its resolved input manifest -- finding that file is finding the run, so
+`scan` never separately looks for `experiment_manifest.py`'s manifest; nothing
+in `PSR-10`'s dataset-keyed catalog needs it. What `scan` actually registers
+per run is deliberately narrower than the design's original Layer-3 picture of
+"a raw archive drive is scanned for its raw bytes": that would require
+recomputing checksums for arbitrary files with no manifest to check them
+against, which is exactly what `verify` exists to do once a manifest *is*
+known. Instead `scan` registers **wherever a run's resolved input manifest
+itself lives** as a replica of that run's dataset -- typically an analyses
+tree, on the volume it happens to be stamped on, not necessarily where the
+raw bytes are. This is enough to make `locate`/`verify` useful today, and nothing about it needs revisiting when Phase 5 draws the raw/analysis distinction
+formally: a replica here already means "a location with a checksummed record
+of this dataset," which is a strict subset of what a Phase-5 raw replica would
+mean, not a conflicting definition of it.
+
+The walk is pruned to stay affordable on a real archive drive with millions of
+files: it never descends into a directory named `generations`, and once
+inside `raw_outputs` it only descends into `input_manifest` -- both proven by
+a test that buries an otherwise-valid (if deliberately corrupt) manifest where
+pruning should prevent it from ever being reached, rather than merely
+asserting "not found."
+
+`verify` re-checksums each declared source directly, **bypassing**
+`smftools.informatics.input_manifest`'s stat-signature cache on purpose: that
+cache exists to make repeat ingestion cheap by trusting an unchanged
+mtime/inode/size signature, which is precisely the shortcut a corruption check
+must not take. A declared source not currently reachable on disk is reported
+as `unreachable`, distinct from `mismatch` and not a verification failure --
+raw input being archived elsewhere is `PSR-01`'s ordinary case, and `verify`
+checks whatever it *can* reach, exactly like `scan` and `locate` do.
 
 **What the stamp is not.** It is an identifier, not an integrity guarantee.
 Nothing may treat a matching `volume_id` as evidence that the data is intact;

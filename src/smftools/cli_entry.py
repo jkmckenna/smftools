@@ -2409,8 +2409,9 @@ def data_volumes_cmd(config_dir: Path | None, as_json: bool):
     Scans platform mount roots (/Volumes on macOS; /mnt, /media/<user>,
     /run/media/<user> on Linux) plus any [volumes] extra_search_paths
     configured in roots.toml. This reports only what is attached right now --
-    a stamped volume that is not currently reachable is invisible here until
-    PSR-10's catalog exists to remember it.
+    a stamped volume that is not currently reachable is invisible here. Use
+    `data locate` to name a detached volume by volume_id via the replica
+    catalog.
     """
     from .cli.data_cmd import data_list_volumes
 
@@ -2428,6 +2429,178 @@ def data_volumes_cmd(config_dir: Path | None, as_json: bool):
         click.echo(
             f"{entry['volume_id']:<32}  {entry['label']:<20} {entry['kind']:<9} {entry['mount_path']}"
         )
+
+
+@data_group.command("scan")
+@click.argument("mounts", nargs=-1, type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.option(
+    "--config-dir",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Directory to walk up from for roots.toml's [volumes] extra_search_paths.",
+)
+@click.option(
+    "--catalog-path",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Override the replica catalog file (default: next to roots.toml).",
+)
+@click.option(
+    "--json", "as_json", is_flag=True, help="Emit machine-readable JSON instead of a summary."
+)
+def data_scan_cmd(
+    mounts: tuple[Path, ...], config_dir: Path | None, catalog_path: Path | None, as_json: bool
+):
+    """Index runs found on MOUNTS into the replica catalog.
+
+    Scans every currently attached stamped volume when no MOUNTS are given.
+    Each mount must already be stamped (`data init-volume`). Walks for
+    published input manifests (`raw_outputs/input_manifest/`), registering
+    one replica per run root found, keyed by that run's dataset digest.
+    """
+    from .cli.data_cmd import data_scan
+
+    try:
+        result = data_scan(
+            [str(mount) for mount in mounts] or None,
+            config_dir=config_dir,
+            catalog_path=catalog_path,
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    if as_json:
+        import json
+
+        click.echo(json.dumps(result, sort_keys=True, indent=2))
+        return
+    scanned = result["scanned"]
+    if not scanned:
+        click.echo("No volumes to scan (none attached, and none named).")
+        return
+    for entry in scanned:
+        click.echo(f"{entry['mount']}: {len(entry['runs'])} run(s) found")
+        for run in entry["runs"]:
+            if run["warning"]:
+                click.echo(f"  {run['path']}: WARNING: {run['warning']}")
+            else:
+                click.echo(f"  {run['path']}: {run['digest']}")
+
+
+@data_group.command("locate")
+@click.argument("target")
+@click.option(
+    "--config-dir",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Directory to walk up from for roots.toml's [volumes] extra_search_paths.",
+)
+@click.option(
+    "--catalog-path",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Override the replica catalog file (default: next to roots.toml).",
+)
+@click.option(
+    "--json", "as_json", is_flag=True, help="Emit machine-readable JSON instead of a summary."
+)
+def data_locate_cmd(target: str, config_dir: Path | None, catalog_path: Path | None, as_json: bool):
+    """Show every catalogued replica of TARGET's dataset, and which are attached.
+
+    TARGET is a run root directory, a resolved_input_manifest.json path, or a
+    bare sha256 dataset digest. Answers while every replica's volume is
+    unplugged -- that is the point of a catalog.
+    """
+    from .cli.data_cmd import data_locate
+
+    try:
+        result = data_locate(target, config_dir=config_dir, catalog_path=catalog_path)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    if as_json:
+        import json
+
+        click.echo(json.dumps(result, sort_keys=True, indent=2))
+        return
+    click.echo(f"dataset {result['dataset_digest']}")
+    if not result["replicas"]:
+        click.echo("  no catalogued replicas")
+        return
+    for replica in result["replicas"]:
+        status = "attached" if replica["attached"] else "not attached"
+        where = replica["resolved_path"] or f"{replica['volume_id']}:{replica['path']}"
+        click.echo(f"  [{status}] {where} (verified {replica['verified_at']})")
+
+
+@data_group.command("verify")
+@click.argument("target")
+@click.option(
+    "--volume", "volume_id", default=None, help="Verify only the replica on this volume_id."
+)
+@click.option(
+    "--config-dir",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Directory to walk up from for roots.toml's [volumes] extra_search_paths.",
+)
+@click.option(
+    "--catalog-path",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Override the replica catalog file (default: next to roots.toml).",
+)
+@click.option(
+    "--json", "as_json", is_flag=True, help="Emit machine-readable JSON instead of a summary."
+)
+def data_verify_cmd(
+    target: str,
+    volume_id: str | None,
+    config_dir: Path | None,
+    catalog_path: Path | None,
+    as_json: bool,
+):
+    """Re-checksum TARGET's declared raw sources against every attached replica.
+
+    TARGET is a run root directory, a resolved_input_manifest.json path, or a
+    bare sha256 dataset digest. Only declared sources currently reachable on
+    disk are checked; an archived, offline source is reported separately
+    rather than as a failure. Exits non-zero if any reachable source's
+    checksum no longer matches what its manifest recorded.
+    """
+    from .cli.data_cmd import data_verify
+
+    try:
+        result = data_verify(
+            target, volume_id=volume_id, config_dir=config_dir, catalog_path=catalog_path
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    if as_json:
+        import json
+
+        click.echo(json.dumps(result, sort_keys=True, indent=2))
+    else:
+        click.echo(f"dataset {result['dataset_digest']}")
+        if not result["results"]:
+            click.echo("  no catalogued replicas to verify")
+        for entry in result["results"]:
+            if entry["status"] == "not_attached":
+                click.echo(f"  {entry['volume_id']}: not attached")
+            elif entry["status"] == "manifest_unreadable":
+                click.echo(f"  {entry['volume_id']}: manifest unreadable: {entry['detail']}")
+            else:
+                click.echo(
+                    f"  {entry['volume_id']}: {entry['status']} "
+                    f"({entry['checked']} checked, {entry['mismatches']} mismatch(es), "
+                    f"{entry['unreachable']} unreachable)"
+                )
+                for row in entry["rows"]:
+                    click.echo(f"    {row['status']}: {row['path']}")
+
+    if any(entry.get("status") == "mismatch" for entry in result["results"]):
+        raise click.exceptions.Exit(1)
 
 
 ##########################################

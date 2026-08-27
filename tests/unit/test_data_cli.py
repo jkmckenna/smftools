@@ -10,15 +10,17 @@ from smftools.cli_entry import cli
 from smftools.config.roots import ENV_VOLUME_SEARCH_PATHS
 from smftools.data import volume_discovery
 from smftools.data.volume_stamp import STAMP_FILENAME, init_volume, read_volume_stamp
+from smftools.informatics.input_manifest import resolve_input_manifest
 
 pytestmark = pytest.mark.unit
 
 
 @pytest.fixture(autouse=True)
-def no_real_mount_roots(monkeypatch):
-    """Never let a `data volumes` test see this machine's actual mounted drives."""
+def no_real_mount_roots(tmp_path, monkeypatch):
+    """Never let a `data` CLI test see this machine's actual mounted drives or config."""
     monkeypatch.setattr(volume_discovery, "platform_mount_root_candidates", lambda: [])
     monkeypatch.delenv(ENV_VOLUME_SEARCH_PATHS, raising=False)
+    monkeypatch.setenv("SMFTOOLS_CONFIG_DIR", str(tmp_path / "no-user-config"))
 
 
 def test_init_volume_cli_stamps_a_fresh_mount(tmp_path: Path) -> None:
@@ -104,3 +106,131 @@ def test_volumes_cli_json_output(tmp_path: Path, monkeypatch) -> None:
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
     assert payload == [{**stamp.to_dict(), "mount_path": str(network_mount)}]
+
+
+def _publish_run(run_root: Path, *, content: bytes = b"@one\nAC\n+\n!!\n") -> str:
+    source = run_root.parent / f"_sources_{run_root.name}" / "sample.fastq"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(content)
+    return resolve_input_manifest(output_directory=run_root, input_paths=[source]).digest
+
+
+def test_scan_cli_indexes_an_explicit_mount(tmp_path: Path) -> None:
+    mount = tmp_path / "mount"
+    mount.mkdir()
+    init_volume(mount, label="archive-01", kind="archive")
+    digest = _publish_run(mount / "exp1")
+    catalog_path = tmp_path / "catalog.json"
+    runner = CliRunner()
+
+    result = runner.invoke(cli, ["data", "scan", str(mount), "--catalog-path", str(catalog_path)])
+
+    assert result.exit_code == 0, result.output
+    assert digest in result.output
+    assert catalog_path.is_file()
+
+
+def test_scan_cli_defaults_to_attached_volumes(tmp_path: Path, monkeypatch) -> None:
+    mount = tmp_path / "mount"
+    mount.mkdir()
+    init_volume(mount, label="archive-01", kind="archive")
+    _publish_run(mount / "exp1")
+    monkeypatch.setenv(ENV_VOLUME_SEARCH_PATHS, str(mount))
+    catalog_path = tmp_path / "catalog.json"
+    runner = CliRunner()
+
+    result = runner.invoke(cli, ["data", "scan", "--catalog-path", str(catalog_path)])
+
+    assert result.exit_code == 0, result.output
+    assert "1 run(s) found" in result.output
+
+
+def test_scan_cli_rejects_an_unstamped_mount(tmp_path: Path) -> None:
+    mount = tmp_path / "mount"
+    mount.mkdir()
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli, ["data", "scan", str(mount), "--catalog-path", str(tmp_path / "catalog.json")]
+    )
+
+    assert result.exit_code != 0
+    assert "has not been stamped" in result.output
+
+
+def test_locate_cli_reports_an_attached_replica(tmp_path: Path, monkeypatch) -> None:
+    mount = tmp_path / "mount"
+    mount.mkdir()
+    init_volume(mount, label="archive-01", kind="archive")
+    run_root = mount / "exp1"
+    _publish_run(run_root)
+    catalog_path = tmp_path / "catalog.json"
+    monkeypatch.setenv(ENV_VOLUME_SEARCH_PATHS, str(mount))
+    runner = CliRunner()
+    runner.invoke(cli, ["data", "scan", str(mount), "--catalog-path", str(catalog_path)])
+
+    result = runner.invoke(
+        cli, ["data", "locate", str(run_root), "--catalog-path", str(catalog_path)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "[attached]" in result.output
+
+
+def test_locate_cli_reports_no_replicas_for_an_uncatalogued_digest(tmp_path: Path) -> None:
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli,
+        [
+            "data",
+            "locate",
+            "0" * 64,
+            "--catalog-path",
+            str(tmp_path / "catalog.json"),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "no catalogued replicas" in result.output
+
+
+def test_verify_cli_reports_ok_for_an_intact_replica(tmp_path: Path, monkeypatch) -> None:
+    mount = tmp_path / "mount"
+    mount.mkdir()
+    init_volume(mount, label="archive-01", kind="archive")
+    run_root = mount / "exp1"
+    _publish_run(run_root)
+    catalog_path = tmp_path / "catalog.json"
+    monkeypatch.setenv(ENV_VOLUME_SEARCH_PATHS, str(mount))
+    runner = CliRunner()
+    runner.invoke(cli, ["data", "scan", str(mount), "--catalog-path", str(catalog_path)])
+
+    result = runner.invoke(
+        cli, ["data", "verify", str(run_root), "--catalog-path", str(catalog_path)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "ok" in result.output
+
+
+def test_verify_cli_fails_and_reports_a_mismatch(tmp_path: Path, monkeypatch) -> None:
+    mount = tmp_path / "mount"
+    mount.mkdir()
+    init_volume(mount, label="archive-01", kind="archive")
+    run_root = mount / "exp1"
+    _publish_run(run_root)
+    catalog_path = tmp_path / "catalog.json"
+    monkeypatch.setenv(ENV_VOLUME_SEARCH_PATHS, str(mount))
+    runner = CliRunner()
+    runner.invoke(cli, ["data", "scan", str(mount), "--catalog-path", str(catalog_path)])
+    # Corrupt the declared source in place.
+    source = next((mount / "_sources_exp1").iterdir())
+    source.write_bytes(b"corrupted")
+
+    result = runner.invoke(
+        cli, ["data", "verify", str(run_root), "--catalog-path", str(catalog_path)]
+    )
+
+    assert result.exit_code != 0
+    assert "mismatch" in result.output
