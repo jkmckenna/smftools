@@ -71,6 +71,10 @@ def test_basecall_core_publishes_a_generation(tmp_path: Path) -> None:
     assert generation_dir.is_dir()
     manifest = json.loads((generation_dir / "generation_manifest.json").read_text())
     assert manifest["model"] == "dna_r10.4.1_e8.2_400bps_hac@v5.0.0" or manifest["model"] == "hac"
+    input_ids = manifest["input_artifact_ids"]
+    assert input_ids[0].startswith("input-manifest:")
+    assert all(entry.startswith("source:") for entry in input_ids[1:])
+    assert not any(entry.startswith("alignment-reference-bundle:") for entry in input_ids)
 
 
 def test_basecall_core_is_idempotent_on_a_rerun(tmp_path: Path) -> None:

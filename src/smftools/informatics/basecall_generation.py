@@ -129,7 +129,12 @@ def publish_basecall_generation(
         config_hash: The stage config hash, for the generation manifest's
             record of what produced it -- not (yet) a reuse key on its own;
             see `BCS-07` for identity that survives an offline POD5 archive.
-        input_artifact_ids: Content checksums of the POD5/FAST5 input consumed.
+        input_artifact_ids: Per-source content identities of the POD5/FAST5
+            input consumed -- `cli.helpers.basecall_input_artifact_ids`'s
+            `input-manifest:<digest>` plus one `source:<source_id>:<sha256>`
+            per file, not one aggregate checksum, so a later comparison can
+            tell a superset/subset/disjoint change in the source set apart
+            from "identical" (`BCS-07`; classification itself is `BCS-11`).
         dorado_version: The installed Dorado version, recorded and never
             gating -- a release that leaves the model identity unchanged must
             not force a re-basecall of anything.

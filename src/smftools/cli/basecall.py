@@ -54,7 +54,7 @@ def basecall_core(cfg) -> dict[str, Any]:
         publish_basecall_generation,
         resolve_current_basecall_generation,
     )
-    from .helpers import stage_config_hash
+    from .helpers import basecall_input_artifact_ids, stage_config_hash
 
     input_type = str(getattr(cfg, "input_type", "") or "").lower()
     if input_type not in {"pod5", "fast5"}:
@@ -115,15 +115,13 @@ def basecall_core(cfg) -> dict[str, Any]:
         before_run=before_run,
     )
 
-    from ..informatics.raw_intermediate_manifest import artifact_checksum
-
     outputs = publish_basecall_generation(
         output_directory,
         bam_path=execution.bam_path,
         model=str(cfg.model),
         modality=str(cfg.smf_modality),
         config_hash=config_hash,
-        input_artifact_ids=[artifact_checksum(cfg.input_data_path)],
+        input_artifact_ids=basecall_input_artifact_ids(cfg),
         dorado_version=execution.dorado_version,
         bam_suffix=cfg.bam_suffix,
         extra_manifest_fields={

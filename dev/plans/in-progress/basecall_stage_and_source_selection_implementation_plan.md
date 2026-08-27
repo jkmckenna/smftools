@@ -6,8 +6,9 @@ generation-publishing stage) is implemented on
 `feature/bcs-05-basecall-stage`, standalone -- see its note for what it
 deliberately does not yet integrate with. `BCS-06` (`full` runs it ahead of
 raw) is implemented on `feature/bcs-06-full-recipe` -- see its note for the
-narrower shape that shipped. `BCS-07`, `BCS-10`, `BCS-11`, and all of Phase 3
-remain proposed.
+narrower shape that shipped. `BCS-07` (per-source POD5 identity, recording
+only) is implemented on `feature/bcs-07-pod5-identity`. `BCS-10`, `BCS-11`,
+and all of Phase 3 remain proposed.
 
 **Repository state reviewed:** `69c24e4` — recorded while writing.
 
@@ -276,7 +277,7 @@ archive and stays fine.
 | `BCS-04` preference ordering, availability-aware | implemented | `test_bam_is_preferred_over_fastq_when_both_qualify`, `test_fastq_fail_is_never_selected` |
 | `BCS-05` `basecall` as a generation-publishing stage | implemented | `tests/unit/informatics/test_basecall_generation.py`, `tests/unit/informatics/test_basecall_execution.py`, `tests/unit/test_basecall_cli.py` |
 | `BCS-06` `full` runs basecall before raw and skips it when unneeded | implemented | `tests/unit/test_full_recipe.py` (`test_full_flow_runs_raw_preprocess_spatial_hmm_latent_in_order`, `test_full_summary_links_stage_logs_and_outcomes`) |
-| `BCS-07` validate a basecall generation without re-reading POD5 | proposed | -- |
+| `BCS-07` validate a basecall generation without re-reading POD5 | implemented | `tests/unit/test_input_artifact_identities.py` |
 | `BCS-08` archive write-back command and layout | proposed | -- |
 | `BCS-09` batch I/O policy: no interleaved read and write on one volume | proposed | -- |
 | `BCS-10` config-free `basecall --input/--output` invocation | proposed | -- |
@@ -410,18 +411,36 @@ for `target == "full"` -- it already delegates to `recipes.full_flow` (not
 its own DAG call), so it picks up `basecall_stage` for free; verified by
 reading its dispatch rather than assumed.
 
-Two further simplifications, both intentional and both `BCS-07`
-territory to remove: idempotent reruns compare `stage_config_hash(cfg)` with
-no `stage=` argument (the coarse, unnarrowed hash) rather than a
-`basecall`-specific semantic key registered in `cli/helpers.py`'s
-`_STAGE_SEMANTIC_CONFIG_KEYS` -- safe (never falsely reuses) but coarser
-than necessary (can invalidate on config changes irrelevant to basecalling).
-And the manifest's identity is `input_artifact_ids` (POD5 content checksums)
-plus `config_hash`, not yet the fuller recorded-origin identity `BCS-07`
-specifies for validating a generation without re-reading an archived POD5 --
-today's `validate_basecall_generation` only re-checksums the published BAM
-itself, which needs no signal access, but cannot yet prove the BAM matches a
-*specific* POD5 source the way `BCS-07` intends.
+One further simplification, intentional and `BCS-11` territory to remove:
+idempotent reruns compare `stage_config_hash(cfg)` with no `stage=` argument
+(the coarse, unnarrowed hash) rather than a `basecall`-specific semantic key
+registered in `cli/helpers.py`'s `_STAGE_SEMANTIC_CONFIG_KEYS` -- safe (never
+falsely reuses) but coarser than necessary (can invalidate on config changes
+irrelevant to basecalling), and it does not yet consult the per-source
+identity `BCS-07` now records at all: a POD5 pruned after archiving still
+changes `stage_config_hash` today (nothing narrows it against
+`input_artifact_ids`), so it forces a redundant `dorado-basecalling`
+intermediate recompute -- reused by cache key rather than truly skipped, but
+not the "nothing to do" outcome the recorded identity should make possible.
+That consumption is `BCS-11`'s job, once mismatch classification exists to
+decide *how* a changed source set should affect reuse, not just *that* it
+changed.
+
+**`BCS-07` shipped as the recording half only.** `cli.helpers.raw_input_artifact_ids`
+already built exactly this shape for `raw` -- one `input-manifest:<digest>`
+entry plus one `source:<source_id>:<sha256>` per resolved input row, using
+the same `resolve_input_manifest_readonly` `raw` uses -- so the fix was to
+extract that computation into a new shared `resolved_input_source_identities(cfg)`
+and give basecall its own `basecall_input_artifact_ids(cfg)` wrapper around
+it, deliberately *not* reusing `raw_input_artifact_ids` itself: that helper
+also appends an `alignment-reference-bundle:<digest>` entry, which basecalling
+never consults, so including it would couple a basecall generation's identity
+to `cfg.fasta` and invalidate reuse on a reference-only config change that
+changes nothing about the resulting BAM. `basecall_core` now records this
+list instead of `raw_intermediate_manifest.artifact_checksum(cfg.input_data_path)`'s
+single directory-wide digest -- the "one hash, no shape" problem this section
+opened by naming. `validate_basecall_generation` needed no change: it already
+never touched POD5, only re-checksumming the published BAM.
 
 ### Phase 3 — the archive round trip (`BCS-08`–`BCS-09`)
 
