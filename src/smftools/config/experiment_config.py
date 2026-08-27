@@ -43,6 +43,7 @@ from .input_availability import (
     resolve_input_availability,
     restore_offline_input_identity,
 )
+from .roots import resolve_config_path
 
 # Optional dependency for YAML handling
 try:
@@ -54,6 +55,41 @@ import numpy as np
 import pandas as pd
 
 logger = get_logger(__name__)
+
+#: Path values a user writes by hand, and the only ones root expansion and
+#: config-relative anchoring apply to (`PSR-04`). Every other path on
+#: ``ExperimentConfig`` is derived from ``output_directory`` via ``constants``.
+USER_SUPPLIED_PATH_FIELDS = (
+    "input_data_path",
+    "input_manifest_path",
+    "output_directory",
+    "fasta",
+    "alignment_regions_bed",
+    "analysis_regions_bed",
+    "plot_regions_bed",
+    "fasta_regions_of_interest",
+    "sample_sheet_path",
+    "sequencing_summary_path",
+    "model_dir",
+    "custom_barcode_yaml",
+    "umi_yaml",
+)
+
+
+def _config_directory(config_source: Optional[str]) -> Optional[Path]:
+    """The directory a config was loaded from, or None when it was not a file.
+
+    ``from_var_dict`` is also called with in-memory dicts (tests, programmatic
+    construction). Those have no directory to anchor against, so relative paths
+    keep resolving against the working directory for them.
+    """
+    if not config_source:
+        return None
+    candidate = Path(str(config_source)).expanduser()
+    if candidate.is_file():
+        return candidate.parent
+    return None
+
 
 AlignmentMode = Literal["align", "existing"]
 InputSourceRole = Literal["raw_signal", "reads", "alignment"]
@@ -1655,6 +1691,22 @@ class ExperimentConfig:
             for k, v in csv_effective.items():
                 if k not in merged:
                     merged[k] = v
+
+        # Resolve every user-supplied path once, here, before any consumer reads
+        # one. `${root}` expands through the machine-local binding and a bare
+        # relative path anchors to the config file's own directory rather than
+        # the working directory, so the same config means the same thing wherever
+        # it is run from (`PSR-04`, `PSR-05`). Derived paths are not touched:
+        # they are built from `output_directory`, which is resolved here.
+        config_dir = _config_directory(config_source)
+        for field_name in USER_SUPPLIED_PATH_FIELDS:
+            raw_value = merged.get(field_name)
+            if raw_value is None:
+                continue
+            text = str(raw_value).strip()
+            if not text or text.lower() in {"none", "null"}:
+                continue
+            merged[field_name] = resolve_config_path(text, config_dir=config_dir, field=field_name)
 
         # experiment_name is retained as a compatibility alias for output
         # filenames, but experiment_id is the canonical human-readable label.
