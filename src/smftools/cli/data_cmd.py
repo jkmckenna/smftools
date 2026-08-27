@@ -86,14 +86,20 @@ def data_scan(
     config_dir: str | Path | None = None,
     catalog_path: str | Path | None = None,
 ) -> dict:
-    """Scan one or more stamped volumes and merge what's found into the catalog.
+    """Scan one or more stamped volumes and merge what's found into both catalogs.
 
     `mounts` defaults to every volume `data volumes` currently finds attached.
-    Persists the updated catalog before returning.
+    Updates the replica catalog (raw dataset replicas, `PSR-10`/`PSR-11`) at
+    `catalog_path` and the analysis-location catalog (`PSR-19`) at its own
+    default location -- the two are unrelated files with unrelated keys
+    (dataset digest vs. `experiment_uid`), so one override does not reach
+    both; isolate both together in tests via `SMFTOOLS_CONFIG_DIR`.
     """
+    from ..data.analysis_catalog import load_catalog as load_analysis_catalog
+    from ..data.analysis_catalog import save_catalog as save_analysis_catalog
     from ..data.replica_catalog import load_catalog, save_catalog
     from ..data.volume_discovery import discover_volumes
-    from ..data.volume_scan import scan_and_catalog
+    from ..data.volume_scan import scan_and_catalog, scan_and_catalog_analysis_locations
 
     resolved_config_dir = Path(config_dir) if config_dir is not None else None
     if mounts:
@@ -102,9 +108,13 @@ def data_scan(
         targets = [found.mount_path for found in discover_volumes(config_dir=resolved_config_dir)]
 
     catalog = load_catalog(catalog_path)
+    analysis_catalog = load_analysis_catalog()
     scanned = []
     for mount in targets:
         catalog, runs = scan_and_catalog(mount, catalog)
+        analysis_catalog, analysis_runs = scan_and_catalog_analysis_locations(
+            mount, analysis_catalog
+        )
         scanned.append(
             {
                 "mount": str(mount),
@@ -112,9 +122,18 @@ def data_scan(
                     {"path": run.relative_path, "digest": run.digest, "warning": run.warning}
                     for run in runs
                 ],
+                "analysis_locations": [
+                    {
+                        "path": run.relative_path,
+                        "experiment_uid": run.experiment_uid,
+                        "warning": run.warning,
+                    }
+                    for run in analysis_runs
+                ],
             }
         )
     save_catalog(catalog, path=catalog_path)
+    save_analysis_catalog(analysis_catalog)
     return {"scanned": scanned}
 
 
@@ -278,3 +297,144 @@ def data_init(
         )
         stamp_result = (stamp.to_dict(), was_created)
     return created, stamp_result
+
+
+def _resolve_experiment_uid(target: str) -> str:
+    """An experiment_uid from `target`: a run root directory, or a literal uid."""
+    import uuid
+
+    from ..data.run_locality import run_identity
+
+    candidate = Path(target)
+    if candidate.is_dir():
+        uid = run_identity(candidate)
+        if uid is not None:
+            return uid
+        raise ValueError(f"no experiment_uid recorded under {candidate}")
+    try:
+        return str(uuid.UUID(str(target).strip()))
+    except ValueError:
+        raise ValueError(
+            f"{target!r} is neither a run root directory nor a valid experiment_uid"
+        ) from None
+
+
+def _one_run_status(
+    experiment_uid: str,
+    *,
+    attached_by_id: dict,
+    analysis_catalog,
+    replica_catalog,
+) -> dict:
+    from ..data.analysis_catalog import locations_for as analysis_locations_for
+    from ..data.replica_catalog import replicas_for
+    from ..data.run_locality import compare_run_locations
+    from ..data.volume_verify import manifest_path_for
+    from ..informatics.input_manifest import InputManifestError, read_resolved_input_manifest
+
+    locations = analysis_locations_for(analysis_catalog, experiment_uid)
+    location_rows = []
+    attached_roots = []  # (AnalysisLocation, resolved run root)
+    for location in locations:
+        found = attached_by_id.get(location.volume_id)
+        row = {
+            "volume_id": location.volume_id,
+            "path": location.path,
+            "scanned_at": location.scanned_at,
+            "attached": found is not None,
+        }
+        if found is not None:
+            run_root = found.mount_path / location.path
+            row["resolved_path"] = str(run_root)
+            attached_roots.append((location, run_root))
+        location_rows.append(row)
+
+    comparisons = []
+    if len(attached_roots) >= 2:
+        primary_location, primary_root = attached_roots[0]
+        for location, run_root in attached_roots[1:]:
+            comparison = compare_run_locations(primary_root, run_root)
+            comparisons.append(
+                {
+                    "a": primary_location.volume_id,
+                    "b": location.volume_id,
+                    "stages": [
+                        {
+                            "kind": stage.kind,
+                            "state": stage.state,
+                            "a_only": list(stage.a_only),
+                            "b_only": list(stage.b_only),
+                        }
+                        for stage in comparison.stages
+                    ],
+                }
+            )
+
+    raw = None
+    if attached_roots:
+        _, primary_root = attached_roots[0]
+        manifest_path = manifest_path_for(primary_root)
+        if manifest_path.is_file():
+            try:
+                manifest = read_resolved_input_manifest(manifest_path)
+            except InputManifestError:
+                manifest = None
+            if manifest is not None:
+                replicas = replicas_for(replica_catalog, manifest.digest)
+                raw = {
+                    "digest": manifest.digest,
+                    "replicas": [
+                        {
+                            "volume_id": replica.volume_id,
+                            "path": replica.path,
+                            "attached": replica.volume_id in attached_by_id,
+                        }
+                        for replica in replicas
+                    ],
+                }
+
+    return {
+        "experiment_uid": experiment_uid,
+        "locations": location_rows,
+        "comparisons": comparisons,
+        "raw": raw,
+    }
+
+
+def data_status(
+    targets: list[str] | None,
+    *,
+    config_dir: str | Path | None = None,
+    catalog_path: str | Path | None = None,
+) -> dict:
+    """Where every known run's data and analyses are, attached or not.
+
+    `targets` (run roots or bare `experiment_uid`s) restricts the report;
+    omitted, every run in the analysis-location catalog is reported.
+    """
+    from ..data.analysis_catalog import load_catalog as load_analysis_catalog
+    from ..data.replica_catalog import load_catalog as load_replica_catalog
+    from ..data.volume_discovery import discover_volumes
+
+    resolved_config_dir = Path(config_dir) if config_dir is not None else None
+    attached_by_id = {
+        found.stamp.volume_id: found for found in discover_volumes(config_dir=resolved_config_dir)
+    }
+    analysis_catalog = load_analysis_catalog()
+    replica_catalog = load_replica_catalog(catalog_path)
+
+    if targets:
+        experiment_uids = [_resolve_experiment_uid(target) for target in targets]
+    else:
+        experiment_uids = sorted(analysis_catalog)
+
+    runs = [
+        _one_run_status(
+            uid,
+            attached_by_id=attached_by_id,
+            analysis_catalog=analysis_catalog,
+            replica_catalog=replica_catalog,
+        )
+        for uid in experiment_uids
+    ]
+    return {"runs": runs}

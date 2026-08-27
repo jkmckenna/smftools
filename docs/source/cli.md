@@ -228,7 +228,9 @@ stamped volumes for published input manifests
 replica per run root found: `(volume_id, run root's path relative to the
 volume's own mount point)`. With no `MOUNT` given, it scans every volume
 `data volumes` currently finds attached. Each named `MOUNT` must already be
-stamped (`data init-volume` first).
+stamped (`data init-volume` first). The same walk also registers each run
+root it finds into the *analysis-location* catalog (below), keyed by the
+run's own `experiment_uid` rather than its dataset digest.
 
 `smftools data locate TARGET [--catalog-path FILE]` looks up every catalogued
 replica of `TARGET`'s dataset and reports which are currently attached --
@@ -245,6 +247,40 @@ exists to catch, so the cache would defeat the point. A declared source that
 is not currently reachable is reported as `unreachable`, not a failure --
 archived raw input being offline is the expected case. Exits non-zero if any
 reachable source's checksum no longer matches its manifest.
+
+## Analysis-location status across copies
+
+Two copies of a run's *analysis* tree are not interchangeable the way raw
+replicas are -- each may hold different generations, since analysis can
+happen independently at each location -- so a second, separate catalog
+tracks where copies of a run's analysis tree are, keyed by the run's durable
+`experiment_uid` (assigned once at raw ingestion, unlike a path or the
+human-chosen `experiment_id` label).
+
+`smftools data status [TARGET...] [--catalog-path FILE]` reports, per run:
+every catalogued analysis location and whether it's currently attached;
+pairwise locality between attached locations -- `identical`, `ahead`/
+`behind` (one location's generation set is a superset of the other's, per
+stage), `diverged` (each holds a generation the other lacks), or
+`pointer_conflict` (same generations, different `current.json`) -- computed
+fresh from each location's published `generations/` set, never modification
+time; and, when at least one location is attached and reachable, its raw
+dataset's digest and catalogued replicas. Each `TARGET` is a run root
+directory or a bare `experiment_uid`; omitted, every run `data scan` has
+found is reported.
+
+Divergence and pointer conflicts are reported, never resolved -- there is no
+flag that picks a side by timestamp or otherwise. `data sync`, which would
+resolve *ahead*/*behind* by copying whatever's missing (safe, since
+generations are immutable and additive), does not exist yet.
+
+**A known gap**: the catalogs above are populated by `data scan` walking
+attached volumes -- a reconciliation mechanism, explicitly by design, for
+whatever smftools did not itself just publish. Hooking every stage's publish
+path to update the catalog *in band*, so a freshly-published generation
+shows up in `data status` without a scan, has not been built. Run `data
+scan` after publishing new work to keep `data status` current in the
+meantime.
 
 Whether or not a run has ever been scanned, offline/missing classification
 itself becomes exact when both a published input manifest and a populated

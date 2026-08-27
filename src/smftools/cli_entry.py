@@ -2479,12 +2479,20 @@ def data_scan_cmd(
         click.echo("No volumes to scan (none attached, and none named).")
         return
     for entry in scanned:
-        click.echo(f"{entry['mount']}: {len(entry['runs'])} run(s) found")
+        click.echo(
+            f"{entry['mount']}: {len(entry['runs'])} raw dataset(s), "
+            f"{len(entry['analysis_locations'])} analysis location(s)"
+        )
         for run in entry["runs"]:
             if run["warning"]:
-                click.echo(f"  {run['path']}: WARNING: {run['warning']}")
+                click.echo(f"  raw {run['path']}: WARNING: {run['warning']}")
             else:
-                click.echo(f"  {run['path']}: {run['digest']}")
+                click.echo(f"  raw {run['path']}: {run['digest']}")
+        for location in entry["analysis_locations"]:
+            if location["warning"]:
+                click.echo(f"  analysis {location['path']}: WARNING: {location['warning']}")
+            else:
+                click.echo(f"  analysis {location['path']}: {location['experiment_uid']}")
 
 
 @data_group.command("locate")
@@ -2715,6 +2723,73 @@ def data_init_cmd(lab_root: Path, stamp_volume: bool, label: str | None, kind: s
             "Not stamped. Pass --stamp-volume, or run 'data init-volume' separately, to "
             "give this drive a portable identity."
         )
+
+
+@data_group.command("status")
+@click.argument("targets", nargs=-1)
+@click.option(
+    "--config-dir",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Directory to walk up from for roots.toml's [volumes] extra_search_paths.",
+)
+@click.option(
+    "--catalog-path",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Override the replica catalog file (default: next to roots.toml).",
+)
+@click.option(
+    "--json", "as_json", is_flag=True, help="Emit machine-readable JSON instead of a summary."
+)
+def data_status_cmd(
+    targets: tuple[str, ...], config_dir: Path | None, catalog_path: Path | None, as_json: bool
+):
+    """Show where every known run's data and analyses are, and their locality.
+
+    Each TARGETS entry is a run root directory or a bare experiment_uid.
+    Omitted, every run in the analysis-location catalog (built by `data
+    scan`) is reported. For each run: every catalogued analysis location and
+    whether it's attached; pairwise ahead/behind/diverged/pointer_conflict
+    locality between attached locations (`PSR-17`); and, when at least one
+    location is attached and reachable, its raw dataset's catalogued
+    replicas and which are attached.
+    """
+    from .cli.data_cmd import data_status
+
+    try:
+        result = data_status(
+            list(targets) if targets else None, config_dir=config_dir, catalog_path=catalog_path
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    if as_json:
+        import json
+
+        click.echo(json.dumps(result, sort_keys=True, indent=2))
+        return
+    if not result["runs"]:
+        click.echo("No runs known to the analysis-location catalog. Run 'data scan' first.")
+        return
+    for run in result["runs"]:
+        click.echo(f"run {run['experiment_uid']}")
+        for location in run["locations"]:
+            status = "attached" if location["attached"] else "not attached"
+            where = location.get("resolved_path") or f"{location['volume_id']}:{location['path']}"
+            click.echo(f"  analysis [{status}] {where}")
+        for comparison in run["comparisons"]:
+            for stage in comparison["stages"]:
+                if stage["state"] != "identical":
+                    click.echo(
+                        f"    {stage['kind']}: {stage['state']} "
+                        f"({comparison['a']} vs {comparison['b']})"
+                    )
+        if run["raw"] is not None:
+            click.echo(f"  raw dataset {run['raw']['digest']}")
+            for replica in run["raw"]["replicas"]:
+                status = "attached" if replica["attached"] else "not attached"
+                click.echo(f"    raw [{status}] {replica['volume_id']}:{replica['path']}")
 
 
 ##########################################

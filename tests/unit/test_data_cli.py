@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -130,6 +131,37 @@ def test_scan_cli_indexes_an_explicit_mount(tmp_path: Path) -> None:
     assert catalog_path.is_file()
 
 
+def test_scan_cli_also_registers_an_analysis_location(tmp_path: Path) -> None:
+    import json
+    import uuid
+
+    from smftools.data.analysis_catalog import default_catalog_path, locations_for
+    from smftools.data.analysis_catalog import load_catalog as load_analysis_catalog
+
+    mount = tmp_path / "mount"
+    mount.mkdir()
+    stamp, _ = init_volume(mount, label="archive-01", kind="archive")
+    run_root = mount / "exp1"
+    _publish_run(run_root)
+    uid = str(uuid.uuid4())
+    (run_root / "experiment_manifest.json").write_text(
+        json.dumps({"experiment_uid": uid}), encoding="utf-8"
+    )
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli, ["data", "scan", str(mount), "--catalog-path", str(tmp_path / "catalog.json")]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "1 analysis location(s)" in result.output
+    analysis_catalog = load_analysis_catalog(default_catalog_path())
+    locations = locations_for(analysis_catalog, uid)
+    assert len(locations) == 1
+    assert locations[0].volume_id == stamp.volume_id
+    assert locations[0].path == "exp1"
+
+
 def test_scan_cli_defaults_to_attached_volumes(tmp_path: Path, monkeypatch) -> None:
     mount = tmp_path / "mount"
     mount.mkdir()
@@ -142,7 +174,7 @@ def test_scan_cli_defaults_to_attached_volumes(tmp_path: Path, monkeypatch) -> N
     result = runner.invoke(cli, ["data", "scan", "--catalog-path", str(catalog_path)])
 
     assert result.exit_code == 0, result.output
-    assert "1 run(s) found" in result.output
+    assert "1 raw dataset(s)" in result.output
 
 
 def test_scan_cli_rejects_an_unstamped_mount(tmp_path: Path) -> None:
@@ -325,3 +357,147 @@ def test_init_cli_with_stamp_volume_scaffolds_and_stamps(tmp_path: Path) -> None
     assert stamp is not None
     assert stamp.label == "lab-drive"
     assert stamp.kind == "working"
+
+
+def _set_identity(run_root: Path, experiment_uid: str) -> None:
+    run_root.mkdir(parents=True, exist_ok=True)
+    (run_root / "experiment_manifest.json").write_text(
+        json.dumps({"experiment_uid": experiment_uid}), encoding="utf-8"
+    )
+
+
+def _publish_generation(
+    run_root: Path, stage_dir: str, generation_id: str, *, current: bool = True
+) -> None:
+    from smftools.informatics.generation_listing import (
+        CURRENT_FILENAME,
+        GENERATION_MANIFEST,
+        GENERATIONS_SUBDIR,
+    )
+
+    container = run_root / stage_dir
+    generation_dir = container / GENERATIONS_SUBDIR / generation_id
+    generation_dir.mkdir(parents=True, exist_ok=True)
+    (generation_dir / GENERATION_MANIFEST).write_text(
+        json.dumps({"schema_version": 2, "status": "complete", "generation_id": generation_id}),
+        encoding="utf-8",
+    )
+    if current:
+        (container / CURRENT_FILENAME).write_text(
+            json.dumps({"schema_version": 1, "generation_id": generation_id}), encoding="utf-8"
+        )
+
+
+def test_status_cli_reports_nothing_known() -> None:
+    runner = CliRunner()
+
+    result = runner.invoke(cli, ["data", "status"])
+
+    assert result.exit_code == 0, result.output
+    assert "No runs known" in result.output
+
+
+def test_status_cli_reports_an_attached_location(tmp_path: Path, monkeypatch) -> None:
+    import uuid
+
+    from smftools.constants import RAW_DIR
+
+    mount = tmp_path / "mount"
+    mount.mkdir()
+    init_volume(mount, label="ssd-01", kind="working")
+    run_root = mount / "exp1"
+    uid = str(uuid.uuid4())
+    _set_identity(run_root, uid)
+    _publish_generation(run_root, RAW_DIR, "gen-1")
+    monkeypatch.setenv(ENV_VOLUME_SEARCH_PATHS, str(mount))
+    runner = CliRunner()
+    runner.invoke(cli, ["data", "scan", str(mount), "--catalog-path", str(tmp_path / "cat.json")])
+
+    result = runner.invoke(cli, ["data", "status", "--catalog-path", str(tmp_path / "cat.json")])
+
+    assert result.exit_code == 0, result.output
+    assert uid in result.output
+    assert "[attached]" in result.output
+
+
+def test_status_cli_accepts_a_run_root_target(tmp_path: Path, monkeypatch) -> None:
+    import uuid
+
+    from smftools.constants import RAW_DIR
+
+    mount = tmp_path / "mount"
+    mount.mkdir()
+    init_volume(mount, label="ssd-01", kind="working")
+    run_root = mount / "exp1"
+    uid = str(uuid.uuid4())
+    _set_identity(run_root, uid)
+    _publish_generation(run_root, RAW_DIR, "gen-1")
+    monkeypatch.setenv(ENV_VOLUME_SEARCH_PATHS, str(mount))
+    runner = CliRunner()
+    runner.invoke(cli, ["data", "scan", str(mount), "--catalog-path", str(tmp_path / "cat.json")])
+
+    result = runner.invoke(
+        cli, ["data", "status", str(run_root), "--catalog-path", str(tmp_path / "cat.json")]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert uid in result.output
+
+
+def test_status_cli_reports_diverged_locality_between_two_attached_copies(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import uuid
+
+    from smftools.constants import RAW_DIR
+
+    uid = str(uuid.uuid4())
+    mount_a = tmp_path / "mount_a"
+    mount_a.mkdir()
+    init_volume(mount_a, label="ssd-a", kind="working")
+    run_a = mount_a / "exp1"
+    _set_identity(run_a, uid)
+    _publish_generation(run_a, RAW_DIR, "gen-a-only")
+
+    mount_b = tmp_path / "mount_b"
+    mount_b.mkdir()
+    init_volume(mount_b, label="ssd-b", kind="working")
+    run_b = mount_b / "exp1"
+    _set_identity(run_b, uid)
+    _publish_generation(run_b, RAW_DIR, "gen-b-only")
+
+    monkeypatch.setenv(ENV_VOLUME_SEARCH_PATHS, os.pathsep.join([str(mount_a), str(mount_b)]))
+    runner = CliRunner()
+    catalog_path = tmp_path / "cat.json"
+    runner.invoke(cli, ["data", "scan", "--catalog-path", str(catalog_path)])
+
+    result = runner.invoke(cli, ["data", "status", "--catalog-path", str(catalog_path)])
+
+    assert result.exit_code == 0, result.output
+    assert "diverged" in result.output
+
+
+def test_status_cli_json_output(tmp_path: Path, monkeypatch) -> None:
+    import uuid
+
+    from smftools.constants import RAW_DIR
+
+    mount = tmp_path / "mount"
+    mount.mkdir()
+    init_volume(mount, label="ssd-01", kind="working")
+    run_root = mount / "exp1"
+    uid = str(uuid.uuid4())
+    _set_identity(run_root, uid)
+    _publish_generation(run_root, RAW_DIR, "gen-1")
+    monkeypatch.setenv(ENV_VOLUME_SEARCH_PATHS, str(mount))
+    runner = CliRunner()
+    runner.invoke(cli, ["data", "scan", str(mount), "--catalog-path", str(tmp_path / "cat.json")])
+
+    result = runner.invoke(
+        cli, ["data", "status", "--catalog-path", str(tmp_path / "cat.json"), "--json"]
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["runs"][0]["experiment_uid"] == uid
+    assert payload["runs"][0]["locations"][0]["attached"] is True
