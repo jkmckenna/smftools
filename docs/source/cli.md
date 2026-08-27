@@ -53,6 +53,14 @@ report is schema-versioned independently from the source semantic plan.
 
 ## Selective re-basecall planning
 
+This plans a *new* basecall of an experiment already ingested -- a different
+model, revisiting an old run -- published as a lineage beside the original.
+It is not how a mixed-source `input_data_path` directory picks which
+already-existing representation of the reads to use at first ingestion; see
+the experiment configuration tutorial's
+[Choosing a read source from a mixed-source directory](tutorials/experiment_config.md#choosing-a-read-source-from-a-mixed-source-directory)
+for that.
+
 Use the nested re-basecall planner to inspect an immutable parent generation,
 source-signal availability, and one structured molecule selection without
 running Dorado or writing scientific artifacts:
