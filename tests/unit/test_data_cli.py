@@ -234,3 +234,53 @@ def test_verify_cli_fails_and_reports_a_mismatch(tmp_path: Path, monkeypatch) ->
 
     assert result.exit_code != 0
     assert "mismatch" in result.output
+
+
+def _write_config(tmp_path: Path, **fields: str) -> Path:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    config = tmp_path / "experiment_config.csv"
+    rows = "\n".join(f"{name},{value}" for name, value in fields.items())
+    config.write_text(f"variable,value\n{rows}\n", encoding="utf-8")
+    return config
+
+
+def test_localize_cli_dry_run_does_not_write_anything(tmp_path: Path) -> None:
+    fasta = tmp_path / "ref.fasta"
+    fasta.write_bytes(b">ref\nACGT\n")
+    config = _write_config(tmp_path, output_directory=str(tmp_path / "out"), fasta=str(fasta))
+    runner = CliRunner()
+
+    result = runner.invoke(cli, ["data", "localize", str(config)])
+
+    assert result.exit_code == 0, result.output
+    assert "fasta" in result.output
+    assert "Dry run" in result.output
+    assert not (tmp_path / "out").exists()
+
+
+def test_localize_cli_apply_copies_and_writes_a_new_config(tmp_path: Path) -> None:
+    fasta = tmp_path / "ref.fasta"
+    fasta.write_bytes(b">ref\nACGT\n")
+    config = _write_config(tmp_path, output_directory=str(tmp_path / "out"), fasta=str(fasta))
+    runner = CliRunner()
+
+    result = runner.invoke(cli, ["data", "localize", str(config), "--apply"])
+
+    assert result.exit_code == 0, result.output
+    localized = tmp_path / "out" / "localized_inputs" / "ref.fasta"
+    assert localized.is_file()
+    new_config = config.with_suffix(".localized.csv")
+    assert new_config.is_file()
+    assert config.read_bytes() == (
+        b"variable,value\n" + f"output_directory,{tmp_path / 'out'}\nfasta,{fasta}\n".encode()
+    )
+
+
+def test_localize_cli_reports_nothing_when_no_fields_declared(tmp_path: Path) -> None:
+    config = _write_config(tmp_path, output_directory=str(tmp_path / "out"))
+    runner = CliRunner()
+
+    result = runner.invoke(cli, ["data", "localize", str(config)])
+
+    assert result.exit_code == 0, result.output
+    assert "Nothing to localize" in result.output

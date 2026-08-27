@@ -246,6 +246,34 @@ is not currently reachable is reported as `unreachable`, not a failure --
 archived raw input being offline is the expected case. Exits non-zero if any
 reachable source's checksum no longer matches its manifest.
 
+Whether or not a run has ever been scanned, offline/missing classification
+itself becomes exact when both a published input manifest and a populated
+catalog are available: `ExperimentConfig.from_var_dict` then distinguishes a
+dataset with no attached replica anywhere (confidently `offline`, even for a
+path under no recognized mount convention) from one whose volume simply
+reattached under a different mount point or name (`present`, transparently,
+at its new location) -- falling back to the structural guess exactly as
+before whenever either input is missing. See `dev/plans/in-progress/
+portable_storage_roots_implementation_plan.md`'s `PSR-12` for the detail.
+
+## Localizing a config's small inputs
+
+`smftools data localize CONFIG_PATH [--apply] [--out PATH] [--json]` copies
+`fasta`, the BED region files (`alignment_regions_bed`, `analysis_regions_bed`,
+`plot_regions_bed`), the sample sheet, and any barcode/UMI YAML into the
+config's own `output_directory` -- never the raw input itself, which is the
+large data this whole plan exists to leave archived. This is the cheapest way
+to make a single experiment's `analyses/` tree self-contained: no named root,
+volume stamp, or replica catalog required to read it on another machine.
+
+Without `--apply`, this is a dry run: it reports which fields would be copied
+and their total size, and touches nothing. `--apply` copies each file into
+`output_directory/localized_inputs/` and writes a **new** config with those
+fields repointed at the copies -- the original config is never modified.
+Re-running `--apply` is safe: a destination that already holds byte-identical
+content is left alone, and only a destination with genuinely different
+content raises rather than being silently overwritten.
+
 ## External workflow contract
 
 Workflow engines should use `smftools experiment run` instead of rewriting an
