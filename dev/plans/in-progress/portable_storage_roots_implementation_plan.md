@@ -1,9 +1,6 @@
 # Portable storage roots, volume identity, and offline raw data (`PSR`)
 
-**Status:** in progress. Phases 1-2 (`PSR-01`-`PSR-07`) implemented. Of Phase 3,
-`PSR-08` (volume stamp file), `PSR-09` (mount discovery), `PSR-10` (replica
-catalog schema), and `PSR-11` (`data scan`/`locate`/`verify`) are implemented;
-only `PSR-12` (exact offline-vs-missing via volume identity) remains. `PSR-18`
+**Status:** in progress. Phases 1-3 (`PSR-01`-`PSR-12`) implemented. `PSR-18`
 (project locality) is also implemented, ahead of the rest of Phase 5. Phase 4
 and the rest of Phase 5 remain proposed.
 
@@ -291,7 +288,7 @@ volumes, and no catalog.
 | `PSR-09` mount discovery, macOS + Linux | implemented | `tests/unit/data/test_volume_discovery.py`, `tests/unit/config/test_volume_search_paths.py`, `tests/unit/test_data_cli.py` |
 | `PSR-10` replica catalog keyed by dataset digest | implemented | `tests/unit/data/test_replica_catalog.py` |
 | `PSR-11` `data scan` / `locate` / `verify` | implemented | `tests/unit/data/test_volume_scan.py`, `tests/unit/data/test_volume_verify.py`, `tests/unit/test_data_cli.py` |
-| `PSR-12` exact `offline` vs `missing` via volume identity | proposed | — |
+| `PSR-12` exact `offline` vs `missing` via volume identity | implemented | `tests/unit/config/test_input_availability.py`, `tests/unit/config/test_offline_input_config.py` |
 | `PSR-13` `data localize` | proposed | — |
 | `PSR-14` `data init` scaffold for a new lab tree | proposed | — |
 | `PSR-15` docs + migration of existing absolute configs | proposed | — |
@@ -491,6 +488,67 @@ checks whatever it *can* reach, exactly like `scan` and `locate` do.
 **What the stamp is not.** It is an identifier, not an integrity guarantee.
 Nothing may treat a matching `volume_id` as evidence that the data is intact;
 that is what the checksums are for.
+
+**`PSR-12` turned out to need two things the phrase "exact answer" doesn't
+say by itself: what specifically the approximation gets wrong, and a decision
+about what "exact" does with a path once it knows it moved.**
+
+*What the approximation actually gets wrong* is not "offline vs. missing" in
+general -- it is two narrower failures. First, a path under a mount
+convention `MOUNT_ROOTS` does not recognize (a custom network share, an
+unconventional layout) is misclassified `missing`, a hard error, when it may
+simply be an unattached volume the structural test cannot see as one.
+Second, and the case the whole "volume identity" half of this plan exists
+for: the same physical drive, reattached under a *different* mount name,
+reads as `missing` even though the data is right there, because nothing
+about `input_data_path` as a bare path can say "this is the same volume I
+saw before." Both require actually knowing which volume a path's data used
+to be on -- which a bare path never encodes -- so `PSR-12` could not be
+built as a smarter version of `detached_volume_for`; it needed the
+identity layer underneath it.
+
+*What "exact" does once it has that identity* -- `resolve_input_availability`
+gained an optional `output_directory` parameter (default `None`, so every
+caller who does not pass it sees byte-identical behavior to before this
+landed). When given, it reads the run's own published input manifest to get
+the manifest's dataset digest and `base_directory`, consults the replica
+catalog (`PSR-10`) for that digest, and asks `discover_volumes()` (`PSR-09`)
+whether any known replica is attached *right now, under whatever name it
+currently has*:
+
+- No catalogued replica attached at all -- confident `offline`, regardless of
+  whether the path matches a recognized mount convention. This is the fix for
+  the network-share case above, and required no path remapping at all: the
+  literal path already failed to resolve (that is why this function is being
+  asked), so "nothing catalogued is attached" is sufficient on its own.
+- A replica *is* attached -- remap the queried path from the manifest's
+  recorded `base_directory` onto the replica's current, possibly-relocated
+  location, and check whether *that* resolves. Only then is it `present`;
+  an attached replica whose remapped path still does not exist defers to the
+  structural guess rather than asserting `missing` on partial information.
+- Any prerequisite missing -- no `output_directory`, no published manifest
+  yet, no catalog, nothing catalogued for this digest -- returns `None` and
+  the structural approximation runs exactly as it did before `PSR-12`. A user
+  who has never run `data scan` is entirely unaffected.
+
+Reporting `present` from a relocated path was not the end of the change by
+itself: `ExperimentConfig.from_var_dict`'s `has_input_path` branch calls
+`discover_input_files(input_data_path, ...)` on the *original* variable
+after checking availability, not on `InputAvailability.path`. Without also
+substituting `input_data_path = input_availability_state.path` when it
+differs, an exact `present` classification would have made discovery run
+against the same stale, nonexistent path it just proved was gone elsewhere --
+turning a correct classification into a crash instead of a silent no-op. This
+was caught by an end-to-end test through `from_var_dict`, not the
+`resolve_input_availability` unit tests alone, which is why one exists
+(`test_config_load_relocates_input_through_the_replica_catalog`).
+
+`InputAvailability` gained a `volume_id` field alongside the existing
+`volume` (a mount *path*): the exact-offline case has no mount path to name
+(nothing is attached), only a catalog-known `volume_id`, and forcing that
+into a `Path`-typed field would have been a type lie. Every place that used
+to print `.volume` in a message now prefers it and falls back to `.volume_id`
+so an exact-offline message never reads "volume None".
 
 ### Phase 4 — adoption (`PSR-13`–`PSR-15`)
 

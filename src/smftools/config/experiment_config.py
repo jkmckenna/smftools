@@ -1781,13 +1781,16 @@ class ExperimentConfig:
                 "experiment configuration tutorial."
             )
 
+        run_output_directory = merged.get("output_directory")
         input_manifest_path = None
         input_availability_state = resolve_input_availability(None)
         if has_manifest_path:
             # A manifest commonly lives in the analyses tree while its sources sit
             # on the archive volume, so classify the sources and keep parsing when
             # only they are offline (`PSR-01`).
-            manifest_availability = resolve_input_availability(raw_input_manifest_path)
+            manifest_availability = resolve_input_availability(
+                raw_input_manifest_path, output_directory=run_output_directory
+            )
             inspected = inspect_input_manifest(
                 raw_input_manifest_path,
                 alignment_mode=alignment_mode,
@@ -1795,7 +1798,8 @@ class ExperimentConfig:
             )
             if manifest_availability.is_present:
                 offline_sources = [
-                    resolve_input_availability(source) for source in inspected.source_paths
+                    resolve_input_availability(source, output_directory=run_output_directory)
+                    for source in inspected.source_paths
                 ]
                 input_availability_state = next(
                     (state for state in offline_sources if not state.is_present),
@@ -1810,7 +1814,7 @@ class ExperimentConfig:
                     "input is offline: %s. Stages that read raw input will refuse "
                     "until volume %s is attached; every other stage runs normally.",
                     input_availability_state.path,
-                    input_availability_state.volume,
+                    input_availability_state.volume or input_availability_state.volume_id,
                 )
             input_manifest_path = inspected.path
             input_files = list(inspected.source_paths)
@@ -1834,14 +1838,16 @@ class ExperimentConfig:
             # and parsing continues; a path missing while its volume is attached
             # is still an error here, so a mistyped path is caught exactly as
             # early as it always was.
-            input_availability_state = resolve_input_availability(input_data_path)
+            input_availability_state = resolve_input_availability(
+                input_data_path, output_directory=run_output_directory
+            )
             if not input_availability_state.is_present:
                 if input_availability_state.state == INPUT_OFFLINE:
                     logger.warning(
                         "input is offline: %s. Stages that read raw input will refuse "
                         "until volume %s is attached; every other stage runs normally.",
                         input_data_path,
-                        input_availability_state.volume,
+                        input_availability_state.volume or input_availability_state.volume_id,
                     )
                     # `input_type`/`input_files` feed each stage's config hash, so
                     # leaving them unset would make a finished raw generation look
@@ -1868,6 +1874,12 @@ class ExperimentConfig:
                 else:
                     raise ValueError(input_availability_state.detail)
             else:
+                if input_availability_state.path is not None:
+                    # `PSR-12`'s exact classification may resolve `is_present` from a
+                    # relocated path (the volume reattached under a different mount) --
+                    # substitute it, or discovery below would still hit the original,
+                    # now-nonexistent path and raise.
+                    input_data_path = input_availability_state.path
                 input_is_directory = input_data_path.is_dir()
                 found = discover_input_files(
                     input_data_path,
@@ -2418,7 +2430,7 @@ class ExperimentConfig:
             input_unavailable_volume=(
                 str(input_availability_state.volume)
                 if input_availability_state.volume is not None
-                else None
+                else input_availability_state.volume_id
             ),
             input_unavailable_detail=input_availability_state.detail or None,
             input_manifest_path=input_manifest_path,

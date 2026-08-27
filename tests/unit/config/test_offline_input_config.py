@@ -111,7 +111,7 @@ def test_offline_run_hashes_identically_to_the_attached_run(tmp_path, monkeypatc
 
     real = experiment_config.resolve_input_availability
 
-    def detached(path):
+    def detached(path, **kwargs):
         if path is not None and str(path) == str(source_dir):
             return InputAvailability(
                 state=INPUT_OFFLINE,
@@ -119,7 +119,7 @@ def test_offline_run_hashes_identically_to_the_attached_run(tmp_path, monkeypatc
                 volume=Path("/Volumes/ArchiveDriveForTests"),
                 detail="simulated detach",
             )
-        return real(path)
+        return real(path, **kwargs)
 
     monkeypatch.setattr(experiment_config, "resolve_input_availability", detached)
     offline_cfg = _load(config_path)
@@ -128,3 +128,56 @@ def test_offline_run_hashes_identically_to_the_attached_run(tmp_path, monkeypatc
     assert offline_cfg.input_type == "fastq"
     assert len(offline_cfg.input_files) == len(names)
     assert stage_config_hash(offline_cfg, "raw") == attached_hash
+
+
+def test_config_load_relocates_input_through_the_replica_catalog(tmp_path, monkeypatch):
+    """End-to-end `PSR-12`: the config still names the old path, unedited.
+
+    A finished run's input volume is reattached under a different mount point
+    and name. With no catalog, this is indistinguishable from a genuinely
+    unplugged drive (`test_offline_input_parses_instead_of_raising`). With one,
+    `from_var_dict` must resolve straight through to `present` and discover the
+    relocated files -- not merely report `present` and then crash trying to
+    read the stale path (`discover_input_files` raises on an absent path).
+    """
+    import shutil
+
+    from smftools.data import volume_discovery
+    from smftools.data.replica_catalog import add_replica, save_catalog
+    from smftools.data.volume_stamp import init_volume
+    from smftools.informatics.input_manifest import resolve_input_manifest
+
+    monkeypatch.setattr(volume_discovery, "platform_mount_root_candidates", lambda: [])
+    monkeypatch.setenv("SMFTOOLS_CONFIG_DIR", str(tmp_path / "no-user-config"))
+
+    run_root = tmp_path / "run"
+    store_dir = run_root / "store"
+    original_source = tmp_path / "orig_mount" / "fastq_pass"
+    names = ("a.fastq.gz", "b.fastq.gz")
+    original_source.mkdir(parents=True)
+    for index, name in enumerate(names):
+        (original_source / name).write_bytes(f"@r{index}\nAC\n+\n!!\n".encode())
+
+    config_path = _config(run_root, str(original_source))
+    digest = resolve_input_manifest(
+        output_directory=store_dir,
+        input_paths=[original_source / name for name in names],
+    ).digest
+
+    new_mount = tmp_path / "new_mount"
+    new_mount.mkdir()
+    stamp, _ = init_volume(new_mount, label="renamed-drive", kind="archive")
+    shutil.copytree(original_source, new_mount / "fastq_pass")
+    shutil.rmtree(tmp_path / "orig_mount")  # the old mount point is well and truly gone
+
+    catalog = add_replica({}, digest, volume_id=stamp.volume_id, path="fastq_pass")
+    save_catalog(catalog)
+    monkeypatch.setenv("SMFTOOLS_VOLUME_SEARCH_PATHS", str(new_mount))
+
+    cfg = _load(config_path)
+
+    assert cfg.input_availability == "present"
+    assert cfg.input_data_path == new_mount / "fastq_pass"
+    assert cfg.input_files is not None
+    assert len(cfg.input_files) == len(names)
+    cfg.require_input_available("raw")  # must not raise
