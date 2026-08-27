@@ -1,6 +1,6 @@
 # Portable storage roots, volume identity, and offline raw data (`PSR`)
 
-**Status:** in progress. Phase 1 (`PSR-01`-`PSR-03`) merged; Phases 2-5
+**Status:** in progress. Phases 1-2 (`PSR-01`-`PSR-07`) implemented; Phases 3-5
 remain proposed.
 
 **Repository state reviewed:** `bf6e9b1` — recorded while writing. The
@@ -279,10 +279,10 @@ volumes, and no catalog.
 | `PSR-01` input resolution state (`present`/`offline`/`missing`) | implemented | `tests/unit/config/test_input_availability.py` |
 | `PSR-02` skip discovery when offline; recover identity from the run | implemented | `test_offline_run_hashes_identically_to_the_attached_run` |
 | `PSR-03` actionable offline error naming the volume | implemented | `test_stage_requiring_raw_input_refuses_while_offline` |
-| `PSR-04` root variable expansion in config values | proposed | — |
-| `PSR-05` config-relative resolution of bare relative paths | proposed | — |
-| `PSR-06` machine-local roots file + `SMFTOOLS_ROOT_<NAME>` | proposed | — |
-| `PSR-07` root-qualified registry paths across volumes | proposed | — |
+| `PSR-04` root variable expansion in config values | implemented | `tests/unit/config/test_named_roots.py` |
+| `PSR-05` config-relative resolution of bare relative paths | implemented | `test_relative_paths_anchor_to_the_config_not_the_cwd`, `test_working_directory_fallback_keeps_pre_psr05_configs_working` |
+| `PSR-06` machine-local roots file + `SMFTOOLS_ROOT_<NAME>` | implemented | `test_environment_binding_wins`, `test_nearest_roots_file_wins` |
+| `PSR-07` root-qualified artifact/registry pointers | implemented | `test_path_under_a_bound_root_is_qualified`, `test_all_three_encodings_resolve` |
 | `PSR-08` volume stamp file + `data init-volume` | proposed | — |
 | `PSR-09` mount discovery, macOS + Linux | proposed | — |
 | `PSR-10` replica catalog keyed by dataset digest | proposed | — |
@@ -367,10 +367,23 @@ config load.
   gate it and state the migration in `PSR-15`.
 - `PSR-06` — resolution order as designed above, with `data roots list` printing
   which layer each binding came from.
-- `PSR-07` — registry entries store `${root}/relative` when the run is on a
-  different volume from the project, keeping the existing plain-relative encoding
-  when they share one. Readers accept all three encodings (plain relative,
-  legacy absolute, root-qualified).
+- `PSR-07` — implemented one level lower than planned, in
+  `serialize_artifact_path`/`resolve_artifact_path` rather than in the registry
+  alone, so every artifact pointer gains the encoding rather than just registry
+  entries. The trigger is also simpler than "a different volume", which cannot be
+  answered until `PSR-08`: a path inside the anchor stays plain relative, a path
+  under a bound root is qualified, and everything else keeps the old relative
+  walk and absolute fallback. The most specific root wins. Readers accept all
+  three encodings.
+
+**The gate this plan asked for was needed, and skipping it broke fifteen tests.**
+`PSR-05` was written as "gate it and state the migration", which I first read as
+a documentation task. It is not: test configs carried relative paths resolved
+against the working directory, and anchoring them to the config's directory
+repointed every one. The gate is now behavioural — the pre-`PSR-05` reading is
+honoured, with a warning, when the config-relative path names nothing and the
+working-directory one names something real. Where both exist the config-relative
+reading wins, which is the only case that still changes meaning.
 
 ### Phase 3 — volume identity (`PSR-08`–`PSR-12`)
 

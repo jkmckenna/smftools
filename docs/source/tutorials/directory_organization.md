@@ -314,18 +314,49 @@ at a different absolute path than the original, and every relative pointer
 (spine cross-references, project registry, `runs/` symlinks) resolves correctly
 without editing or re-running `project add`.
 
-**What it does *not* cover:** `experiment_config.csv` itself still holds
-absolute paths (`input_data_path`, `fasta`, `output_directory`) — those are
-user-supplied, not internal bookkeeping, so smftools has no way to know they
-moved. Two ways to handle that:
+### Named roots in a config
 
-- **Keep the same absolute mount point on every machine** (a shared lab
-  server/NFS mount, or a consistently-named external drive) — configs never
-  need editing, and the whole tree is portable with zero manual steps.
-- **Edit the config's paths per machine** when you genuinely relocate the data
-  to a new absolute location. You only need to do this for
-  `experiment_config.csv`; the pipeline's own outputs and the project registry
-  don't need touching.
+A config no longer has to name absolute paths. `${data}/<run>/pod5` resolves
+through a **root** bound on the machine, so the config is portable and only the
+binding is local:
+
+```toml
+# ~/.config/smftools/roots.toml, or a roots.toml beside (or above) the config
+[roots]
+data = "/Volumes/ArchiveDrive01"
+analyses = "/Volumes/WorkSSD/analyses"
+```
+
+Resolution takes the first match of: the environment variable
+`SMFTOOLS_ROOT_<NAME>`, the user roots file (`$SMFTOOLS_CONFIG_DIR/roots.toml`
+or `~/.config/smftools/roots.toml`), then any `roots.toml` found walking up from
+the config's own directory. A root with no binding is an error, never a literal
+— a typo'd name must not become a directory name.
+
+Expansion applies to the path values you write by hand (`input_data_path`,
+`input_manifest_path`, `output_directory`, `fasta`, the bed files,
+`sample_sheet_path`, `sequencing_summary_path`, `model_dir`,
+`custom_barcode_yaml`, `umi_yaml`) and to nothing else; every other path is
+derived from `output_directory`.
+
+### Relative paths anchor to the config
+
+A bare relative path in a config now resolves against **the config file's own
+directory**, not the working directory, so an experiment directory is
+self-describing and means the same thing wherever you run smftools from:
+
+```text
+fasta,my_reference.fasta
+output_directory,store
+```
+
+**Migration.** Configs written before this resolved relative paths against the
+working directory. If the config-relative path does not exist and the old
+working-directory one does, the old reading is still honoured and a warning says
+so — nothing breaks on upgrade. Make such paths absolute, root-qualified, or
+genuinely relative to the config to stop depending on where the command is run.
+
+Where both readings exist, the config-relative one wins.
 
 ### Sharing a project with a collaborator
 

@@ -876,7 +876,12 @@ def load_experiment_config(config_path: str):
     loader = LoadExperimentConfig(config_path)
     defaults_dir = resources.files("smftools").joinpath("config")
     cfg, _ = ExperimentConfig.from_var_dict(
-        loader.var_dict, date_str=date_str, defaults_dir=defaults_dir
+        loader.var_dict,
+        date_str=date_str,
+        defaults_dir=defaults_dir,
+        # The config's own directory anchors its relative paths (`PSR-05`), so
+        # the loader has to say where it read from.
+        config_source=str(config_path),
     )
     envelope_key = (
         str(Path(config_path).resolve()),
