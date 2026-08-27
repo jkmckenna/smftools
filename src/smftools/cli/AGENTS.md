@@ -82,6 +82,7 @@ Below any single experiment and across all projects (portable storage roots — 
 | `locate TARGET` | `data_cmd.py` | `data_locate` → `smftools.data.replica_catalog` | Every catalogued replica of TARGET's dataset and which are attached. |
 | `verify TARGET [--volume]` | `data_cmd.py` | `data_verify` → `smftools.data.volume_verify.verify_replica` | Re-checksum a replica's declared raw sources directly (bypasses the ingestion checksum cache). |
 | `localize CONFIG_PATH [--apply]` | `data_cmd.py` | `data_localize` → `smftools.data.localize` | Copy a config's small referenced inputs (fasta, BED files, sample sheet, barcode/UMI YAML) into its own output directory. Dry run by default; `--apply` copies files and writes a new config, never editing the original. |
+| `init LAB_ROOT [--stamp-volume]` | `data_cmd.py` | `data_init` → `smftools.data.lab_init.scaffold_lab_root` | Scaffold `data/` + `analyses/{runs,projects}/` under a new lab root, mirroring `project init` one level up. `--stamp-volume` also stamps LAB_ROOT (PSR-08). |
 
 Volume/data business logic lives in `smftools/data/` (parallel to `smftools/project/`),
 not under `cli/`; `data_cmd.py` is the same thin Click-facing translation layer as
