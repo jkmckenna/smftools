@@ -1,8 +1,9 @@
 # Portable storage roots, volume identity, and offline raw data (`PSR`)
 
 **Status:** in progress. Phases 1-4 (`PSR-01`-`PSR-15`) implemented. Of Phase
-5, `PSR-16` (ordered-set-of-locations roots) and `PSR-18` (project locality)
-are implemented; `PSR-17`, `PSR-19`, `PSR-20` remain proposed.
+5, `PSR-16` (ordered-set-of-locations roots), `PSR-17` (per-run analysis
+locality/duplicate detection), and `PSR-18` (project locality) are
+implemented; `PSR-19`, `PSR-20` remain proposed.
 
 **Repository state reviewed:** `bf6e9b1` — recorded while writing. The
 "Current behaviour" section below is a direct investigation of the code at that
@@ -293,7 +294,7 @@ volumes, and no catalog.
 | `PSR-14` `data init` scaffold for a new lab tree | implemented | `tests/unit/data/test_lab_init.py`, `tests/unit/test_data_cli.py` |
 | `PSR-15` docs + migration of existing absolute configs | implemented | `docs/source/tutorials/directory_organization.md`'s Portability section |
 | `PSR-16` a root resolves over an ordered set of locations | implemented | `tests/unit/config/test_root_location_sets.py` |
-| `PSR-17` per-run analysis locality, with duplicate detection | proposed | — |
+| `PSR-17` per-run analysis locality, with duplicate detection | implemented | `tests/unit/data/test_run_locality.py` |
 | `PSR-18` locality state in `project list`/`materialize`; refuse silent partial answers | implemented | `tests/unit/project/test_project_unreachable_selection.py` |
 | `PSR-19` in-band catalog updates on publish; incremental `data scan`; `data status` | proposed | — |
 | `PSR-20` `data sync`: additive generation copy, divergence classified not resolved | proposed | — |
@@ -667,6 +668,47 @@ survives remounting, and on `PSR-10`'s catalog to hold it.
   consistent location -- this item never required splitting one run across
   volumes, only allowing *different* runs under the same root name to live in
   different places.
+
+- `PSR-17` — per-run analysis locality, with duplicate detection.
+
+  **Duplicate detection needed an identity this plan hadn't named yet, and one
+  already existed.** "Are these two directories copies of the same run" can't
+  be answered from a path or the human-chosen `experiment_id` label -- neither
+  is stable across a rename or a machine. `experiment_uid`
+  (`smftools.informatics.molecule_identity.new_experiment_uid`, a UUID4
+  minted once at raw ingestion and persisted in `experiment_manifest.json`)
+  already exists for an unrelated reason (molecule/segment UID namespacing)
+  and turned out to be exactly the right primitive: durable, content-
+  independent, and already written by every modern run. `are_duplicates`
+  reuses it rather than inventing a second identity scheme -- the same
+  choice `PSR-10`'s catalog made about the input-manifest digest. Two
+  locations where *either* side's identity is unknown (no manifest yet, or a
+  manifest that predates the identity system) are **not** treated as
+  duplicates; "no proof" is not "proof they differ", but neither is grounds
+  to compare them as the same run.
+
+  **The four-state table was implementable directly on top of
+  `informatics.generation_listing.list_experiment_generations`**, already
+  built for `smftools experiment generations` inventory: group its records by
+  stage (`kind`) at each location, diff the two `state=ok` generation-id sets,
+  and the four states fall out of set membership alone -- both-empty
+  differences is `diverged`, one-sided is `ahead`/`behind`, no difference but
+  a different `is_current` flag is `pointer_conflict`, otherwise `identical`.
+  No new generation-reading code, no mtime anywhere, matching the design's own
+  rule at the top of this phase. A stage neither location has published
+  anything for is skipped rather than forced into one of the four states --
+  there is nothing to disagree about, not a fifth kind of disagreement.
+
+  **Scope stops at classification, deliberately.** No CLI command surfaces
+  this yet (`PSR-19`'s `data status` is where locality across every run
+  becomes visible) and nothing here acts on a diverged or conflicting
+  result -- `PSR-20`'s `data sync` is additive-only and never resolves
+  divergence by picking a side, so there is no "fix it" action for this
+  module to trigger even in principle. `compare_run_locations` also doesn't
+  call `are_duplicates` itself: comparing two unrelated runs' generation sets
+  is meaningless but harmless, and forcing the check inside would make the
+  function's cost depend on manifest I/O a caller who already knows the
+  answer shouldn't have to pay for.
 
 - `PSR-18` is separable and came first, as planned. Implemented ahead of the rest
   of Phase 5, needing none of the union-root machinery.
