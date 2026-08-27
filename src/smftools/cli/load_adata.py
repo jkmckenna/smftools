@@ -2167,7 +2167,7 @@ def load_adata_core(
         # docstring: "the raw spine obs or ragged frame").
         n_molecules = safe_read_h5ad(raw_paths["spine"], verbose=False)[0].n_obs
 
-        # Consolidated provenance manifest (dev/plans/in-progress/experiment_storage_schema.md, Phase 2):
+        # Consolidated provenance manifest (dev/plans/completed/experiment_storage_schema.md, Phase 2):
         # config-by-value, input/FASTA paths, and a readable stage-completion index --
         # none of which spine.uns previously captured (only a hash, not the values, and
         # nothing for input_data_path at all).

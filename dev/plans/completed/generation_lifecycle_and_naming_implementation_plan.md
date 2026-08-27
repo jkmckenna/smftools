@@ -1,6 +1,12 @@
 # Generation lifecycle, experiment naming, and cross-version analysis management
 
-Program status: EGL code program complete; NKG rollout remains in progress.
+**Status:** complete. Every `EGL` item is terminal — 21 merged, 4 done, 1
+complete, 1 superseded and reverted, and `EGL-01` partial with its remainder
+shipped as `EGL-01b`. Verified by reading the status table 2026-08-26.
+
+The `NKG` rollout continues, but it is a **log**, not a plan: it lives untracked
+in `logs/nkg_regeneration_rollout.md` and never reaches "complete" by
+construction, so it does not hold this document open.
 
 Two companion documents are kept **untracked**, under `logs/`:
 

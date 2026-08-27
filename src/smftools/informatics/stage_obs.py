@@ -1,6 +1,6 @@
 """Per-stage ``obs.parquet``: only the columns a stage newly produced, keyed by read_id.
 
-Formalizes the ``obs`` analog from ``dev/plans/in-progress/experiment_storage_schema.md`` (Phase 3,
+Formalizes the ``obs`` analog from ``dev/plans/completed/experiment_storage_schema.md`` (Phase 3,
 partial). This module covers writing/reading per-stage ``obs.parquet`` and joining
 them back into a full view -- it deliberately does **not** touch ``spine.h5ad`` or its
 role as the read path's obs source (that's the separate, larger "single

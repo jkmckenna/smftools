@@ -826,7 +826,7 @@ def write_raw_store(
         # via spine.copy(), so it needs the same stage-independent anchor as the
         # uns cross-stage pointers. See _run_root_from_spine_path / relative_uns_path.
         obs["bam_path"] = relative_uns_path(bam_path, output_dir.parent)
-    # Formal obs.parquet analog (dev/plans/in-progress/experiment_storage_schema.md, Phase 3, partial):
+    # Formal obs.parquet analog (dev/plans/completed/experiment_storage_schema.md, Phase 3, partial):
     # raw has no earlier stage to normalize against, so this is the full obs, written
     # alongside (not instead of) spine.h5ad -- purely additive, no consumer changes.
     obs_path = write_stage_obs(output_dir, obs)

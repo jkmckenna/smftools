@@ -39,7 +39,7 @@ PREPROCESS_OBS_SIDECAR = "obs.parquet"
 # Distinct from PREPROCESS_OBS_SIDECAR above: that file is a denormalized, internal
 # working artifact (full obs copy, mutated across QC/dedup steps). This is the
 # normalized "newly-produced columns only" artifact from
-# dev/plans/in-progress/experiment_storage_schema.md (Phase 3), read via informatics.stage_obs.
+# dev/plans/completed/experiment_storage_schema.md (Phase 3), read via informatics.stage_obs.
 PREPROCESS_STAGE_OBS = "stage_obs.parquet"
 YOUDEN_FIT_SUBDIR = "02B_Position_wide_Youden_threshold_performance"
 
