@@ -7,8 +7,10 @@ generation-publishing stage) is implemented on
 deliberately does not yet integrate with. `BCS-06` (`full` runs it ahead of
 raw) is implemented on `feature/bcs-06-full-recipe` -- see its note for the
 narrower shape that shipped. `BCS-07` (per-source POD5 identity, recording
-only) is implemented on `feature/bcs-07-pod5-identity`. `BCS-10`, `BCS-11`,
-and all of Phase 3 remain proposed.
+only) is implemented on `feature/bcs-07-pod5-identity`. `BCS-10`
+(config-free `--input/--output` invocation) is implemented on
+`feature/bcs-10-config-free-basecall`. `BCS-11` and all of Phase 3 remain
+proposed.
 
 **Repository state reviewed:** `69c24e4` — recorded while writing.
 
@@ -280,7 +282,7 @@ archive and stays fine.
 | `BCS-07` validate a basecall generation without re-reading POD5 | implemented | `tests/unit/test_input_artifact_identities.py` |
 | `BCS-08` archive write-back command and layout | proposed | -- |
 | `BCS-09` batch I/O policy: no interleaved read and write on one volume | proposed | -- |
-| `BCS-10` config-free `basecall --input/--output` invocation | proposed | -- |
+| `BCS-10` config-free `basecall --input/--output` invocation | implemented | `tests/unit/test_basecall_cli.py` (`test_run_from_paths_*`, `test_basecall_cli_config_free_form_publishes`) |
 | `BCS-11` classify basecall/signal mismatch and respond per shape | proposed | -- |
 
 ### Phase 1 — selection (`BCS-01`–`BCS-04`)
@@ -441,6 +443,52 @@ list instead of `raw_intermediate_manifest.artifact_checksum(cfg.input_data_path
 single directory-wide digest -- the "one hash, no shape" problem this section
 opened by naming. `validate_basecall_generation` needed no change: it already
 never touched POD5, only re-checksumming the published BAM.
+
+**`BCS-10` shipped the config-free form exactly as specified, and confirmed
+"one command and one core" the way `BCS-05`'s note confirmed intermediate
+sharing: by reading, not asserting.** `cli.basecall.run_from_paths` discovers
+`--input`'s POD5/FAST5 files with `discover_input_files` (the same discovery
+`ExperimentConfig` itself uses), builds a new `_ConfigFreeBasecallConfig`
+dataclass carrying exactly the attributes `basecall_core` reads, and calls
+`basecall_core` with it unchanged -- verified by checking `resolved_stage_config`
+falls back to `vars(cfg)` for anything without `to_dict`, so a config-free
+run idempotency-hashes the same way a real `ExperimentConfig` does, rather
+than assumed compatible. No new `ExperimentConfig` machinery, since basecalling
+needs no alignment reference or experiment metadata at all -- building a full
+`ExperimentConfig` for it would need a `fasta`/`experiment_id` a config-free
+invocation has no reason to have.
+
+`smf_modality` gets repurposed as an internal direct/canonical signal, set to
+`"direct"` when `--modifications` is given and `"canonical"` otherwise: only
+the literal string `"direct"` is special-cased anywhere in `basecall_core`/
+`run_dorado_basecall`, so any other value works identically. One consequence
+worth naming rather than silently shipping: `run_dorado_basecall`'s
+`IntermediateSpec` cache key includes `modality` verbatim, so a config-free
+`--modifications 5mC_5hmC` run and an experiment config whose own
+`smf_modality` is `"direct"` share the dorado intermediate (both record
+`"direct"`), but a config-free canonical run (`"canonical"`) and an
+experiment config using, say, `smf_modality=deaminase` for the *same* POD5s
+do not -- two different non-`"direct"` strings are still two different cache
+keys. Both still basecall correctly; the only cost is a redundant dorado
+invocation in that specific cross-invocation-form scenario, not a wrong
+result. A canonical, invocation-agnostic modality string is bigger than this
+item and not attempted here.
+
+**Deliberately not built:** the "overriding the model against an
+already-ingested experiment is refused" guard this section's prose describes
+is not implemented, in either invocation form. Checking it needs reading the
+model an experiment's existing raw generation actually used, which
+`raw_generation.py`'s manifest does not record today -- it would require
+either extending that manifest or reading it back through
+`informatics.basecall_provenance` (`BCS-02`)'s BAM-header reader, both
+real work beyond "add the config-free invocation." Today, running `smftools basecall --output <dir>` a second time with a
+different `--model` against the same `--output` just publishes a new
+generation and (`staged_generation`'s `select_current=True` default)
+advances `basecall_outputs/current.json` to it -- not a crash, and it does
+not touch an already-ingested raw generation at all (`raw` does not consult
+`basecall_outputs/` yet), but it is not the named refusal either: nothing
+stops it, and nothing warns that the directory's basecall identity just
+changed. Worth its own follow-up if it turns out to matter in practice.
 
 ### Phase 3 — the archive round trip (`BCS-08`–`BCS-09`)
 
