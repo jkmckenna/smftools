@@ -3,7 +3,7 @@
 A **dataset** is identified by its input-manifest digest
 (`smftools.informatics.input_manifest.input_manifest_digest`) -- reused rather
 than inventing a second identity scheme, per the design in
-`dev/plans/in-progress/portable_storage_roots_implementation_plan.md`.
+`dev/plans/completed/portable_storage_roots_implementation_plan.md`.
 `PSR-08`'s stamp identifies a *volume*; this identifies *content*. One dataset
 maps to however many replicas exist -- an original archive drive, a backup
 drive, a working copy -- each recorded as `(volume_id, path relative to that

@@ -1,10 +1,24 @@
 # Portable storage roots, volume identity, and offline raw data (`PSR`)
 
-**Status:** every numbered work item (`PSR-01`-`PSR-20`) is implemented, with
-one deliberate exception: `PSR-19`'s in-band catalog updates on publish were
-not built (see its note) -- `data scan` is a full substitute in the meantime,
-and this is the one piece of the plan still worth picking up as a follow-on.
-Nothing else in this document describes unbuilt behavior.
+**Status:** complete as of 2026-08-27, with one deliberate, tracked exception.
+Every numbered work item `PSR-01`-`PSR-20` is implemented and merged to
+`main`, one PR per item (`feature/psr-NN-<desc>`). The plan's own follow-up
+gap in `PSR-06`'s note (`data roots list` claimed shipped, wasn't) was also
+closed directly rather than left open. Nothing else in this document
+describes unbuilt behavior.
+
+**What is not resolved:** `PSR-19`'s in-band catalog updates on publish.
+The design names this the *primary* mechanism -- a stage recording its own
+analysis location the moment it publishes a generation, so `smftools data
+status` stays current automatically. That was not built; see `PSR-19`'s
+implementation note for why (it means touching every generation publisher --
+raw, preprocess, latent, project embeddings -- a materially larger and
+riskier change than any other single item here). `data scan`, the design's
+own secondary/reconciliation mechanism, is a complete substitute today:
+`data status` and `data sync` are fully functional, just not automatically
+current without re-running `scan`. This is the one piece of the plan still
+worth picking up as a dedicated follow-on; nothing else here is unbuilt or
+partially built.
 
 **Repository state reviewed:** `bf6e9b1` — recorded while writing. The
 "Current behaviour" section below is a direct investigation of the code at that
