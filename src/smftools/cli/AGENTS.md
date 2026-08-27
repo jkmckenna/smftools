@@ -78,6 +78,9 @@ Below any single experiment and across all projects (portable storage roots — 
 | Command | Module | Core function | Purpose |
 |---|---|---|---|
 | `init-volume` | `data_cmd.py` | `data_init_volume` → `smftools.data.volume_stamp.init_volume` | Stamp a drive with a permanent `volume_id` (`.smftools-volume.json`). Idempotent: rerunning on an already-stamped mount reports the existing identity rather than rewriting it. |
+| `scan [MOUNT...]` | `data_cmd.py` | `data_scan` → `smftools.data.volume_scan.scan_and_catalog` | Walk stamped volume(s) for published input manifests, registering one replica per run root into the catalog. Defaults to every currently attached volume. |
+| `locate TARGET` | `data_cmd.py` | `data_locate` → `smftools.data.replica_catalog` | Every catalogued replica of TARGET's dataset and which are attached. |
+| `verify TARGET [--volume]` | `data_cmd.py` | `data_verify` → `smftools.data.volume_verify.verify_replica` | Re-checksum a replica's declared raw sources directly (bypasses the ingestion checksum cache). |
 
 Volume/data business logic lives in `smftools/data/` (parallel to `smftools/project/`),
 not under `cli/`; `data_cmd.py` is the same thin Click-facing translation layer as
