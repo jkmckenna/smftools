@@ -83,6 +83,8 @@ Below any single experiment and across all projects (portable storage roots — 
 | `verify TARGET [--volume]` | `data_cmd.py` | `data_verify` → `smftools.data.volume_verify.verify_replica` | Re-checksum a replica's declared raw sources directly (bypasses the ingestion checksum cache). |
 | `localize CONFIG_PATH [--apply]` | `data_cmd.py` | `data_localize` → `smftools.data.localize` | Copy a config's small referenced inputs (fasta, BED files, sample sheet, barcode/UMI YAML) into its own output directory. Dry run by default; `--apply` copies files and writes a new config, never editing the original. |
 | `init LAB_ROOT [--stamp-volume]` | `data_cmd.py` | `data_init` → `smftools.data.lab_init.scaffold_lab_root` | Scaffold `data/` + `analyses/{runs,projects}/` under a new lab root, mirroring `project init` one level up. `--stamp-volume` also stamps LAB_ROOT (PSR-08). |
+| `status [TARGET...]` | `data_cmd.py` | `data_status` → `smftools.data.analysis_catalog`, `smftools.data.run_locality` | Where every known run's data and analyses are, attached or not, and pairwise ahead/behind/diverged/pointer_conflict locality between attached copies. |
+| `sync TARGET [--from --to]` | `data_cmd.py` | `data_sync` → `smftools.data.run_sync.sync_run_locations` | Additively copy missing generations between two attached analysis locations of a run. Never moves `current.json`; diverged/pointer_conflict stages are reported, not resolved. |
 
 Volume/data business logic lives in `smftools/data/` (parallel to `smftools/project/`),
 not under `cli/`; `data_cmd.py` is the same thin Click-facing translation layer as
