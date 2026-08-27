@@ -1,9 +1,9 @@
 # Portable storage roots, volume identity, and offline raw data (`PSR`)
 
 **Status:** in progress. Phases 1-2 (`PSR-01`-`PSR-07`) implemented. `PSR-08`
-(volume stamp file) and `PSR-09` (mount discovery) are also implemented, as is
-`PSR-18` (project locality) ahead of the rest of Phase 5; the remainder of
-Phases 3-5 remain proposed.
+(volume stamp file), `PSR-09` (mount discovery), and `PSR-10` (replica catalog
+schema) are also implemented, as is `PSR-18` (project locality) ahead of the
+rest of Phase 5; the remainder of Phases 3-5 remain proposed.
 
 **Repository state reviewed:** `bf6e9b1` — recorded while writing. The
 "Current behaviour" section below is a direct investigation of the code at that
@@ -287,7 +287,7 @@ volumes, and no catalog.
 | `PSR-07` root-qualified artifact/registry pointers | implemented | `test_path_under_a_bound_root_is_qualified`, `test_all_three_encodings_resolve` |
 | `PSR-08` volume stamp file + `data init-volume` | implemented | `tests/unit/data/test_volume_stamp.py`, `tests/unit/test_data_cli.py` |
 | `PSR-09` mount discovery, macOS + Linux | implemented | `tests/unit/data/test_volume_discovery.py`, `tests/unit/config/test_volume_search_paths.py`, `tests/unit/test_data_cli.py` |
-| `PSR-10` replica catalog keyed by dataset digest | proposed | — |
+| `PSR-10` replica catalog keyed by dataset digest | implemented | `tests/unit/data/test_replica_catalog.py` |
 | `PSR-11` `data scan` / `locate` / `verify` | proposed | — |
 | `PSR-12` exact `offline` vs `missing` via volume identity | proposed | — |
 | `PSR-13` `data localize` | proposed | — |
@@ -437,6 +437,21 @@ than raised, so one bad mount can't fail discovery of every other attached
 volume; the same is true of two mounts reporting the same `volume_id`, which
 `PSR-08`'s "written once, never rewritten" guarantee should make impossible in
 practice but discovery does not trust that from outside.
+
+**`PSR-10` is schema and API only, with no CLI and nothing populating it
+yet -- that is `PSR-11`'s `scan`/`locate`/`verify` and `PSR-19`'s in-band
+updates.** `smftools.data.replica_catalog` stores `{dataset_digest: [replica,
+...]}` as a plain JSON file (`replica_catalog.json`) next to `roots.toml`
+(same `SMFTOOLS_CONFIG_DIR`, no second override), with `load_catalog`/
+`save_catalog`, an `add_replica` that updates a replica already recorded at
+the same `(volume_id, path)` in place instead of duplicating it, and a
+`resolve_replica` that -- given a `discover_volumes()` result -- picks the
+first attached replica by kind preference (`working` before `archive` before
+`backup`, matching the design's "working SSD before archive HDD"; an
+unrecognized kind sorts last rather than being dropped). A replica's `digest`
+is stored per-replica rather than assumed equal to the catalog key, so a
+replica that has drifted from its dataset (partial copy, bit rot) is
+something `PSR-11`'s `verify` can actually detect instead of taken on faith.
 
 **What the stamp is not.** It is an identifier, not an integrity guarantee.
 Nothing may treat a matching `volume_id` as evidence that the data is intact;
