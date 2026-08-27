@@ -254,3 +254,27 @@ def data_localize(
         result["new_config_path"] = str(new_config_path)
         result["copied_fields"] = [item.field for item in copied]
     return result
+
+
+def data_init(
+    lab_root: str | Path, *, stamp_volume: bool, label: str | None, kind: str
+) -> tuple[list[str], tuple[dict, bool] | None]:
+    """Scaffold `lab_root` (`data/` + `analyses/{runs,projects}/`).
+
+    Returns `(created_paths, stamp_result)`. `stamp_result` is `None` when
+    `stamp_volume` is False; otherwise `(stamp_dict, created)`, matching
+    `data_init_volume`'s return shape.
+    """
+    from ..data.lab_init import scaffold_lab_root
+
+    created = [str(path) for path in scaffold_lab_root(lab_root)]
+
+    stamp_result: tuple[dict, bool] | None = None
+    if stamp_volume:
+        from ..data.volume_stamp import init_volume
+
+        stamp, was_created = init_volume(
+            lab_root, label=label or Path(lab_root).resolve().name, kind=kind
+        )
+        stamp_result = (stamp.to_dict(), was_created)
+    return created, stamp_result
