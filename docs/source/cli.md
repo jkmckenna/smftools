@@ -112,13 +112,30 @@ the plan as the SRB-02 through SRB-05 delivery boundaries. A request must set
 `smftools basecall CONFIG_PATH` publishes an immutable, checksummed
 `basecall_outputs/` generation from a config's POD5/FAST5 input, selected by
 `current.json` like every other stage -- inventoried for free by `smftools
-experiment generations`. A top-level command, not `experiment basecall`: the
-config-free `--input/--output` form planned for it is scoped to neither an
-experiment nor a project.
+experiment generations`. A top-level command, not `experiment basecall`:
+scoped to neither an experiment nor a project.
 
 ```shell
 smftools basecall experiment.csv
 ```
+
+**A config-free form basecalls a bare POD5/FAST5 directory with no
+experiment config at all** -- data preparation, not experiment work, so
+basecalling a drawer of runs off an archive drive should not need a config
+per run:
+
+```shell
+smftools basecall --input <pod5-dir> --output <dir> --model hac --model-dir <dir> \
+    [--kit <barcode-kit>] [--modifications 5mC_5hmC] [--device auto]
+```
+
+One core either way: the config-free form publishes the same
+`basecall_outputs/` artifact into `--output` that the config form publishes
+into the experiment's run root, reusing a matching prior run and sharing the
+`dorado-basecalling` intermediate the same way. `--modifications` (a
+comma-separated list, e.g. `5mC_5hmC`) selects modified basecalling; omitted,
+basecalling is canonical. `CONFIG_PATH` and the config-free flags are
+mutually exclusive.
 
 Reuses a prior matching run rather than re-invoking Dorado (the same
 `dorado-basecalling` intermediate `raw`'s own inline basecalling already uses,

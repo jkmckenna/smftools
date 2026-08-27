@@ -988,24 +988,82 @@ def subsample_pod5_cmd(pod5_path, read_names, n_reads, outdir):
 
 
 @cli.command("basecall")
-@click.argument("config_path", type=click.Path(exists=True))
-def basecall_cmd(config_path):
-    """Publish an immutable basecall generation from a config's POD5/FAST5 input.
+@click.argument("config_path", required=False, type=click.Path(exists=True))
+@click.option(
+    "--input",
+    "input_path",
+    type=click.Path(exists=True, path_type=Path),
+    default=None,
+    help="POD5/FAST5 directory or file (config-free form, with --output).",
+)
+@click.option(
+    "--output",
+    "output_dir",
+    type=click.Path(path_type=Path, file_okay=False),
+    default=None,
+    help="Output directory for the basecall generation (config-free form).",
+)
+@click.option("--model", default=None, help="Dorado model name (config-free form).")
+@click.option(
+    "--model-dir",
+    "model_dir",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Directory containing dorado models (config-free form).",
+)
+@click.option("--kit", "barcode_kit", default=None, help="Barcode kit name.")
+@click.option(
+    "--modifications",
+    default=None,
+    help="Comma-separated modification codes (e.g. 5mC_5hmC); implies modified basecalling.",
+)
+@click.option("--device", default="auto", show_default=True, help="Dorado device.")
+def basecall_cmd(
+    config_path, input_path, output_dir, model, model_dir, barcode_kit, modifications, device
+):
+    """Publish an immutable basecall generation from POD5/FAST5 input.
 
-    A top-level command (not `experiment basecall`): the config-free
-    `--input/--output` invocation planned for it (`BCS-10`) will be scoped to
-    neither an experiment nor a project. Reuses a prior matching run rather
-    than re-invoking dorado, and leaves an already-current basecall
-    generation untouched rather than republishing it. Requires POD5/FAST5
-    input -- if reads already exist for the configured model, source
-    selection (`BCS-01`-`04`) already used them and there is nothing for this
-    command to do; producing a *different* basecall of an already-ingested
-    experiment is `smftools experiment rebasecall`, not this.
+    A top-level command (not `experiment basecall`), scoped to neither an
+    experiment nor a project. Reuses a prior matching run rather than
+    re-invoking dorado, and leaves an already-current basecall generation
+    untouched rather than republishing it. Requires POD5/FAST5 input -- if
+    reads already exist for the configured model, source selection
+    (`BCS-01`-`04`) already used them and there is nothing for this command
+    to do; producing a *different* basecall of an already-ingested experiment
+    is `smftools experiment rebasecall`, not this.
+
+    Two forms (`BCS-10`): CONFIG_PATH reuses an experiment config's own model
+    parameters; --input/--output/--model/--model-dir basecall a bare POD5/FAST5
+    directory with no experiment config, publishing the same artifact into
+    --output that the config form publishes into the experiment's run root.
     """
-    from .cli.basecall import basecall as basecall_fn
+    config_free_flags = (input_path, output_dir, model, model_dir)
+    if config_path and any(flag is not None for flag in config_free_flags):
+        raise click.UsageError(
+            "Provide either CONFIG_PATH or --input/--output/--model/--model-dir, not both."
+        )
 
     try:
-        result = basecall_fn(config_path)
+        if config_path:
+            from .cli.basecall import basecall as basecall_fn
+
+            result = basecall_fn(config_path)
+        elif all(flag is not None for flag in config_free_flags):
+            from .cli.basecall import run_from_paths
+
+            result = run_from_paths(
+                input_path=input_path,
+                output_directory=output_dir,
+                model=model,
+                model_dir=model_dir,
+                barcode_kit=barcode_kit,
+                modifications=modifications,
+                device=device,
+            )
+        else:
+            raise click.UsageError(
+                "Provide either CONFIG_PATH, or all of --input/--output/--model/--model-dir."
+            )
     except (ValueError, RuntimeError) as exc:
         raise click.ClickException(str(exc)) from exc
 
