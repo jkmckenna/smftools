@@ -1,9 +1,8 @@
 # Portable storage roots, volume identity, and offline raw data (`PSR`)
 
-**Status:** in progress. Phases 1-3 (`PSR-01`-`PSR-12`) implemented. Of Phase 4,
-`PSR-13` (`data localize`) and `PSR-14` (`data init`) are implemented; only
-`PSR-15` (docs/migration) remains. `PSR-18` (project locality) is also
-implemented, ahead of the rest of Phase 5. The rest of Phase 5 remains proposed.
+**Status:** in progress. Phases 1-4 (`PSR-01`-`PSR-15`) implemented. `PSR-18`
+(project locality) is also implemented, ahead of the rest of Phase 5. The rest
+of Phase 5 (`PSR-16`, `PSR-17`, `PSR-19`, `PSR-20`) remains proposed.
 
 **Repository state reviewed:** `bf6e9b1` — recorded while writing. The
 "Current behaviour" section below is a direct investigation of the code at that
@@ -292,7 +291,7 @@ volumes, and no catalog.
 | `PSR-12` exact `offline` vs `missing` via volume identity | implemented | `tests/unit/config/test_input_availability.py`, `tests/unit/config/test_offline_input_config.py` |
 | `PSR-13` `data localize` | implemented | `tests/unit/data/test_localize.py`, `tests/unit/test_data_cli.py` |
 | `PSR-14` `data init` scaffold for a new lab tree | implemented | `tests/unit/data/test_lab_init.py`, `tests/unit/test_data_cli.py` |
-| `PSR-15` docs + migration of existing absolute configs | proposed | — |
+| `PSR-15` docs + migration of existing absolute configs | implemented | `docs/source/tutorials/directory_organization.md`'s Portability section |
 | `PSR-16` a root resolves over an ordered set of locations | proposed | — |
 | `PSR-17` per-run analysis locality, with duplicate detection | proposed | — |
 | `PSR-18` locality state in `project list`/`materialize`; refuse silent partial answers | implemented | `tests/unit/project/test_project_unreachable_selection.py` |
@@ -367,8 +366,10 @@ config load.
 - `PSR-05` — bare relative paths resolve against the config file's directory.
   This changes behaviour for any existing config that relies on CWD resolution;
   gate it and state the migration in `PSR-15`.
-- `PSR-06` — resolution order as designed above, with `data roots list` printing
-  which layer each binding came from.
+- `PSR-06` — resolution order as designed above. `known_roots()` reports which
+  layer each binding came from (`RootBinding.source`), exercised directly by
+  `tests/unit/config/test_named_roots.py`; no `data roots list` command was
+  ever wired to it (noted, not fixed, while writing `PSR-15`'s docs).
 - `PSR-07` — implemented one level lower than planned, in
   `serialize_artifact_path`/`resolve_artifact_path` rather than in the registry
   alone, so every artifact pointer gains the encoding rather than just registry
@@ -614,6 +615,28 @@ elsewhere if `LAB_ROOT` **is** the volume's own mount point, since discovery
 inside a larger drive can still be stamped, it just will not be discoverable
 that way -- an honest limitation of the discovery mechanism, not something
 `PSR-14` could paper over on its own.
+
+**`PSR-15`'s migration note was already done.** `PSR-05`'s own implementation
+note (above) already added the exact gate-and-warn behaviour the plan asked
+for, and the tutorial's "Relative paths anchor to the config" subsection
+already documented it in full, including the migration text, before this item
+was picked up. What `PSR-15` actually added was the missing half: the
+Portability section covered relative pointers (pre-existing) and named roots
+(`PSR-04`-`PSR-07`) but never mentioned offline/missing input classification
+(`PSR-01`-`PSR-03`) or volume identity (`PSR-08`-`PSR-12`) at all -- a `grep`
+for "offline"/"volume_id"/any `PSR-0[89]`/`PSR-1[0-4]` reference against the
+file came back empty before this. Two new subsections close that gap:
+"Archived raw input is not an error" (Layer 1) and "Volume identity for
+removable drives" (Layer 3, plus a closing pointer to `data localize`/
+`data init` as the lighter-weight alternative). `docs/source/cli.md` already
+carried the command-level reference for every `data` subcommand as each PSR
+landed; this tutorial is the conceptual walkthrough the CLI reference was
+never meant to replace.
+
+**One stale claim in `PSR-06`'s own note (above) was corrected while writing
+these docs**: it said `data roots list` shipped, and no such command exists
+(`known_roots()`, the function it would call, does -- just never wired to a
+CLI command). The tutorial was written to not repeat that claim.
 
 ### Phase 5 — many locations per root (`PSR-16`–`PSR-20`)
 
