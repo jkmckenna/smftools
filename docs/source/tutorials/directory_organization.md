@@ -456,6 +456,20 @@ this is the point of a catalog: it answers while the drive is unplugged.
 files, catching corruption a matching `volume_id` alone would not — a stamp
 is an identifier, not an integrity guarantee.
 
+`data scan` also registers every run root it finds into a second catalog,
+keyed by the run's own durable `experiment_uid` rather than its dataset
+digest — because two copies of a run's *analysis* tree are not
+interchangeable the way raw replicas are, each may hold different
+generations. `smftools data status` reports, per run, every known analysis
+location, whether it's attached, and how attached copies compare —
+`identical`, `ahead`/`behind`, `diverged`, or a `pointer_conflict` — always
+from published generation sets, never modification time. `smftools data
+sync TARGET` resolves `ahead`/`behind` by copying whatever's missing (safe:
+generations are immutable, so this can never corrupt anything and is
+resumable); `diverged` and `pointer_conflict` are reported and never
+resolved automatically, the same rule this whole layer follows for
+divergence everywhere else.
+
 **What this buys you day to day:** once a run has been scanned at least once,
 `smftools experiment <stage>` on it stops guessing. If the archive drive
 simply isn't attached, that's a confident, expected "offline" — even for a

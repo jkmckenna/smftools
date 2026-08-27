@@ -2792,4 +2792,74 @@ def data_status_cmd(
                 click.echo(f"    raw [{status}] {replica['volume_id']}:{replica['path']}")
 
 
+@data_group.command("sync")
+@click.argument("target")
+@click.option("--from", "from_volume", default=None, help="Source volume_id (with --to).")
+@click.option("--to", "to_volume", default=None, help="Destination volume_id (with --from).")
+@click.option("--dry-run", is_flag=True, help="Classify and report without copying anything.")
+@click.option(
+    "--config-dir",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Directory to walk up from for roots.toml's [volumes] extra_search_paths.",
+)
+@click.option(
+    "--json", "as_json", is_flag=True, help="Emit machine-readable JSON instead of a summary."
+)
+def data_sync_cmd(
+    target: str,
+    from_volume: str | None,
+    to_volume: str | None,
+    dry_run: bool,
+    config_dir: Path | None,
+    as_json: bool,
+):
+    """Additively sync TARGET's generations between two attached analysis locations.
+
+    TARGET is a run root directory or a bare experiment_uid. With no
+    --from/--to, exactly two of the run's catalogued locations (`data scan`)
+    must currently be attached. For each stage: `ahead`/`behind` copies the
+    missing generations across (immutable and content-addressed, so this can
+    never corrupt anything and is safe to re-run); `identical` does nothing;
+    `diverged`/`pointer_conflict` are reported and never resolved -- sync
+    never picks a side, and never moves a current.json pointer.
+    """
+    from .cli.data_cmd import data_sync
+
+    try:
+        result = data_sync(
+            target,
+            from_volume=from_volume,
+            to_volume=to_volume,
+            dry_run=dry_run,
+            config_dir=config_dir,
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    if as_json:
+        import json
+
+        click.echo(json.dumps(result, sort_keys=True, indent=2))
+    else:
+        click.echo(
+            f"run {result['experiment_uid']}: "
+            f"{result['location_a']['volume_id']} <-> {result['location_b']['volume_id']}"
+            f"{' (dry run)' if dry_run else ''}"
+        )
+        for stage in result["stages"]:
+            if stage["skipped_reason"]:
+                click.echo(f"  {stage['kind']}: {stage['state']} -- {stage['skipped_reason']}")
+            elif stage["copied_a_to_b"] or stage["copied_b_to_a"]:
+                click.echo(
+                    f"  {stage['kind']}: copied {list(stage['copied_a_to_b'])} a->b, "
+                    f"{list(stage['copied_b_to_a'])} b->a"
+                )
+            else:
+                click.echo(f"  {stage['kind']}: {stage['state']}")
+
+    if any(stage["skipped_reason"] for stage in result["stages"]):
+        raise click.exceptions.Exit(1)
+
+
 ##########################################
