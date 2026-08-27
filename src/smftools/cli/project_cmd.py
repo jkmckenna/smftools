@@ -80,11 +80,29 @@ def project_remove(project_dir: str | Path, experiment_id: str) -> None:
 
 
 def project_list(project_dir: str | Path):
-    """Return ``(experiments, harmonized_references)`` for display."""
+    """Return ``(experiments, harmonized_references)`` for display.
+
+    Each experiment carries ``locality`` (``reachable``/``offline``/``missing``)
+    and, when detached, ``locality_volume``. A project references run directories
+    it does not own, so a registered experiment is not necessarily a readable one,
+    and listing them identically hides which half of the project can answer
+    (`PSR-18`).
+    """
     from ..project.catalog import ProjectCatalog
+    from ..project.locality import resolve_experiment_locality
 
     catalog = ProjectCatalog.open(project_dir)
-    return catalog.experiments(), catalog.references()
+    experiments = []
+    for entry in catalog.experiments():
+        locality = resolve_experiment_locality(entry["id"], entry["path"])
+        experiments.append(
+            {
+                **entry,
+                "locality": locality.state,
+                "locality_volume": str(locality.volume) if locality.volume else None,
+            }
+        )
+    return experiments, catalog.references()
 
 
 def project_add_set(

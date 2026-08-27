@@ -149,40 +149,53 @@ class ProjectCatalog:
             mask &= table["experiment"].isin(exp_filter)
         return table.loc[mask]
 
+    def _union_catalog(self, catalog_key: str, *, label: str) -> pd.DataFrame:
+        """Union one per-experiment catalog, reporting experiments that could not answer.
+
+        These unions used to skip an absent path silently, so a detached volume
+        produced a smaller table with no signal that anything was missing
+        (`PSR-18`). Unreachable experiments are named rather than dropped
+        quietly; a genuinely unregistered catalog stays a silent skip, since that
+        is an expected difference between experiments rather than a lost one.
+        """
+        from .locality import resolve_experiment_locality
+
+        frames = []
+        unreachable = []
+        for entry in self.experiments():
+            path = entry.get("catalogs", {}).get(catalog_key)
+            if not path:
+                continue
+            if not Path(path).exists():
+                locality = resolve_experiment_locality(entry["id"], entry["path"])
+                if not locality.is_reachable:
+                    unreachable.append(locality)
+                continue
+            frame = pd.read_parquet(path)
+            frame["experiment"] = entry["id"]
+            frames.append(frame)
+        if unreachable:
+            logger.warning(
+                "%s omits %d unreachable experiment(s): %s. The table is partial.",
+                label,
+                len(unreachable),
+                "; ".join(item.describe() for item in unreachable),
+            )
+        return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
     def interval_catalog(self) -> pd.DataFrame:
         """Union the registered experiments' interval catalogs (one row per raw shard)."""
-        frames = []
-        for entry in self.experiments():
-            path = entry.get("catalogs", {}).get("interval_catalog.parquet")
-            if path and Path(path).exists():
-                frame = pd.read_parquet(path)
-                frame["experiment"] = entry["id"]
-                frames.append(frame)
-        return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+        return self._union_catalog("interval_catalog.parquet", label="interval_catalog")
 
     def region_catalog(self, scope: str) -> pd.DataFrame:
         """Union one original-coordinate region scope across experiments."""
         if scope not in {"alignment", "analysis", "plot"}:
             raise ValueError("scope must be one of: alignment, analysis, plot")
-        frames = []
-        for entry in self.experiments():
-            path = entry.get("catalogs", {}).get(f"{scope}_regions")
-            if path and Path(path).exists():
-                frame = pd.read_parquet(path)
-                frame["experiment"] = entry["id"]
-                frames.append(frame)
-        return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+        return self._union_catalog(f"{scope}_regions", label=f"{scope}_regions")
 
     def reference_interval_map(self) -> pd.DataFrame:
         """Union stored-to-original reference maps across experiments."""
-        frames = []
-        for entry in self.experiments():
-            path = entry.get("catalogs", {}).get("reference_interval_map")
-            if path and Path(path).exists():
-                frame = pd.read_parquet(path)
-                frame["experiment"] = entry["id"]
-                frames.append(frame)
-        return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+        return self._union_catalog("reference_interval_map", label="reference_interval_map")
 
     def lookup_molecule(
         self,
@@ -289,6 +302,7 @@ def resolve_set_members(
     modality=None,
     experiments=None,
     stage: str | None = None,
+    allow_unreachable: bool = False,
 ) -> list[dict]:
     """Resolve which experiments/stages/reference-strands a query would materialize.
 
@@ -302,6 +316,12 @@ def resolve_set_members(
     ``{"experiment": exp_id, "stage": resolved_stage, "spine_path": Path,
     "reference_strands": [...]}. Experiments with no spine available for ``stage``
     (or, in fallback mode, no stage at all) are skipped with a warning, not included.
+
+    An experiment whose files are *unreachable* — a detached volume, a moved run
+    directory — is a different matter and raises
+    :class:`~smftools.project.locality.UnreachableExperimentsError` unless
+    ``allow_unreachable`` is set, because a selection quietly short whole
+    experiments is indistinguishable from a real result (`PSR-18`).
     """
     from .registry import resolve_experiment_spine
 
@@ -315,9 +335,33 @@ def resolve_set_members(
     if selection.empty:
         return []
 
+    from .locality import require_reachable
+
     entries = {entry["id"]: entry for entry in catalog.experiments()}
+    # Two very different reasons an experiment contributes nothing, which this
+    # used to collapse into one warning-and-skip (`PSR-18`). "Has not reached
+    # this stage yet" is an expected difference between experiments. "Its volume
+    # is not attached" is data the caller asked for and cannot have, and
+    # dropping it silently yields a selection short whole experiments.
+    selected_entries = [
+        entries[exp_id] for exp_id in selection["experiment"].unique() if exp_id in entries
+    ]
+    unreachable = {
+        item.experiment
+        for item in require_reachable(
+            selected_entries,
+            operation="project selection",
+            allow_unreachable=allow_unreachable,
+        )
+    }
+
     members = []
     for exp_id, group in selection.groupby("experiment", sort=True):
+        if str(exp_id) in unreachable:
+            # Warned about already. Returning it as a member would only defer the
+            # failure into `materialize`, mid-stream and from deep inside a file
+            # open, which is the behaviour this item exists to remove.
+            continue
         entry = entries.get(exp_id)
         resolved = resolve_experiment_spine(entry, stage) if entry is not None else None
         if resolved is None:
@@ -562,6 +606,7 @@ def estimate_project_selection(
     end: int | None = None,
     layers=None,
     read_metrics: bool = False,
+    allow_unreachable: bool = False,
 ) -> ProjectSelectionEstimate:
     """Estimate selected arrays and metadata before any AnnData part is allocated."""
 
@@ -574,6 +619,7 @@ def estimate_project_selection(
         modality=modality,
         experiments=experiments,
         stage=stage,
+        allow_unreachable=allow_unreachable,
     )
     entries = {entry["id"]: entry for entry in catalog.experiments()}
     n_arrays = 1 + (PROJECT_DEFAULT_ALL_LAYER_ESTIMATE if layers is None else len(layers))
@@ -641,6 +687,7 @@ def project_adata(
     max_bytes: int = DEFAULT_MAX_POOL_BYTES,
     max_memory_gb: float | None = None,
     max_memory_percent: float | None = 60.0,
+    allow_unreachable: bool = False,
 ):
     """Materialize + concat a canonical reference across the matching experiments.
 
@@ -680,6 +727,7 @@ def project_adata(
         end=end,
         layers=layers,
         read_metrics=read_metrics,
+        allow_unreachable=allow_unreachable,
     )
     if not estimate.members:
         raise ValueError(
@@ -746,6 +794,7 @@ def export_project_partitions(
     read_metrics: bool = False,
     max_memory_gb: float | None = None,
     max_memory_percent: float | None = 60.0,
+    allow_unreachable: bool = False,
 ) -> Path:
     """Transactionally export bounded experiment/barcode Zarr parts plus a catalog."""
     from ..informatics.partition_read import materialize
@@ -769,6 +818,7 @@ def export_project_partitions(
         end=end,
         layers=layers,
         read_metrics=read_metrics,
+        allow_unreachable=allow_unreachable,
     )
     if not estimate.members:
         raise ValueError(f"no experiments match canonical_reference={canonical_reference!r}")
