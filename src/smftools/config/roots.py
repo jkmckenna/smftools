@@ -20,9 +20,16 @@ That last point is deliberate. Treating an unresolved ``${data}`` as a directory
 literally named ``${data}`` would turn a typo into a silently wrong path, which
 is the failure mode this whole program exists to remove.
 
-Bindings may already be written as a list. Phase 2 takes the first entry that
-exists (falling back to the first), so that when `PSR-16` makes a root an ordered
-set of locations the file format does not have to change under anyone.
+A root's binding may be a list rather than a single string: `data/` is
+simultaneously where new collection lands and where archive drives mount, and
+`analyses/` may hold some runs locally and others on an external SSD. Such a
+root is an **ordered set of locations**. Expanding `${root}` in a value picks
+the first location that currently exists (falling back to the first, for a
+run being created for the first time) -- one run's whole tree always resolves
+under a single, consistent location, never split across two. Writing a
+*portable pointer* (`qualify_with_root`) checks every location in the set,
+since the path being qualified may live under any of them, not only the one
+that happens to currently exist (`PSR-16`).
 """
 
 from __future__ import annotations
@@ -59,8 +66,15 @@ class RootBinding:
     """One root name, where it points, and which layer supplied it."""
 
     name: str
+    #: The winning candidate: the first of `all_paths` that currently exists,
+    #: or its first entry when none do. What `${root}` expands to.
     path: Path
     source: str
+    #: Every candidate location this binding names, in priority order --
+    #: a single-element tuple for an ordinary one-location root. Needed by
+    #: `qualify_with_root`: a path being qualified may live under a
+    #: non-winning candidate, not only `path` (`PSR-16`).
+    all_paths: tuple[Path, ...]
 
 
 def _load_toml(path: Path) -> Mapping[str, object]:
@@ -77,18 +91,27 @@ def _load_toml(path: Path) -> Mapping[str, object]:
     return {}
 
 
-def _binding_path(value: object) -> Optional[Path]:
-    """Resolve one binding value, which may already be a list (`PSR-16`)."""
+def _binding_paths(value: object) -> list[Path]:
+    """Every candidate path a binding value names, in priority order (`PSR-16`).
+
+    A plain string binding names exactly one candidate; a list binding names
+    several, in the priority order they were written.
+    """
     if isinstance(value, (list, tuple)):
-        candidates = [Path(str(item)).expanduser() for item in value if str(item).strip()]
-        if not candidates:
-            return None
-        for candidate in candidates:
-            if candidate.exists():
-                return candidate
-        return candidates[0]
+        return [Path(str(item)).expanduser() for item in value if str(item).strip()]
     text = str(value).strip()
-    return Path(text).expanduser() if text else None
+    return [Path(text).expanduser()] if text else []
+
+
+def _binding_path(value: object) -> Optional[Path]:
+    """The winning candidate for a binding value: first that exists, else first."""
+    candidates = _binding_paths(value)
+    if not candidates:
+        return None
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0]
 
 
 def user_roots_file() -> Path:
@@ -121,7 +144,8 @@ def resolve_root(name: str, *, config_dir: Path | None = None) -> Optional[RootB
     """
     env_value = os.environ.get(f"{ENV_PREFIX}{name.upper()}")
     if env_value and env_value.strip():
-        return RootBinding(name, Path(env_value).expanduser(), f"{ENV_PREFIX}{name.upper()}")
+        path = Path(env_value).expanduser()
+        return RootBinding(name, path, f"{ENV_PREFIX}{name.upper()}", (path,))
 
     user_file = user_roots_file()
     if user_file.is_file():
@@ -129,7 +153,7 @@ def resolve_root(name: str, *, config_dir: Path | None = None) -> Optional[RootB
         if isinstance(table, Mapping) and name in table:
             path = _binding_path(table[name])
             if path is not None:
-                return RootBinding(name, path, str(user_file))
+                return RootBinding(name, path, str(user_file), tuple(_binding_paths(table[name])))
 
     if config_dir is not None:
         for candidate in _walk_up_roots_files(Path(config_dir)):
@@ -137,7 +161,9 @@ def resolve_root(name: str, *, config_dir: Path | None = None) -> Optional[RootB
             if isinstance(table, Mapping) and name in table:
                 path = _binding_path(table[name])
                 if path is not None:
-                    return RootBinding(name, path, str(candidate))
+                    return RootBinding(
+                        name, path, str(candidate), tuple(_binding_paths(table[name]))
+                    )
     return None
 
 
@@ -256,12 +282,15 @@ def known_roots(*, config_dir: Path | None = None) -> dict[str, RootBinding]:
                 continue
             path = _binding_path(value)
             if path is not None:
-                bindings[str(name)] = RootBinding(str(name), path, source)
+                bindings[str(name)] = RootBinding(
+                    str(name), path, source, tuple(_binding_paths(value))
+                )
 
     for key, value in os.environ.items():
         if key.startswith(ENV_PREFIX) and value.strip():
             name = key[len(ENV_PREFIX) :].lower()
-            bindings.setdefault(name, RootBinding(name, Path(value).expanduser(), key))
+            env_path = Path(value).expanduser()
+            bindings.setdefault(name, RootBinding(name, env_path, key, (env_path,)))
 
     user_file = user_roots_file()
     if user_file.is_file():
@@ -330,6 +359,11 @@ def extra_volume_search_paths(*, config_dir: Path | None = None) -> list[Path]:
 def qualify_with_root(path: Path, *, config_dir: Path | None = None) -> Optional[str]:
     """Express ``path`` as ``${root}/relative`` when a bound root contains it.
 
+    Every candidate location of every root is checked, not only the one
+    ``${root}`` currently expands to: ``path`` may live under a location of a
+    multi-location root (`PSR-16`) other than the one that happens to exist
+    right now (e.g. a second candidate that isn't currently attached).
+
     Returns:
         str or None: The qualified form, using the *longest* matching root so the
         most specific binding wins, or None when no root contains the path.
@@ -337,13 +371,14 @@ def qualify_with_root(path: Path, *, config_dir: Path | None = None) -> Optional
     resolved = Path(path).resolve()
     best: Optional[tuple[int, str]] = None
     for name, binding in known_roots(config_dir=config_dir).items():
-        try:
-            root_path = binding.path.resolve()
-        except OSError:  # pragma: no cover - unresolvable binding
-            continue
-        if resolved == root_path or root_path in resolved.parents:
-            depth = len(root_path.parts)
-            if best is None or depth > best[0]:
-                relative = resolved.relative_to(root_path).as_posix()
-                best = (depth, f"${{{name}}}/{relative}" if relative else f"${{{name}}}")
+        for candidate in binding.all_paths:
+            try:
+                root_path = candidate.resolve()
+            except OSError:  # pragma: no cover - unresolvable binding
+                continue
+            if resolved == root_path or root_path in resolved.parents:
+                depth = len(root_path.parts)
+                if best is None or depth > best[0]:
+                    relative = resolved.relative_to(root_path).as_posix()
+                    best = (depth, f"${{{name}}}/{relative}" if relative else f"${{{name}}}")
     return best[1] if best else None
