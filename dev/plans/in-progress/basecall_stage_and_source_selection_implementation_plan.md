@@ -1,7 +1,11 @@
 # Basecalling as a stage, and choosing a read source (`BCS`)
 
 **Status:** in progress. Phase 1 (`BCS-01`-`BCS-04`) implemented on
-`feature/bcs-01-source-selection`; Phases 2-3 remain proposed.
+`feature/bcs-01-source-selection`. Of Phase 2, `BCS-05` (`basecall` as a
+generation-publishing stage) is implemented on
+`feature/bcs-05-basecall-stage`, standalone -- see its note for what it
+deliberately does not yet integrate with. `BCS-06`, `BCS-07`, `BCS-10`,
+`BCS-11`, and all of Phase 3 remain proposed.
 
 **Repository state reviewed:** `69c24e4` — recorded while writing.
 
@@ -268,7 +272,7 @@ archive and stays fine.
 | `BCS-02` read basecall-model provenance from FASTQ, BAM and POD5 | implemented | `informatics/basecall_provenance.py`; verified on a real run's FASTQ and BAM |
 | `BCS-03` model-match and capability policy | implemented | `test_direct_modality_refuses_a_canonical_fastq`, `test_bare_selector_accepts_any_version_of_its_family` |
 | `BCS-04` preference ordering, availability-aware | implemented | `test_bam_is_preferred_over_fastq_when_both_qualify`, `test_fastq_fail_is_never_selected` |
-| `BCS-05` `basecall` as a generation-publishing stage | proposed | -- |
+| `BCS-05` `basecall` as a generation-publishing stage | implemented | `tests/unit/informatics/test_basecall_generation.py`, `tests/unit/informatics/test_basecall_execution.py`, `tests/unit/test_basecall_cli.py` |
 | `BCS-06` `full` runs basecall before raw and skips it when unneeded | proposed | -- |
 | `BCS-07` validate a basecall generation without re-reading POD5 | proposed | -- |
 | `BCS-08` archive write-back command and layout | proposed | -- |
@@ -341,6 +345,46 @@ targets, `full_summary.json`, and the acceptance criteria files. The migration
 question is what happens to runs whose basecalls exist only as the old
 intermediate: they should be adoptable into a generation rather than recomputed,
 and if that proves unreliable, recomputation must be explicit rather than silent.
+
+**`BCS-05` shipped narrower than the risk paragraph above, deliberately.** It
+adds a genuinely new, working top-level `smftools basecall CONFIG_PATH`
+command that publishes a real `basecall_outputs/` generation -- but it does
+**not** touch the workflow contract, `experiment plan` targets,
+`full_summary.json`, or `raw`'s own inline basecalling at all. Those are
+exactly the things this section's "Risk" paragraph warned would need care,
+and `raw`'s inline path has no existing automated test coverage for its own
+POD5-input basecalling branch to catch a mistake in -- verified by grepping
+for it before starting. Rewriting that path as a side effect of adding a
+parallel one was judged a worse trade than shipping a standalone command and
+leaving the integration to `BCS-06`, which needs to touch `raw`'s call
+ordering anyway and is the natural place to do it with real coverage.
+
+What *is* shared: `informatics.basecall_execution.run_dorado_basecall` builds
+the exact same `IntermediateSpec` shape `raw`'s inline code does, and
+`prepare_intermediate` keys reuse on that spec regardless of caller --
+both write under the fixed `<output_directory>/raw_outputs/intermediates/
+dorado-basecalling/` location `IntermediateSpec` itself hardcodes, not a
+path either caller chooses. So basecalling a run once, by either path, is
+never redone by the other -- pre-basecalling a drawer of runs via `smftools
+basecall` and then running `smftools experiment raw` on each reuses the
+committed intermediate rather than re-invoking Dorado. `raw` still won't
+know a `basecall_outputs/` generation exists or publish to it -- only the
+underlying execution is shared, not the artifact model -- but the plan's
+core worry (redundant GPU work between the two paths) does not apply even
+before `BCS-06` unifies them properly.
+
+Two further simplifications, both intentional and both `BCS-06`/`BCS-07`
+territory to remove: idempotent reruns compare `stage_config_hash(cfg)` with
+no `stage=` argument (the coarse, unnarrowed hash) rather than a
+`basecall`-specific semantic key registered in `cli/helpers.py`'s
+`_STAGE_SEMANTIC_CONFIG_KEYS` -- safe (never falsely reuses) but coarser
+than necessary (can invalidate on config changes irrelevant to basecalling).
+And the manifest's identity is `input_artifact_ids` (POD5 content checksums)
+plus `config_hash`, not yet the fuller recorded-origin identity `BCS-07`
+specifies for validating a generation without re-reading an archived POD5 --
+today's `validate_basecall_generation` only re-checksums the published BAM
+itself, which needs no signal access, but cannot yet prove the BAM matches a
+*specific* POD5 source the way `BCS-07` intends.
 
 ### Phase 3 — the archive round trip (`BCS-08`–`BCS-09`)
 

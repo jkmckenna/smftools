@@ -107,6 +107,36 @@ basecall, or publish/promote a lineage. Those capabilities remain explicit in
 the plan as the SRB-02 through SRB-05 delivery boundaries. A request must set
 `promotion.activate: false`; later promotion is always a separate operation.
 
+## Basecalling as a stage
+
+`smftools basecall CONFIG_PATH` publishes an immutable, checksummed
+`basecall_outputs/` generation from a config's POD5/FAST5 input, selected by
+`current.json` like every other stage -- inventoried for free by `smftools
+experiment generations`. A top-level command, not `experiment basecall`: the
+config-free `--input/--output` form planned for it is scoped to neither an
+experiment nor a project.
+
+```shell
+smftools basecall experiment.csv
+```
+
+Reuses a prior matching run rather than re-invoking Dorado (the same
+`dorado-basecalling` intermediate `raw`'s own inline basecalling already uses,
+so basecalling a run once, however it was invoked, is never redone), and
+leaves an already-current basecall generation untouched rather than
+republishing it. Requires POD5/FAST5 input -- if reads for the configured
+model already exist, source selection (see the experiment configuration
+tutorial's
+[Choosing a read source from a mixed-source directory](tutorials/experiment_config.md#choosing-a-read-source-from-a-mixed-source-directory))
+already used them, and there is nothing for this command to do. Producing a
+*different* basecall of an already-ingested experiment is a re-basecalling
+lineage (`smftools experiment rebasecall`, above), not this.
+
+`raw`'s own inline basecalling is unchanged by this: `full` does not yet run
+`basecall` as its own step ahead of `raw`, and `raw` does not yet consult a
+published basecall generation before basecalling from POD5 itself. That
+integration is still to come.
+
 ## Named experiment sets
 
 `--set NAME` restricts a project command to a saved subset of the registered
