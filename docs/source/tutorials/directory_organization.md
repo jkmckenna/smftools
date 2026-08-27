@@ -314,6 +314,30 @@ at a different absolute path than the original, and every relative pointer
 (spine cross-references, project registry, `runs/` symlinks) resolves correctly
 without editing or re-running `project add`.
 
+### Archived raw input is not an error
+
+Once an experiment's pipeline outputs exist, its raw `data/<run_name>/`
+input is routinely moved to archival storage — there's no reason to keep
+terabytes of pod5 attached once `raw` has ingested it. Config loading treats
+that as one of three expected states rather than a single failure:
+
+- **present** — the input resolves normally.
+- **offline** — the path lies on a volume that isn't currently attached.
+  Expected, not an error.
+- **missing** — the volume is attached (or was never removable) and the path
+  is genuinely absent. A real error, caught at config load exactly as before.
+
+Only the stages that actually read raw input (`raw`, and re-basecalling)
+refuse while it's offline, naming the volume to attach. Every other stage —
+`preprocess`, `variant`, `chimeric`, `spatial`, `hmm`, `latent`,
+`export-bundle`, `export-fastq` — runs normally, since none of them touch a
+byte of it:
+
+```shell
+smftools experiment hmm my_run/experiment_config.csv   # works, archive drive unplugged
+smftools experiment raw my_run/experiment_config.csv   # refuses, names the volume to attach
+```
+
 ### Named roots in a config
 
 A config no longer has to name absolute paths. `${data}/<run>/pod5` resolves
@@ -357,6 +381,83 @@ so — nothing breaks on upgrade. Make such paths absolute, root-qualified, or
 genuinely relative to the config to stop depending on where the command is run.
 
 Where both readings exist, the config-relative one wins.
+
+### Volume identity for removable drives
+
+Named roots solve *"where does `${data}` point on this machine"* — one binding
+per machine. They don't solve a narrower, common problem: raw sequencing
+output is routinely archived to more than one removable drive (the original,
+a backup, institutional storage), a drive's mount point and OS-reported name
+change depending on which machine it's plugged into and what else is already
+attached, and none of that has anything to do with `${data}`'s binding on any
+one machine. This layer exists for exactly that case, and — like named roots
+— is entirely opt-in; if you never touch it, nothing here changes.
+
+**Stamp a drive once, permanently:**
+
+```shell
+smftools data init-volume /Volumes/ArchiveDrive01 --label archive-01 --kind archive
+```
+
+This writes a small `.smftools-volume.json` identity file at the drive's own
+root. The stamp is written once and never rewritten, so the drive keeps its
+identity even if it's later relabeled at the OS level or reattached under a
+different mount point elsewhere — nothing about identifying it depends on its
+current name.
+
+**See what's attached right now:**
+
+```shell
+smftools data volumes
+```
+
+Scans the platform's usual mount locations (`/Volumes` on macOS; `/mnt`,
+`/media/<user>`, `/run/media/<user>` on Linux) plus anything you've added to
+`[volumes] extra_search_paths` in `roots.toml`, for network shares that live
+outside those conventions.
+
+**Index what a drive holds into the replica catalog:**
+
+```shell
+smftools data scan /Volumes/ArchiveDrive01
+```
+
+Walks the drive for published input manifests and records, per dataset
+(identified by the same relocation-invariant digest the manifest already
+computes — not by path), which stamped volume holds a copy and where. The
+catalog itself is a plain JSON file next to `roots.toml`, copyable between
+your own machines and rebuildable from attached drives by re-running `scan`.
+
+**Find a dataset without plugging anything in:**
+
+```shell
+smftools data locate analyses/runs/240101_run/experiment_1
+smftools data verify analyses/runs/240101_run/experiment_1
+```
+
+`locate` reports every catalogued replica and which are currently attached —
+this is the point of a catalog: it answers while the drive is unplugged.
+`verify` re-checksums a replica's declared sources directly against the
+files, catching corruption a matching `volume_id` alone would not — a stamp
+is an identifier, not an integrity guarantee.
+
+**What this buys you day to day:** once a run has been scanned at least once,
+`smftools experiment <stage>` on it stops guessing. If the archive drive
+simply isn't attached, that's a confident, expected "offline" — even for a
+network share that doesn't match any recognized mount convention, which
+would otherwise read as a hard error. If the drive *is* attached, just under
+a different mount point or name than when the config was written, the run
+resolves it transparently and proceeds — no config edit required.
+
+**The cheapest alternative, if this is more than you need:** for a single
+experiment, `smftools data localize CONFIG_PATH --apply` copies just the
+small, hand-edited inputs (`fasta`, the BED region files, the sample sheet,
+barcode/UMI YAML — never the raw data itself) into the run's own output
+directory and writes a new, self-contained config. No roots, no volumes, no
+catalog required to read the result elsewhere. `smftools data init LAB_ROOT`
+scaffolds a fresh `data/` + `analyses/{runs,projects}/` tree for a new lab
+root the same way `project init` does for a single project, and can
+optionally stamp the drive it's given at the same time with `--stamp-volume`.
 
 ### Sharing a project with a collaborator
 
