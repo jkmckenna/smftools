@@ -1,6 +1,14 @@
 # Design: formal parquet/zarr experiment storage schema
 
-**Status:** Phases 1-2 implemented: `molecules.parquet`/`Sample`-in-sort-key/
+**Status:** complete — all four phases implemented. Verified against the code
+2026-08-26, not taken from this document's own claims: `write_raw_store` emits
+`molecules.parquet` and `barcode_index`, `experiment_manifest.py`,
+`stage_obs.py` and `experiment_spine.py` all exist and are wired, and spatial
+writes `group_path`/`obsm_keys` with `partition_read.py` keeping a
+`read_metrics_path` fallback for catalogs written before the rename — a
+migration path, not an unfinished phase.
+
+Phases 1-2 implemented: `molecules.parquet`/`Sample`-in-sort-key/
 `barcode_index.parquet` (`informatics/raw_store.py::write_raw_store`), and
 `experiment_manifest.json` (`informatics/experiment_manifest.py`, wired into raw only).
 Phase 3 implemented: normalized per-stage `obs.parquet` exists for raw and preprocess

@@ -43,6 +43,9 @@ Every tracked item merged to `main` and verified against the code.
 | `ml_implementation_ledger.md` | `ML-001`–`ML-503`, the ML migration; plan and development ledger fused in one document |
 | `ml700_benchmark_plan.md` | `ML-700` performance and scalability qualification |
 | `smftools_raw_load_plan.md` | the v2.0.0 `raw`/`load` split; thin spine over a partitioned ragged store |
+| `experiment_storage_schema.md` | formal parquet/zarr storage schema; all four phases, each narrower than first sketched |
+| `project_sample_and_set_stores.md` | project-level per-sample and set stores; a set is a query, not a concat cache |
+| `generation_lifecycle_and_naming_implementation_plan.md` | `EGL` generation lifecycle and experiment naming; the `NKG` rollout continues as a log in `logs/` |
 
 ## `in-progress/`
 
@@ -51,10 +54,7 @@ An active branch, some items merged and others open.
 | document | scope |
 |---|---|
 | `selective_pod5_rebasecalling_implementation_plan.md` | `SRB` |
-| `experiment_storage_schema.md` | formal parquet/zarr storage schema; phases 1-2 implemented |
-| `project_sample_and_set_stores.md` | project-level per-sample and set stores; set store v2 implemented |
 | `portable_storage_roots_implementation_plan.md` | `PSR` portable storage roots and multi-location tracking; Phase 1 (offline raw data) merged, Phases 2-5 proposed |
-| `generation_lifecycle_and_naming_implementation_plan.md` | `EGL` generation lifecycle and experiment naming; the NKG rollout and the findings log are split out into `logs/` |
 | `duplicate_detection_span_agnostic_implementation_plan.md` | `DSA` span-agnostic duplicate detection; drafted, `DSA-05` real-data qualification open |
 
 ## `proposed/`

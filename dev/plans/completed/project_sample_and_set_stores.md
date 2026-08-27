@@ -8,7 +8,13 @@
 > "pool to one object" opt-in. The "Set store" section immediately below describes the
 > superseded v1 design and is kept only for history.
 
-**Status:** All 4 phases implemented. `src/smftools/project/sample_store.py` (wired
+**Status:** complete — all 4 phases implemented. Verified against the code
+2026-08-26: `project/sample_store.py` and `project/set_store.py` exist,
+`set_store.iter_set_parts` and `catalog.project_adata` are present, the v1
+`materialize_set` is gone, and the sample store is wired into
+`cli/project_cmd.py`. Was filed under `in-progress/` while saying this.
+
+All 4 phases implemented. `src/smftools/project/sample_store.py` (wired
 into `project add` via `cli/project_cmd.py`), `src/smftools/project/set_store.py`,
 `src/smftools/project/sample_analysis.py`, `src/smftools/project/embedding_store.py`.
 

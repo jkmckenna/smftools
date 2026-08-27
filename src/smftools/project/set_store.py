@@ -7,7 +7,7 @@ streams that selection one projected experiment-slice at a time, so peak memory 
 with a single member's projected slice, never the whole pool. There is no ``base.h5ad``
 and no set-level cache: membership is resolved fresh each call, so a set is never stale.
 
-This replaces the earlier design (see ``dev/plans/in-progress/project_sample_and_set_stores.md``, "Set
+This replaces the earlier design (see ``dev/plans/completed/project_sample_and_set_stores.md``, "Set
 store" + "Proposed redesign") that concatenated every member into one monolithic
 ``base.h5ad``. That approach held every member plus the pooled result in memory at once
 (~56 GB on a real 11-experiment project) and produced >200 GB unwritable output from the

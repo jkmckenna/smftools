@@ -17,7 +17,7 @@ legacy adapter).
 
 Still not implemented here: the project-computed per-sample analysis catalog
 (autocorrelation, periodicity, ...) that will live alongside each partition -- see
-``dev/plans/in-progress/project_sample_and_set_stores.md`` for the full design and remaining phases.
+``dev/plans/completed/project_sample_and_set_stores.md`` for the full design and remaining phases.
 """
 
 from __future__ import annotations
