@@ -2603,4 +2603,60 @@ def data_verify_cmd(
         raise click.exceptions.Exit(1)
 
 
+@data_group.command("localize")
+@click.argument("config_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option(
+    "--apply",
+    "do_apply",
+    is_flag=True,
+    help="Copy the files and write a new, localized config. Default is a dry run.",
+)
+@click.option(
+    "--out",
+    "out_config_path",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Where to write the localized config (default: <config>.localized<suffix>).",
+)
+@click.option(
+    "--json", "as_json", is_flag=True, help="Emit machine-readable JSON instead of a summary."
+)
+def data_localize_cmd(
+    config_path: Path, do_apply: bool, out_config_path: Path | None, as_json: bool
+):
+    """Copy CONFIG_PATH's small referenced inputs into its own output directory.
+
+    Copies fasta, the BED region files, the sample sheet, and any barcode/UMI
+    YAML -- never the raw input itself. Makes the analyses tree
+    self-contained: no named root, volume stamp, or replica catalog required
+    to read it elsewhere. Defaults to a dry run reporting what would be
+    copied and its total size; --apply copies the files and writes a new
+    config pointing at the copies. The original config is never modified.
+    """
+    from .cli.data_cmd import data_localize
+
+    try:
+        result = data_localize(config_path, apply=do_apply, out_config_path=out_config_path)
+    except (ValueError, FileExistsError) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    if as_json:
+        import json
+
+        click.echo(json.dumps(result, sort_keys=True, indent=2))
+        return
+    if not result["items"]:
+        click.echo("Nothing to localize -- no fasta/BED/sample-sheet/barcode-UMI fields declared.")
+        return
+    for item in result["items"]:
+        click.echo(f"  {item['field']}: {item['source']} ({item['size_bytes']} bytes)")
+    click.echo(f"Total: {result['total_bytes']} bytes across {len(result['items'])} file(s)")
+    if result["applied"]:
+        click.echo(
+            f"Copied {len(result['copied_fields'])} file(s); wrote {result['new_config_path']}"
+        )
+    else:
+        click.echo("Dry run -- pass --apply to copy these files and write a localized config.")
+
+
 ##########################################

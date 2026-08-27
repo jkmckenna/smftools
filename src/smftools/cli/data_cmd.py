@@ -219,3 +219,38 @@ def data_verify(
             }
         )
     return {"dataset_digest": digest, "results": results}
+
+
+def data_localize(
+    config_path: str | Path, *, apply: bool, out_config_path: str | Path | None = None
+) -> dict:
+    """Preview, or apply, localizing `config_path`'s small referenced inputs.
+
+    Always computes the plan; `apply=False` (the default at the CLI) stops
+    there. `apply=True` copies the files and writes a new config -- the
+    original is never modified.
+    """
+    from ..data.localize import apply_localize_plan, build_localize_plan
+
+    plan = build_localize_plan(config_path)
+    result = {
+        "config_path": str(plan.config_path),
+        "output_directory": str(plan.output_directory),
+        "items": [
+            {
+                "field": item.field,
+                "source": str(item.source),
+                "size_bytes": item.size_bytes,
+                "destination": str(item.destination),
+            }
+            for item in plan.items
+        ],
+        "total_bytes": plan.total_bytes,
+        "applied": False,
+    }
+    if apply:
+        new_config_path, copied = apply_localize_plan(plan, out_config_path=out_config_path)
+        result["applied"] = True
+        result["new_config_path"] = str(new_config_path)
+        result["copied_fields"] = [item.field for item in copied]
+    return result

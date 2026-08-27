@@ -1,8 +1,9 @@
 # Portable storage roots, volume identity, and offline raw data (`PSR`)
 
-**Status:** in progress. Phases 1-3 (`PSR-01`-`PSR-12`) implemented. `PSR-18`
-(project locality) is also implemented, ahead of the rest of Phase 5. Phase 4
-and the rest of Phase 5 remain proposed.
+**Status:** in progress. Phases 1-3 (`PSR-01`-`PSR-12`) implemented. Of Phase 4,
+`PSR-13` (`data localize`) is implemented; `PSR-14`/`PSR-15` remain proposed.
+`PSR-18` (project locality) is also implemented, ahead of the rest of Phase 5.
+The rest of Phase 5 remains proposed.
 
 **Repository state reviewed:** `bf6e9b1` — recorded while writing. The
 "Current behaviour" section below is a direct investigation of the code at that
@@ -289,7 +290,7 @@ volumes, and no catalog.
 | `PSR-10` replica catalog keyed by dataset digest | implemented | `tests/unit/data/test_replica_catalog.py` |
 | `PSR-11` `data scan` / `locate` / `verify` | implemented | `tests/unit/data/test_volume_scan.py`, `tests/unit/data/test_volume_verify.py`, `tests/unit/test_data_cli.py` |
 | `PSR-12` exact `offline` vs `missing` via volume identity | implemented | `tests/unit/config/test_input_availability.py`, `tests/unit/config/test_offline_input_config.py` |
-| `PSR-13` `data localize` | proposed | — |
+| `PSR-13` `data localize` | implemented | `tests/unit/data/test_localize.py`, `tests/unit/test_data_cli.py` |
 | `PSR-14` `data init` scaffold for a new lab tree | proposed | — |
 | `PSR-15` docs + migration of existing absolute configs | proposed | — |
 | `PSR-16` a root resolves over an ordered set of locations | proposed | — |
@@ -560,6 +561,36 @@ so an exact-offline message never reads "volume None".
 - `PSR-15` — rewrite the Portability section of
   `docs/source/tutorials/directory_organization.md` around the three layers, and
   ship a migration note for `PSR-05`.
+
+**`PSR-13`'s riskiest design decision was whether `--apply` may edit the
+user's config file in place, and it was decided no.** Every other write this
+plan makes is either additive (a stamp, a catalog entry) or explicitly
+idempotent; rewriting a hand-maintained config in place would be neither --
+and a mistaken field mapping would be much harder to notice in an edited
+file than in a fresh one sitting next to it. `--apply` therefore always
+writes a **new** file (`<config>.localized<suffix>` by default, `--out`
+otherwise) and never touches the original, which also means a dry run and an
+applied run share one code path (`build_localize_plan` is unconditional;
+`apply_localize_plan` is the only part that writes) rather than needing two
+independently-maintained implementations that could drift apart.
+
+The localizable field set (`fasta`, the three BED fields, `sample_sheet_path`,
+`custom_barcode_yaml`, `umi_yaml`) is a deliberate subset of
+`USER_SUPPLIED_PATH_FIELDS` in `smftools.config.experiment_config`, not that
+whole list: `input_data_path`/`input_manifest_path` are the large data this
+entire plan exists to leave archived, not duplicate; `sequencing_summary_path`
+and `model_dir` can themselves be large (a MinKNOW run's summary, a
+basecalling model directory); and `fasta_regions_of_interest` is deprecated in
+favor of `alignment_regions_bed`, so localizing it would just entrench a
+field already being phased out.
+
+A repeat `--apply` is deliberately not an error: a destination already
+holding byte-identical content is treated as "already localized" and skipped,
+matching this plan's broader pattern of idempotent re-application (`PSR-08`'s
+stamp, `PSR-10`'s replica de-duplication). Only a destination with *different*
+content raises, since silently overwriting it would either corrupt a prior,
+unrelated localization or mask the fact that the source file itself changed
+since the last `--apply`.
 
 ### Phase 5 — many locations per root (`PSR-16`–`PSR-20`)
 
