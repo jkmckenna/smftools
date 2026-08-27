@@ -2393,4 +2393,41 @@ def data_init_volume_cmd(mount: Path, label: str, kind: str):
         click.echo(f"  WARNING: {warning}")
 
 
+@data_group.command("volumes")
+@click.option(
+    "--config-dir",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Directory to walk up from for roots.toml's [volumes] extra_search_paths.",
+)
+@click.option(
+    "--json", "as_json", is_flag=True, help="Emit machine-readable JSON instead of a table."
+)
+def data_volumes_cmd(config_dir: Path | None, as_json: bool):
+    """List every stamped volume currently attached to this machine.
+
+    Scans platform mount roots (/Volumes on macOS; /mnt, /media/<user>,
+    /run/media/<user> on Linux) plus any [volumes] extra_search_paths
+    configured in roots.toml. This reports only what is attached right now --
+    a stamped volume that is not currently reachable is invisible here until
+    PSR-10's catalog exists to remember it.
+    """
+    from .cli.data_cmd import data_list_volumes
+
+    volumes = data_list_volumes(config_dir=config_dir)
+    if as_json:
+        import json
+
+        click.echo(json.dumps(volumes, sort_keys=True, indent=2))
+        return
+    if not volumes:
+        click.echo("No stamped volumes currently attached.")
+        return
+    click.echo("VOLUME_ID                        LABEL                KIND      MOUNT_PATH")
+    for entry in volumes:
+        click.echo(
+            f"{entry['volume_id']:<32}  {entry['label']:<20} {entry['kind']:<9} {entry['mount_path']}"
+        )
+
+
 ##########################################

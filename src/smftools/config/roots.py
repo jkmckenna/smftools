@@ -31,7 +31,7 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping, Optional
+from typing import Iterable, Mapping, Optional
 
 from smftools.logging_utils import get_logger
 
@@ -43,6 +43,11 @@ _ROOT_REFERENCE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 ROOTS_FILENAME = "roots.toml"
 ENV_PREFIX = "SMFTOOLS_ROOT_"
+
+#: Extra directories to check for stamped volumes, beyond the platform's own
+#: mount roots -- for network mounts that live outside those conventions
+#: (`PSR-09`). ``os.pathsep``-separated, so a colon on POSIX.
+ENV_VOLUME_SEARCH_PATHS = "SMFTOOLS_VOLUME_SEARCH_PATHS"
 
 
 class RootResolutionError(ValueError):
@@ -265,6 +270,61 @@ def known_roots(*, config_dir: Path | None = None) -> dict[str, RootBinding]:
         for candidate in _walk_up_roots_files(Path(config_dir)):
             _absorb(_load_toml(candidate).get("roots", {}), str(candidate))
     return bindings
+
+
+def _dedup_paths(paths: Iterable[Path]) -> list[Path]:
+    seen: dict[Path, None] = {}
+    for path in paths:
+        seen.setdefault(path, None)
+    return list(seen)
+
+
+def _volume_search_entries(table: Mapping[str, object]) -> list[Path]:
+    volumes_table = table.get("volumes", {}) if isinstance(table, Mapping) else {}
+    if not isinstance(volumes_table, Mapping):
+        return []
+    raw = volumes_table.get("extra_search_paths", [])
+    if not isinstance(raw, (list, tuple)):
+        return []
+    return [Path(str(item)).expanduser() for item in raw if str(item).strip()]
+
+
+def extra_volume_search_paths(*, config_dir: Path | None = None) -> list[Path]:
+    """Machine-local extra directories to scan for stamped volumes (`PSR-09`).
+
+    Unlike a named root, a search path is additive rather than a single
+    binding, so every configured source is unioned rather than the nearest
+    one winning outright.
+
+    ``SMFTOOLS_VOLUME_SEARCH_PATHS`` (``os.pathsep``-separated), when set, is
+    the *only* source -- consistent with every other environment override in
+    this module taking priority over file-based configuration. Otherwise
+    every ``[volumes]\\nextra_search_paths = [...]`` entry in the user roots
+    file and any ``roots.toml`` found walking up from ``config_dir`` is
+    unioned in, nearest file first, duplicates dropped.
+
+    Args:
+        config_dir: Directory to walk up from for the third layer. ``None``
+            skips it, matching :func:`resolve_root`.
+
+    Returns:
+        list[Path]: Directories to check directly for a volume stamp (not
+        enumerated one level deeper, unlike a platform mount root).
+    """
+    env_value = os.environ.get(ENV_VOLUME_SEARCH_PATHS)
+    if env_value and env_value.strip():
+        return _dedup_paths(
+            Path(item).expanduser() for item in env_value.split(os.pathsep) if item.strip()
+        )
+
+    paths: list[Path] = []
+    user_file = user_roots_file()
+    if user_file.is_file():
+        paths.extend(_volume_search_entries(_load_toml(user_file)))
+    if config_dir is not None:
+        for candidate in _walk_up_roots_files(Path(config_dir)):
+            paths.extend(_volume_search_entries(_load_toml(candidate)))
+    return _dedup_paths(paths)
 
 
 def qualify_with_root(path: Path, *, config_dir: Path | None = None) -> Optional[str]:

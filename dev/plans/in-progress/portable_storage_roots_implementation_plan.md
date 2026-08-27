@@ -1,8 +1,9 @@
 # Portable storage roots, volume identity, and offline raw data (`PSR`)
 
 **Status:** in progress. Phases 1-2 (`PSR-01`-`PSR-07`) implemented. `PSR-08`
-(volume stamp file) and `PSR-18` (project locality) are also implemented, each
-ahead of the rest of their phase; the remainder of Phases 3-5 remain proposed.
+(volume stamp file) and `PSR-09` (mount discovery) are also implemented, as is
+`PSR-18` (project locality) ahead of the rest of Phase 5; the remainder of
+Phases 3-5 remain proposed.
 
 **Repository state reviewed:** `bf6e9b1` — recorded while writing. The
 "Current behaviour" section below is a direct investigation of the code at that
@@ -285,7 +286,7 @@ volumes, and no catalog.
 | `PSR-06` machine-local roots file + `SMFTOOLS_ROOT_<NAME>` | implemented | `test_environment_binding_wins`, `test_nearest_roots_file_wins` |
 | `PSR-07` root-qualified artifact/registry pointers | implemented | `test_path_under_a_bound_root_is_qualified`, `test_all_three_encodings_resolve` |
 | `PSR-08` volume stamp file + `data init-volume` | implemented | `tests/unit/data/test_volume_stamp.py`, `tests/unit/test_data_cli.py` |
-| `PSR-09` mount discovery, macOS + Linux | proposed | — |
+| `PSR-09` mount discovery, macOS + Linux | implemented | `tests/unit/data/test_volume_discovery.py`, `tests/unit/config/test_volume_search_paths.py`, `tests/unit/test_data_cli.py` |
 | `PSR-10` replica catalog keyed by dataset digest | proposed | — |
 | `PSR-11` `data scan` / `locate` / `verify` | proposed | — |
 | `PSR-12` exact `offline` vs `missing` via volume identity | proposed | — |
@@ -413,6 +414,29 @@ of whether `init-volume` is ever re-run. `kind` is constrained to
 Layer 3 already commits to for replica resolution -- there's nowhere else in
 the plan a fourth kind is used, so this list is not meant to be treated as
 closed if one turns up.
+
+**`PSR-09` shipped as a library function plus a thin `data volumes` listing
+command, not the full catalog-aware command the CLI surface table describes.**
+That table's `data volumes` ("known volumes and attached status") needs
+`PSR-10`'s catalog to say anything about a volume that is *not* currently
+attached; until then, `smftools data volumes` reports exactly what
+`discover_volumes()` finds attached right now and nothing about history. The
+platform mount-root table was promoted out of
+`smftools.config.input_availability` (`MOUNT_ROOTS`, was `_MOUNT_ROOTS`) rather
+than duplicated, since Phase 1's structural approximation and Phase 3's real
+discovery need to agree on the same mount conventions or `PSR-12` cannot
+cleanly replace one with the other. Extra search paths for network mounts live
+in the same `roots.toml` as named roots, under a new `[volumes]
+extra_search_paths` table, resolved through
+`smftools.config.roots.extra_volume_search_paths` -- unlike a named root's
+"nearest layer wins", every configured source is unioned, since a search path
+is additive by nature (more places to look), and only the
+`SMFTOOLS_VOLUME_SEARCH_PATHS` environment override replaces rather than adds.
+A candidate directory with a corrupt stamp is skipped with a warning rather
+than raised, so one bad mount can't fail discovery of every other attached
+volume; the same is true of two mounts reporting the same `volume_id`, which
+`PSR-08`'s "written once, never rewritten" guarantee should make impossible in
+practice but discovery does not trust that from outside.
 
 **What the stamp is not.** It is an identifier, not an integrity guarantee.
 Nothing may treat a matching `volume_id` as evidence that the data is intact;
