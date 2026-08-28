@@ -1,19 +1,22 @@
 # Basecalling as a stage, and choosing a read source (`BCS`)
 
-**Status:** in progress. Phase 1 (`BCS-01`-`BCS-04`) implemented on
-`feature/bcs-01-source-selection`. Of Phase 2, `BCS-05` (`basecall` as a
-generation-publishing stage) is implemented on
-`feature/bcs-05-basecall-stage`, standalone -- see its note for what it
-deliberately does not yet integrate with. `BCS-06` (`full` runs it ahead of
-raw) is implemented on `feature/bcs-06-full-recipe` -- see its note for the
-narrower shape that shipped. `BCS-07` (per-source POD5 identity, recording
-only) is implemented on `feature/bcs-07-pod5-identity`. `BCS-10`
-(config-free `--input/--output` invocation) is implemented on
-`feature/bcs-10-config-free-basecall`. `BCS-11` (mismatch classification) is
-implemented on `feature/bcs-11-mismatch-classification`, completing Phase 2.
-`BCS-08` (archive write-back) is implemented on
-`feature/bcs-08-archive-writeback`, completing the plan; see its note for
-`BCS-09`'s scope within it.
+**Status:** done. All eleven items across all three phases are implemented
+and merged to `main`. Phase 1 (`BCS-01`-`BCS-04`, source selection) on
+`feature/bcs-01-source-selection`. Phase 2: `BCS-05` (`basecall` as a
+generation-publishing stage, standalone) on `feature/bcs-05-basecall-stage`;
+`BCS-06` (`full` runs it ahead of raw, a `full`-only pre-step rather than a
+semantic-DAG node) on `feature/bcs-06-full-recipe`; `BCS-07` (per-source
+POD5 identity, recording only) on `feature/bcs-07-pod5-identity`; `BCS-10`
+(config-free `--input/--output` invocation) on
+`feature/bcs-10-config-free-basecall`; `BCS-11` (mismatch classification) on
+`feature/bcs-11-mismatch-classification`. Phase 3: `BCS-08` (archive
+write-back command) on `feature/bcs-08-archive-writeback`, with `BCS-09`
+(no interleaved read/write on one volume) shipped as same-volume
+*reporting* rather than scheduling enforcement -- see its own implementation
+note for why. Two deliberately narrower deliveries worth knowing before
+trusting this doc's earlier prose at face value: `BCS-06` never touches the
+semantic DAG at all, and `BCS-09` never touches a batch orchestrator, because
+no such orchestrator exists yet for basecalling to police within.
 
 **Repository state reviewed:** `69c24e4` — recorded while writing.
 

@@ -47,6 +47,7 @@ Every tracked item merged to `main` and verified against the code.
 | `project_sample_and_set_stores.md` | project-level per-sample and set stores; a set is a query, not a concat cache |
 | `generation_lifecycle_and_naming_implementation_plan.md` | `EGL` generation lifecycle and experiment naming; the `NKG` rollout continues as a log in `logs/` |
 | `portable_storage_roots_implementation_plan.md` | `PSR-01`–`PSR-20`; one tracked exception -- `PSR-19`'s in-band catalog updates on publish, `data scan` is the substitute |
+| `basecall_stage_and_source_selection_implementation_plan.md` | `BCS-01`–`BCS-11`; two tracked exceptions -- `BCS-06` is a `full`-only pre-step rather than a semantic-DAG node, `BCS-09` ships as same-volume reporting rather than scheduling enforcement (no batch orchestrator exists yet to enforce within) |
 
 ## `in-progress/`
 
@@ -55,7 +56,6 @@ An active branch, some items merged and others open.
 | document | scope |
 |---|---|
 | `selective_pod5_rebasecalling_implementation_plan.md` | `SRB` |
-| `basecall_stage_and_source_selection_implementation_plan.md` | `BCS` basecalling as a stage and read-source selection; Phase 1 (selection) implemented, Phases 2-3 proposed |
 | `duplicate_detection_span_agnostic_implementation_plan.md` | `DSA` span-agnostic duplicate detection; drafted, `DSA-05` real-data qualification open |
 
 ## `proposed/`
