@@ -11,6 +11,7 @@ from smftools.cli_entry import cli
 from smftools.config.roots import ENV_PREFIX, ENV_VOLUME_SEARCH_PATHS
 from smftools.data import volume_discovery
 from smftools.data.volume_stamp import STAMP_FILENAME, init_volume, read_volume_stamp
+from smftools.informatics.basecall_generation import publish_basecall_generation
 from smftools.informatics.input_manifest import resolve_input_manifest
 
 pytestmark = pytest.mark.unit
@@ -711,3 +712,100 @@ def test_roots_list_cli_json_output(monkeypatch) -> None:
             "all_paths": ["/tmp/archive-01"],
         }
     ]
+
+
+def _seed_basecall_generation(run_root: Path, *, model: str = "hac") -> str:
+    bam_source = run_root / "source.bam"
+    bam_source.write_bytes(b"fake-bam-bytes")
+    outputs = publish_basecall_generation(
+        run_root,
+        bam_path=bam_source,
+        model=model,
+        modality="canonical",
+        config_hash="hash-1",
+        input_artifact_ids=["input-manifest:digest", "source:a:sha"],
+        dorado_version="1.0.0",
+    )
+    return str(outputs["generation_id"])
+
+
+def test_archive_basecall_cli_copies_the_current_generation(tmp_path: Path) -> None:
+    run_root = tmp_path / "run"
+    run_root.mkdir()
+    generation_id = _seed_basecall_generation(run_root)
+    archive_root = tmp_path / "archive"
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli, ["data", "archive-basecall", str(run_root), "--to", str(archive_root)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Archived" in result.output
+    assert generation_id in result.output
+    assert list((archive_root / "basecalls" / "hac@1.0.0").glob("*.bam"))
+
+
+def test_archive_basecall_cli_reports_already_archived_on_rerun(tmp_path: Path) -> None:
+    run_root = tmp_path / "run"
+    run_root.mkdir()
+    _seed_basecall_generation(run_root)
+    archive_root = tmp_path / "archive"
+    runner = CliRunner()
+    runner.invoke(cli, ["data", "archive-basecall", str(run_root), "--to", str(archive_root)])
+
+    result = runner.invoke(
+        cli, ["data", "archive-basecall", str(run_root), "--to", str(archive_root)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Already archived" in result.output
+
+
+def test_archive_basecall_cli_refuses_without_a_current_generation(tmp_path: Path) -> None:
+    run_root = tmp_path / "run"
+    run_root.mkdir()
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli, ["data", "archive-basecall", str(run_root), "--to", str(tmp_path / "archive")]
+    )
+
+    assert result.exit_code != 0
+    assert "no current basecall generation" in result.output
+
+
+def test_archive_basecall_cli_warns_on_a_shared_volume(tmp_path: Path) -> None:
+    volume_root = tmp_path / "volume"
+    volume_root.mkdir()
+    init_volume(volume_root, label="shared", kind="archive")
+    run_root = volume_root / "run"
+    run_root.mkdir()
+    _seed_basecall_generation(run_root)
+    archive_root = volume_root / "archive"
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli, ["data", "archive-basecall", str(run_root), "--to", str(archive_root)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "same volume" in result.output
+
+
+def test_archive_basecall_cli_json_output(tmp_path: Path) -> None:
+    run_root = tmp_path / "run"
+    run_root.mkdir()
+    generation_id = _seed_basecall_generation(run_root)
+    archive_root = tmp_path / "archive"
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli,
+        ["data", "archive-basecall", str(run_root), "--to", str(archive_root), "--json"],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["status"] == "archived"
+    assert payload["generation_id"] == generation_id

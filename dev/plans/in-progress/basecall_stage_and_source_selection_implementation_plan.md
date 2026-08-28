@@ -11,7 +11,9 @@ only) is implemented on `feature/bcs-07-pod5-identity`. `BCS-10`
 (config-free `--input/--output` invocation) is implemented on
 `feature/bcs-10-config-free-basecall`. `BCS-11` (mismatch classification) is
 implemented on `feature/bcs-11-mismatch-classification`, completing Phase 2.
-Phase 3 remains proposed.
+`BCS-08` (archive write-back) is implemented on
+`feature/bcs-08-archive-writeback`, completing the plan; see its note for
+`BCS-09`'s scope within it.
 
 **Repository state reviewed:** `69c24e4` — recorded while writing.
 
@@ -281,8 +283,8 @@ archive and stays fine.
 | `BCS-05` `basecall` as a generation-publishing stage | implemented | `tests/unit/informatics/test_basecall_generation.py`, `tests/unit/informatics/test_basecall_execution.py`, `tests/unit/test_basecall_cli.py` |
 | `BCS-06` `full` runs basecall before raw and skips it when unneeded | implemented | `tests/unit/test_full_recipe.py` (`test_full_flow_runs_raw_preprocess_spatial_hmm_latent_in_order`, `test_full_summary_links_stage_logs_and_outcomes`) |
 | `BCS-07` validate a basecall generation without re-reading POD5 | implemented | `tests/unit/test_input_artifact_identities.py` |
-| `BCS-08` archive write-back command and layout | proposed | -- |
-| `BCS-09` batch I/O policy: no interleaved read and write on one volume | proposed | -- |
+| `BCS-08` archive write-back command and layout | implemented | `tests/unit/data/test_basecall_archive.py`, `tests/unit/test_data_cli.py` (`test_archive_basecall_cli_*`) |
+| `BCS-09` batch I/O policy: no interleaved read and write on one volume | implemented (reporting only) | `tests/unit/data/test_basecall_archive.py::test_archive_basecall_generation_reports_*_volume` |
 | `BCS-10` config-free `basecall --input/--output` invocation | implemented | `tests/unit/test_basecall_cli.py` (`test_run_from_paths_*`, `test_basecall_cli_config_free_form_publishes`) |
 | `BCS-11` classify basecall/signal mismatch and respond per shape | implemented | `tests/unit/informatics/test_basecall_mismatch.py`, `tests/unit/test_basecall_cli.py` (`test_basecall_core_reuses_when_a_pod5_is_pruned_after_basecalling`, `test_basecall_core_refuses_when_a_new_pod5_appears_without_a_recorded_subsample`, `test_basecall_core_refuses_a_disjoint_source_set`, `test_basecall_core_reuses_a_deliberate_subsample_despite_new_sources`) |
 
@@ -542,6 +544,48 @@ identity shape again, which is more than this item asks for.
 Depends on `PSR-08` volume identity for the cross-device check in `BCS-09`.
 Without it, `BCS-09` degrades to "always defer write-back", which is the safe
 behaviour anyway and can ship first.
+
+**`BCS-08` shipped as designed: `smftools data archive-basecall RUN_ROOT --to
+ARCHIVE_ROOT`** (`cli/data_cmd.py::data_archive_basecall` →
+`data.basecall_archive.archive_basecall_generation`), placed under `data`
+rather than as a `basecall` subcommand -- per `cli/AGENTS.md`'s own
+category boundary, this is a volume/storage-topology operation ("below any
+single experiment and across all projects"), not a pipeline stage, matching
+`data sync`'s placement for the adjacent "copy generations between two
+locations" operation. Writes `ARCHIVE_ROOT/basecalls/<model>@<dorado_version>/
+basecall_manifest.json` + `*.bam`, exactly the layout above. Idempotent via a
+`.partial`-staged, checksum-verified copy: a destination whose manifest
+already names the same `generation_id` and whose BAM checksum matches is left
+alone (`"already_archived"`); anything else -- absent, corrupt, stale -- is
+(re-)copied to a temp file, checksum-verified, and atomically renamed into
+place, so an interrupted transfer's partial file is simply overwritten next
+run rather than accumulating; true byte-range resume of a partial transfer
+was not attempted (needs a smarter transfer primitive than `shutil.copy2`
+for real bandwidth savings on a resumed giant file, not a correctness gap).
+Deliberately did **not** reuse `data.run_sync.sync_run_locations`: that
+function syncs `basecall_outputs/generations/<id>/` between two *analysis
+locations* in the exact same layout on both sides, where write-back's whole
+point is a *different*, model-keyed layout that sits beside the POD5s rather
+than reconstructing an analysis tree.
+
+**`BCS-09` shipped narrower than its own title: same-volume *reporting*, not
+scheduling enforcement.** `archive_basecall_generation` resolves both the
+source BAM's and the destination's enclosing stamped volume (walking upward
+from each until `.smftools-volume.json` is found, `PSR-08`) and returns
+`same_volume` (`True`/`False`/`None` when either side is unstamped). The CLI
+prints a warning when it is `True`. What did **not** get built is anything
+that *blocks* or *schedules around* an interleaved read/write -- verified
+before starting that no such collision could occur in-process: `experiment
+batch`'s task choices (`raw`, `load`, `preprocess`, `spatial`, `variant`,
+`hmm`, `latent`, `full`) do not include basecalling or archiving at all, so
+there is no existing multi-run loop in smftools that runs both in one
+process to police in the first place. The plan's own structural points --
+basecalls always land in the analysis tree first, write-back is a separate
+phase, one run at a time -- are already true simply because write-back is
+its own explicit command rather than a flag inside a batch loop, which is
+exactly what `BCS-08` shipped. If a real batch-basecall/archive orchestrator
+gets built later, `same_volume` is the primitive it would schedule around;
+building the scheduler itself without that caller would be speculative.
 
 ## Decided
 
