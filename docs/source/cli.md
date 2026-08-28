@@ -149,6 +149,21 @@ already used them, and there is nothing for this command to do. Producing a
 *different* basecall of an already-ingested experiment is a re-basecalling
 lineage (`smftools experiment rebasecall`, above), not this.
 
+**"Already current" is source-aware, not just an exact match.** A basecall
+generation's recorded sources and the POD5/FAST5 input present now are
+compared per source, not as one aggregate digest, so a rerun does the right
+thing whichever way the signal changed since basecalling:
+
+| what changed since basecalling | response |
+|---|---|
+| some POD5s are gone (archived, pruned) | reuse silently -- the generation still covers everything present |
+| new POD5s appeared that were never basecalled | refuse, unless `max_basecall_reads` made the original basecall a deliberate subsample |
+| the signal doesn't overlap the recording at all | refuse |
+
+A refusal names the generation and the shape of the mismatch; re-run
+`smftools basecall` to cover the current signal, or point `--input`/
+`input_data_path` at exactly what the existing generation basecalled.
+
 `smftools experiment full` (and `experiment run --target full`) runs this
 stage first, ahead of `raw`, reporting its outcome in `full_summary.json`
 alongside every other stage. For POD5/FAST5 input it publishes a
