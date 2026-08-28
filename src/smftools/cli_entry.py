@@ -2992,4 +2992,49 @@ def data_sync_cmd(
         raise click.exceptions.Exit(1)
 
 
+@data_group.command("archive-basecall")
+@click.argument("run_root", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.option(
+    "--to",
+    "archive_root",
+    type=click.Path(path_type=Path, file_okay=False),
+    required=True,
+    help="The run's archive directory (conventionally the sibling of its POD5s).",
+)
+@click.option(
+    "--json", "as_json", is_flag=True, help="Emit machine-readable JSON instead of a summary."
+)
+def data_archive_basecall_cmd(run_root: Path, archive_root: Path, as_json: bool):
+    """Write RUN_ROOT's current basecall generation back to its POD5 archive (`BCS-08`).
+
+    Copies into `--to`'s `basecalls/<model>@<dorado_version>/`, checksum-
+    verified; idempotent, so re-running after an interrupted copy re-copies
+    rather than duplicating. An explicit, separate command by design
+    (`BCS-09`): basecalling always writes to the analysis tree first, and
+    write-back is meant to run as its own phase afterward, not interleaved
+    with reading signal for the next run on the same volume.
+    """
+    from .cli.data_cmd import data_archive_basecall
+    from .data.basecall_archive import BasecallArchiveError
+
+    try:
+        result = data_archive_basecall(run_root, archive_root=archive_root)
+    except BasecallArchiveError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    if as_json:
+        import json
+
+        click.echo(json.dumps(result, sort_keys=True, indent=2))
+        return
+
+    verb = "Archived" if result["status"] == "archived" else "Already archived"
+    click.echo(f"{verb} basecall generation {result['generation_id']} at {result['path']}.")
+    if result["same_volume"]:
+        click.echo(
+            "Warning: source and destination are on the same volume (BCS-09) -- run write-back "
+            "as its own phase, not interleaved with basecalling the next run from this volume."
+        )
+
+
 ##########################################

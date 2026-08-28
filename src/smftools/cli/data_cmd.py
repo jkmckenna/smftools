@@ -536,3 +536,11 @@ def data_sync(
             for stage in result.stages
         ],
     }
+
+
+def data_archive_basecall(run_root: str | Path, *, archive_root: str | Path) -> dict:
+    """Write `run_root`'s current basecall generation back to `archive_root` (`BCS-08`)."""
+    from ..data.basecall_archive import archive_basecall_generation
+
+    result = archive_basecall_generation(run_root, archive_root=archive_root)
+    return {**result, "path": str(result["path"])}

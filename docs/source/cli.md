@@ -393,6 +393,41 @@ at its new location) -- falling back to the structural guess exactly as
 before whenever either input is missing. See `dev/plans/completed/
 portable_storage_roots_implementation_plan.md`'s `PSR-12` for the detail.
 
+## Writing basecalls back to the archive (`BCS-08`, `BCS-09`)
+
+Basecalls are derived and regenerable, so archiving them beside the POD5s
+they came from is an optimisation, not a duty -- but a large one: it is what
+makes the POD5s optional for everything downstream. It is always an
+explicit, separate command, never automatic:
+
+```shell
+smftools data archive-basecall RUN_ROOT --to ARCHIVE_ROOT [--json]
+```
+
+`RUN_ROOT` is an experiment's output directory (or a bare `--output`
+directory from `smftools basecall`'s config-free form); `ARCHIVE_ROOT` is
+conventionally the sibling directory of wherever its POD5s live. Write-back
+copies `RUN_ROOT`'s current basecall generation into
+`ARCHIVE_ROOT/basecalls/<model>@<dorado_version>/`, checksum-verified.
+Keying by model (and Dorado version) is what lets several models coexist and
+lets a later run answer "is there a derivative for this model?" from the
+directory listing alone. Idempotent: re-running after an interrupted copy
+re-copies rather than leaving a duplicate or a corrupt partial file behind.
+
+**Same-volume reporting, not enforcement (`BCS-09`).** Reading a run's POD5
+signal and writing a previous run's basecalls back are both large sequential
+I/O, and interleaving them on one physical volume can cost more throughput
+than basecalling saves. There is no batch loop in smftools today that runs
+basecalling and write-back in the same process (`experiment batch` has no
+`archive-basecall` task), so there is nothing to enforce a policy *within*
+-- write-back already being a distinct, explicit command, run as its own
+phase, is what makes "basecall everything, then archive everything" the
+natural shape rather than a thing to remember. What write-back does provide,
+using `PSR-08`'s volume identity: its result reports `same_volume` (`true`,
+`false`, or `null` when either side is unstamped and cannot be compared), and
+the CLI prints a warning when source and destination share a volume, so
+someone sequencing several runs by hand can see it rather than guess.
+
 ## Localizing a config's small inputs
 
 `smftools data localize CONFIG_PATH [--apply] [--out PATH] [--json]` copies
