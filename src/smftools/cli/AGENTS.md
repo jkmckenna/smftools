@@ -86,6 +86,7 @@ Below any single experiment and across all projects (portable storage roots — 
 | `status [TARGET...]` | `data_cmd.py` | `data_status` → `smftools.data.analysis_catalog`, `smftools.data.run_locality` | Where every known run's data and analyses are, attached or not, and pairwise ahead/behind/diverged/pointer_conflict locality between attached copies. |
 | `sync TARGET [--from --to]` | `data_cmd.py` | `data_sync` → `smftools.data.run_sync.sync_run_locations` | Additively copy missing generations between two attached analysis locations of a run. Never moves `current.json`; diverged/pointer_conflict stages are reported, not resolved. |
 | `roots list` | `data_cmd.py` | `data_roots_list` → `smftools.config.roots.known_roots` | List every named root (`${root}` in a config) bound on this machine, its resolved path, and which resolution layer supplied it. Read-only; no `data roots set` yet. |
+| `archive-basecall RUN_ROOT --to ARCHIVE_ROOT` | `data_cmd.py` | `data_archive_basecall` → `smftools.data.basecall_archive.archive_basecall_generation` | Write RUN_ROOT's current basecall generation back to its POD5 archive: `basecalls/<model>@<dorado_version>/`, checksum-verified, idempotent. Reports `same_volume` (`PSR-08`) so a caller sequencing multiple runs can avoid interleaving read and write on one volume (`BCS-09`). |
 
 Volume/data business logic lives in `smftools/data/` (parallel to `smftools/project/`),
 not under `cli/`; `data_cmd.py` is the same thin Click-facing translation layer as
