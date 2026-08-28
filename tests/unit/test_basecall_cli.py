@@ -8,7 +8,13 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
-from smftools.cli.basecall import BasecallInputError, basecall, basecall_core, run_from_paths
+from smftools.cli.basecall import (
+    BasecallInputError,
+    BasecallMismatchError,
+    basecall,
+    basecall_core,
+    run_from_paths,
+)
 from smftools.cli.helpers import load_experiment_config
 from smftools.cli_entry import cli
 from smftools.constants import BASECALL_DIR
@@ -280,3 +286,65 @@ def test_basecall_cli_rejects_partial_config_free_flags(tmp_path: Path) -> None:
 
     assert result.exit_code != 0
     assert "CONFIG_PATH" in result.output
+
+
+def test_basecall_core_reuses_when_a_pod5_is_pruned_after_basecalling(tmp_path: Path) -> None:
+    pod5_dir = tmp_path / "pod5"
+    config_path = _config(tmp_path, input_path=pod5_dir)
+    (pod5_dir / "extra.pod5").write_bytes(b"fake-pod5-extra")
+    first = basecall_core(load_experiment_config(config_path))
+
+    (pod5_dir / "extra.pod5").unlink()
+
+    second = basecall_core(load_experiment_config(config_path))
+
+    assert second["reused_generation"] is True
+    assert second["generation_id"] == first["generation_id"]
+
+
+def test_basecall_core_refuses_when_a_new_pod5_appears_without_a_recorded_subsample(
+    tmp_path: Path,
+) -> None:
+    pod5_dir = tmp_path / "pod5"
+    config_path = _config(tmp_path, input_path=pod5_dir)
+    basecall_core(load_experiment_config(config_path))
+
+    (pod5_dir / "extra.pod5").write_bytes(b"fake-pod5-extra")
+
+    with pytest.raises(BasecallMismatchError, match="fewer sources"):
+        basecall_core(load_experiment_config(config_path))
+
+
+def test_basecall_core_refuses_a_disjoint_source_set(tmp_path: Path) -> None:
+    pod5_dir = tmp_path / "pod5"
+    config_path = _config(tmp_path, input_path=pod5_dir)
+    basecall_core(load_experiment_config(config_path))
+
+    (pod5_dir / "signal.pod5").unlink()
+    (pod5_dir / "different.pod5").write_bytes(b"totally-different-signal")
+
+    with pytest.raises(BasecallMismatchError, match="do not match"):
+        basecall_core(load_experiment_config(config_path))
+
+
+def test_basecall_core_reuses_a_deliberate_subsample_despite_new_sources(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        "smftools.informatics.pod5_functions.subsample_pod5_for_basecalling",
+        lambda input_path, max_reads, output_dir, seed=42: input_path,
+    )
+    pod5_dir = tmp_path / "pod5"
+    config_path = _config(tmp_path, input_path=pod5_dir)
+    cfg = load_experiment_config(config_path)
+    cfg.max_basecall_reads = 10
+    first = basecall_core(cfg)
+
+    (pod5_dir / "extra.pod5").write_bytes(b"fake-pod5-extra")
+
+    cfg_again = load_experiment_config(config_path)
+    cfg_again.max_basecall_reads = 10
+    second = basecall_core(cfg_again)
+
+    assert second["reused_generation"] is True
+    assert second["generation_id"] == first["generation_id"]

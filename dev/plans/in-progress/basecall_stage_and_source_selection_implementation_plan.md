@@ -9,8 +9,9 @@ raw) is implemented on `feature/bcs-06-full-recipe` -- see its note for the
 narrower shape that shipped. `BCS-07` (per-source POD5 identity, recording
 only) is implemented on `feature/bcs-07-pod5-identity`. `BCS-10`
 (config-free `--input/--output` invocation) is implemented on
-`feature/bcs-10-config-free-basecall`. `BCS-11` and all of Phase 3 remain
-proposed.
+`feature/bcs-10-config-free-basecall`. `BCS-11` (mismatch classification) is
+implemented on `feature/bcs-11-mismatch-classification`, completing Phase 2.
+Phase 3 remains proposed.
 
 **Repository state reviewed:** `69c24e4` — recorded while writing.
 
@@ -283,7 +284,7 @@ archive and stays fine.
 | `BCS-08` archive write-back command and layout | proposed | -- |
 | `BCS-09` batch I/O policy: no interleaved read and write on one volume | proposed | -- |
 | `BCS-10` config-free `basecall --input/--output` invocation | implemented | `tests/unit/test_basecall_cli.py` (`test_run_from_paths_*`, `test_basecall_cli_config_free_form_publishes`) |
-| `BCS-11` classify basecall/signal mismatch and respond per shape | proposed | -- |
+| `BCS-11` classify basecall/signal mismatch and respond per shape | implemented | `tests/unit/informatics/test_basecall_mismatch.py`, `tests/unit/test_basecall_cli.py` (`test_basecall_core_reuses_when_a_pod5_is_pruned_after_basecalling`, `test_basecall_core_refuses_when_a_new_pod5_appears_without_a_recorded_subsample`, `test_basecall_core_refuses_a_disjoint_source_set`, `test_basecall_core_reuses_a_deliberate_subsample_despite_new_sources`) |
 
 ### Phase 1 — selection (`BCS-01`–`BCS-04`)
 
@@ -413,20 +414,18 @@ for `target == "full"` -- it already delegates to `recipes.full_flow` (not
 its own DAG call), so it picks up `basecall_stage` for free; verified by
 reading its dispatch rather than assumed.
 
-One further simplification, intentional and `BCS-11` territory to remove:
-idempotent reruns compare `stage_config_hash(cfg)` with no `stage=` argument
-(the coarse, unnarrowed hash) rather than a `basecall`-specific semantic key
-registered in `cli/helpers.py`'s `_STAGE_SEMANTIC_CONFIG_KEYS` -- safe (never
-falsely reuses) but coarser than necessary (can invalidate on config changes
-irrelevant to basecalling), and it does not yet consult the per-source
-identity `BCS-07` now records at all: a POD5 pruned after archiving still
-changes `stage_config_hash` today (nothing narrows it against
-`input_artifact_ids`), so it forces a redundant `dorado-basecalling`
-intermediate recompute -- reused by cache key rather than truly skipped, but
-not the "nothing to do" outcome the recorded identity should make possible.
-That consumption is `BCS-11`'s job, once mismatch classification exists to
-decide *how* a changed source set should affect reuse, not just *that* it
-changed.
+One further simplification, intentional at the time and closed by `BCS-11`
+below: idempotent reruns compared `stage_config_hash(cfg)` with no `stage=`
+argument (the coarse, unnarrowed hash) rather than a `basecall`-specific
+semantic key, and did not consult the per-source identity `BCS-07` records
+at all -- a POD5 pruned after archiving still changed `stage_config_hash`,
+forcing a redundant `dorado-basecalling` intermediate recompute (reused by
+cache key rather than truly skipped) instead of the "nothing to do" outcome
+the recorded identity should make possible. `BCS-11` is that consumption:
+`stage_config_hash(cfg, "basecall")` now excludes the input-identity keys
+(mirroring `raw`'s own exclusion), and the per-source identity decides *how*
+a changed source set affects reuse via shape classification, not just *that*
+it changed.
 
 **`BCS-07` shipped as the recording half only.** `cli.helpers.raw_input_artifact_ids`
 already built exactly this shape for `raw` -- one `input-manifest:<digest>`
@@ -489,6 +488,54 @@ not touch an already-ingested raw generation at all (`raw` does not consult
 `basecall_outputs/` yet), but it is not the named refusal either: nothing
 stops it, and nothing warns that the directory's basecall identity just
 changed. Worth its own follow-up if it turns out to matter in practice.
+
+**`BCS-11` closes the reuse-check gap `BCS-07`'s note left open, completing
+Phase 2.** `informatics.basecall_mismatch.classify_basecall_source_shape`
+compares two `source:<source_id>:<sha256>` sets -- a generation's recorded
+`input_artifact_ids` against a fresh `basecall_input_artifact_ids(cfg)` call
+-- into the plan's own four outcomes (`IDENTICAL`, `SIGNAL_PRUNED`,
+`SIGNAL_EXPANDED`, `DISJOINT`), operating on bare `source_id` sets rather
+than full `InputManifestRow`s: `raw`'s existing
+`classify_input_manifest_transition` (`APPEND_ONLY`/`REMOVED`/
+`CONTENT_MUTATED`/...) does the adjacent job for raw's incremental-append
+semantics, but needs real file paths to split `CONTENT_MUTATED` from
+`METADATA_MUTATED`, a distinction basecall's simpler four-way response table
+has no use for -- forcing basecall's opaque, path-free identities into that
+shape would have been more machinery for less signal, not reuse.
+
+`basecall_core`'s reuse check is now: an existing generation must still match
+`stage_config_hash(cfg, "basecall")` (unchanged trigger), and *then* the
+source-shape classification decides what to do about it --
+`IDENTICAL`/`SIGNAL_PRUNED` reuse silently, `SIGNAL_EXPANDED` reuses only
+when the generation's manifest itself records `max_basecall_reads` (newly
+recorded at publish time whenever set, with the `subsample_seed` --
+`subsample_pod5_for_basecalling`'s fixed default, since nothing threads a
+different one through today), and `SIGNAL_EXPANDED`-without-that-record or
+`DISJOINT` raise the new `BasecallMismatchError` instead of silently
+re-basecalling. `cli.helpers._STAGE_NON_SEMANTIC_CONFIG_KEYS` gained a
+`"basecall"` entry (identical to `"raw"`'s, minus `input_manifest_digest`,
+which basecall's `input_files`-only path never sets) so that config-hash
+comparison stops depending on the input file list at all -- input identity
+is `input_artifact_ids`' job exclusively now, matching `raw`'s own precedent
+of excluding it for the same reason.
+
+**A real one-time consequence, not a bug:** scoping the hash to
+`"basecall"` changes what it hashes for every config, so the very first
+`basecall_core` call against a pre-`BCS-11` `basecall_outputs/` generation
+will not match on `config_hash` and will re-basecall unconditionally (cache-
+shared via the `dorado-basecalling` intermediate, so no wasted GPU work, but
+a new generation gets published). Acceptable here because this feature
+shipped within the same work stretch as this change, so no real generation
+predates it yet; flagged because the same migration cost would recur for a
+genuinely established stage.
+
+**Deliberately not built:** "naming the sources it cannot account for" on
+refusal names opaque `source_id` identities, not file paths -- `BCS-07`'s
+identity is deliberately relocation-invariant and carries no path, so a
+human-readable file name is not recoverable from what a generation records
+today. The error messages report the shape and the generation id, not a
+list of paths; adding real path-naming would mean widening the recorded
+identity shape again, which is more than this item asks for.
 
 ### Phase 3 — the archive round trip (`BCS-08`–`BCS-09`)
 

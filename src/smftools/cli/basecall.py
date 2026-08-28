@@ -28,6 +28,11 @@ class BasecallInputError(ValueError):
     """Raised when `input_data_path` is not signal, so there is nothing to basecall."""
 
 
+class BasecallMismatchError(ValueError):
+    """Raised when a basecall generation's recorded sources no longer safely cover
+    the signal present now (`BCS-11`) -- see `informatics.basecall_mismatch`."""
+
+
 def basecall(config_path: str) -> dict[str, Any]:
     """Load a config and publish (or reuse) its basecall generation."""
     from .helpers import load_experiment_config
@@ -142,12 +147,16 @@ def basecall_core(cfg) -> dict[str, Any]:
             reads is `BCS-01`-`04`'s source selection, resolved already by
             the time a config loads; this command's job starts only once
             selection has determined that basecalling is actually required.
+        BasecallMismatchError: a compatible-by-config existing generation's
+            recorded sources and the signal present now are neither the same
+            set nor a safe pruning of it (`BCS-11`).
     """
     from ..informatics.basecall_execution import run_dorado_basecall
     from ..informatics.basecall_generation import (
         publish_basecall_generation,
         resolve_current_basecall_generation,
     )
+    from ..informatics.basecall_mismatch import BasecallSourceShape, classify_basecall_source_shape
     from .helpers import basecall_input_artifact_ids, stage_config_hash
 
     input_type = str(getattr(cfg, "input_type", "") or "").lower()
@@ -165,17 +174,54 @@ def basecall_core(cfg) -> dict[str, Any]:
         )
 
     output_directory = Path(cfg.output_directory)
-    config_hash = stage_config_hash(cfg)
+    config_hash = stage_config_hash(cfg, "basecall")
+    current_input_artifact_ids = basecall_input_artifact_ids(cfg)
 
     existing = resolve_current_basecall_generation(output_directory / BASECALL_DIR)
     if existing is not None:
         _, manifest = existing
         if str(manifest.get("config_hash", "")) == config_hash:
-            logger.info(
-                "basecall generation %s already matches this config; nothing to do.",
-                manifest.get("generation_id"),
+            shape = classify_basecall_source_shape(
+                manifest.get("input_artifact_ids", []), current_input_artifact_ids
             )
-            return {"generation_id": manifest.get("generation_id"), "reused_generation": True}
+            if shape in (BasecallSourceShape.IDENTICAL, BasecallSourceShape.SIGNAL_PRUNED):
+                logger.info(
+                    "basecall generation %s already matches this config; nothing to do.",
+                    manifest.get("generation_id"),
+                )
+                return {
+                    "generation_id": manifest.get("generation_id"),
+                    "reused_generation": True,
+                }
+            if (
+                shape is BasecallSourceShape.SIGNAL_EXPANDED
+                and manifest.get("max_basecall_reads") is not None
+            ):
+                logger.info(
+                    "basecall generation %s covers fewer sources than are present now, "
+                    "but %s was a deliberate subsample at basecall time; reusing.",
+                    manifest.get("generation_id"),
+                    "max_basecall_reads",
+                )
+                return {
+                    "generation_id": manifest.get("generation_id"),
+                    "reused_generation": True,
+                }
+            if shape is BasecallSourceShape.SIGNAL_EXPANDED:
+                raise BasecallMismatchError(
+                    f"basecall generation {manifest.get('generation_id')} covers fewer "
+                    "sources than the POD5/FAST5 input present now, and it was not a "
+                    "deliberate subsample (no max_basecall_reads recorded); re-run "
+                    "`smftools basecall` to cover the new sources, or point --input/"
+                    "input_data_path at exactly what this generation basecalled."
+                )
+            raise BasecallMismatchError(
+                f"basecall generation {manifest.get('generation_id')} was produced from "
+                "sources that do not match the POD5/FAST5 input present now at all "
+                "(neither a subset nor a superset); re-run `smftools basecall` against "
+                "the current input, or point --input/input_data_path at exactly what "
+                "this generation basecalled."
+            )
 
     def before_run() -> None:
         from ..memory_guard import require_memory_headroom
@@ -209,18 +255,29 @@ def basecall_core(cfg) -> dict[str, Any]:
         before_run=before_run,
     )
 
+    max_basecall_reads = getattr(cfg, "max_basecall_reads", None)
     outputs = publish_basecall_generation(
         output_directory,
         bam_path=execution.bam_path,
         model=str(cfg.model),
         modality=str(cfg.smf_modality),
         config_hash=config_hash,
-        input_artifact_ids=basecall_input_artifact_ids(cfg),
+        input_artifact_ids=current_input_artifact_ids,
         dorado_version=execution.dorado_version,
         bam_suffix=cfg.bam_suffix,
         extra_manifest_fields={
             "barcode_kit": cfg.barcode_kit,
             "reused_intermediate": execution.reused,
+            # Recorded only when deliberate, so a later run can tell "this
+            # generation covers fewer sources on purpose" from "on purpose"
+            # apart from "accidentally incomplete" (`BCS-11`). `seed` is
+            # `subsample_pod5_for_basecalling`'s own fixed default -- nothing
+            # threads a different one through today.
+            **(
+                {"max_basecall_reads": max_basecall_reads, "subsample_seed": 42}
+                if max_basecall_reads
+                else {}
+            ),
         },
     )
     logger.info(

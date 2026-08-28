@@ -170,6 +170,19 @@ _STAGE_NON_SEMANTIC_CONFIG_KEYS["raw"] = {
     "input_manifest_digest",
     "input_manifest_path",
 }
+# Basecalling never consults the alignment reference, and its input identity is
+# tracked separately and shape-aware (`input_artifact_ids`, `BCS-07`/`BCS-11`)
+# rather than folded into the coarse config hash -- same reasoning as raw's own
+# entry above, minus `input_manifest_digest` (basecall's `input_files`-only path
+# never sets it).
+_STAGE_NON_SEMANTIC_CONFIG_KEYS["basecall"] = {
+    "alignment_regions_bed",
+    "fasta",
+    "input_data_path",
+    "input_files",
+    "input_manifest_digest",
+    "input_manifest_path",
+}
 _STAGE_SEMANTIC_CONFIG_KEYS = {
     "latent": {
         "from_adata_stage",
