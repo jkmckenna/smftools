@@ -428,6 +428,39 @@ using `PSR-08`'s volume identity: its result reports `same_volume` (`true`,
 the CLI prints a warning when source and destination share a volume, so
 someone sequencing several runs by hand can see it rather than guess.
 
+## Bundling an analysis tree for transfer (`TAB-01`)
+
+An experiment's analysis tree is written as many small, independent
+partition stores, deliberately fine-grained to bound per-task memory and
+make each task independently resumable -- the right tradeoff for *writing*,
+but brutal to copy to another drive: a real run's `analyses/` tree measured
+over a million files, and `rsync` between two local drives slowed to a
+crawl once it reached the zarr-chunk-dense parts (per-file overhead, not
+byte count). `data bundle-analysis` does not touch how the pipeline writes
+its output; it bundles what is already on disk, after the fact:
+
+```shell
+smftools data bundle-analysis RUN_ROOT --to BUNDLE_DIR [--stage NAME] [--generation ID] [--json]
+```
+
+One uncompressed tar per **complete, published generation**
+(`<stage>_outputs/generations/<generation_id>/`) -- the codebase's own
+immutability boundary, since a generation is published atomically and never
+changes again. That makes bundling idempotent for free: re-running only
+adds bundles for generations that appeared since, and never re-touches ones
+already bundled (verified by re-checksumming the bundle itself, not by
+re-reading the source). Each bundle carries the generation's own
+`generation_manifest.json`, so it never needs the source again to be
+validated after unbundling.
+
+Bundle, then move `BUNDLE_DIR` to the destination however you already do
+that -- `rsync`, Finder, `scp` -- now moving a handful of large files
+instead of millions of tiny ones. `current.json` (which generation is
+*current* per stage) is untouched by bundling; `data sync` above already
+reconciles that correctly and cheaply between two attached locations.
+Unbundling back into an ordinary, directly scannable tree is `TAB-02`, not
+yet built.
+
 ## Localizing a config's small inputs
 
 `smftools data localize CONFIG_PATH [--apply] [--out PATH] [--json]` copies
