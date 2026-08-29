@@ -562,3 +562,19 @@ def data_bundle_analysis(
     return [
         {**entry, "path": str(entry["path"])} if "path" in entry else entry for entry in results
     ]
+
+
+def data_unbundle_analysis(
+    bundle_root: str | Path,
+    *,
+    run_root: str | Path,
+    stage: str | None = None,
+    generation_id: str | None = None,
+) -> list[dict]:
+    """Extract `bundle_root`'s bundles into `run_root`'s matching generation paths (`TAB-02`)."""
+    from ..data.analysis_bundle import unbundle_analysis_generations
+
+    results = unbundle_analysis_generations(
+        bundle_root, run_root=run_root, stage=stage, generation_id=generation_id
+    )
+    return [{**entry, "path": str(entry["path"])} for entry in results]

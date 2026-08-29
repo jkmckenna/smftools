@@ -3092,4 +3092,61 @@ def data_bundle_analysis_cmd(
             click.echo(f"  {entry['kind']}/{entry['generation_id']}: {verb} at {entry['path']}")
 
 
+@data_group.command("unbundle-analysis")
+@click.argument("bundle_root", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.option(
+    "--to",
+    "run_root",
+    type=click.Path(path_type=Path, file_okay=False),
+    required=True,
+    help="Destination experiment output directory; created as needed.",
+)
+@click.option("--stage", default=None, help="Restrict to one stage (raw, preprocess, ...).")
+@click.option("--generation", "generation_id", default=None, help="Restrict to one generation id.")
+@click.option(
+    "--json", "as_json", is_flag=True, help="Emit machine-readable JSON instead of a summary."
+)
+def data_unbundle_analysis_cmd(
+    bundle_root: Path, run_root: Path, stage: str | None, generation_id: str | None, as_json: bool
+):
+    """Extract BUNDLE_ROOT's bundles back into an ordinary analysis tree (`TAB-02`).
+
+    Stage-then-atomic-rename, so an interrupted extraction never leaves a
+    partial generation directory in place. Verifies twice before trusting the
+    result: the bundle's own recorded checksum before extracting (the
+    transfer didn't corrupt it), then -- for stages that record one
+    (`basecall`/`raw`/`preprocess`) -- every artifact's own recorded checksum
+    after extracting (the tar round-trip preserved what the original
+    pipeline vouched for). Other stages don't record per-artifact checksums
+    yet, so `checksums_verified` is `False` for those -- not itself a
+    problem, just a narrower guarantee. `current.json` is untouched; run
+    `data sync` to reconcile which generation is current.
+    """
+    from .cli.data_cmd import data_unbundle_analysis
+    from .data.analysis_bundle import AnalysisBundleError
+
+    try:
+        results = data_unbundle_analysis(
+            bundle_root, run_root=run_root, stage=stage, generation_id=generation_id
+        )
+    except AnalysisBundleError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    if as_json:
+        import json
+
+        click.echo(json.dumps(results, sort_keys=True, indent=2))
+        return
+
+    if not results:
+        click.echo("No bundles found.")
+        return
+    for entry in results:
+        verb = "unbundled" if entry["status"] == "unbundled" else "already unbundled"
+        checked = "checksums verified" if entry["checksums_verified"] else "structural check only"
+        click.echo(
+            f"  {entry['kind']}/{entry['generation_id']}: {verb} at {entry['path']} ({checked})"
+        )
+
+
 ##########################################

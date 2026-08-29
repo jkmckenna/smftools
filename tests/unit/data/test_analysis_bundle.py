@@ -1,4 +1,4 @@
-"""Bundle a run's published generations into few, large files for transfer (`TAB-01`)."""
+"""Bundle/unbundle a run's published generations for transfer (`TAB-01`, `TAB-02`)."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ import pytest
 from smftools.data.analysis_bundle import (
     AnalysisBundleError,
     bundle_analysis_generations,
+    unbundle_analysis_generations,
 )
 from smftools.informatics.generation_listing import (
     CURRENT_FILENAME,
@@ -200,3 +201,146 @@ def test_bundle_one_refuses_when_directory_missing_despite_complete_manifest(
 
     with pytest.raises(AnalysisBundleError, match="no directory"):
         _bundle_one(tmp_path / "run", record, tmp_path / "bundles")
+
+
+def test_unbundle_analysis_generations_extracts_into_a_fresh_run_root(tmp_path: Path) -> None:
+    source_root = tmp_path / "source"
+    _publish(source_root, "preprocess_adata_outputs", "gen-1", extra_files={"note.txt": "hello"})
+    bundle_root = tmp_path / "bundles"
+    bundle_analysis_generations(source_root, bundle_root=bundle_root)
+    destination_root = tmp_path / "destination"
+
+    results = unbundle_analysis_generations(bundle_root, run_root=destination_root)
+
+    assert len(results) == 1
+    assert results[0]["status"] == "unbundled"
+    assert results[0]["kind"] == "preprocess"
+    generation_dir = destination_root / "preprocess_adata_outputs" / GENERATIONS_SUBDIR / "gen-1"
+    assert generation_dir.is_dir()
+    assert (generation_dir / "note.txt").read_text() == "hello"
+    manifest = json.loads((generation_dir / GENERATION_MANIFEST).read_text())
+    assert manifest["generation_id"] == "gen-1"
+    assert not (
+        destination_root / "preprocess_adata_outputs" / GENERATIONS_SUBDIR / ".bundle-staging"
+    ).exists()
+
+
+def test_unbundle_analysis_generations_is_idempotent_on_a_rerun(tmp_path: Path) -> None:
+    source_root = tmp_path / "source"
+    _publish(source_root, "preprocess_adata_outputs", "gen-1")
+    bundle_root = tmp_path / "bundles"
+    bundle_analysis_generations(source_root, bundle_root=bundle_root)
+    destination_root = tmp_path / "destination"
+    first = unbundle_analysis_generations(bundle_root, run_root=destination_root)
+
+    second = unbundle_analysis_generations(bundle_root, run_root=destination_root)
+
+    assert first[0]["status"] == "unbundled"
+    assert second[0]["status"] == "already_unbundled"
+
+
+def test_unbundle_analysis_generations_verifies_recorded_artifact_checksums(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source"
+    generation_dir = _publish(source_root, "raw_outputs", "gen-1", extra_files={})
+    artifact = generation_dir / "spine.h5ad"
+    artifact.write_text("fake-spine-bytes", encoding="utf-8")
+    import hashlib
+
+    digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+    manifest_path = generation_dir / GENERATION_MANIFEST
+    manifest = json.loads(manifest_path.read_text())
+    manifest["artifacts"] = {"spine": {"path": "spine.h5ad", "sha256": digest}}
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    bundle_root = tmp_path / "bundles"
+    bundle_analysis_generations(source_root, bundle_root=bundle_root)
+    destination_root = tmp_path / "destination"
+
+    results = unbundle_analysis_generations(bundle_root, run_root=destination_root)
+
+    assert results[0]["checksums_verified"] is True
+
+
+def test_unbundle_analysis_generations_reports_no_checksums_for_stages_without_them(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source"
+    _publish(source_root, "hmm_adata_outputs", "gen-1")
+    bundle_root = tmp_path / "bundles"
+    bundle_analysis_generations(source_root, bundle_root=bundle_root)
+    destination_root = tmp_path / "destination"
+
+    results = unbundle_analysis_generations(bundle_root, run_root=destination_root)
+
+    assert results[0]["checksums_verified"] is False
+
+
+def test_unbundle_analysis_generations_refuses_a_corrupted_bundle(tmp_path: Path) -> None:
+    source_root = tmp_path / "source"
+    _publish(source_root, "preprocess_adata_outputs", "gen-1")
+    bundle_root = tmp_path / "bundles"
+    bundle_analysis_generations(source_root, bundle_root=bundle_root)
+    (bundle_root / "preprocess" / "gen-1.tar").write_bytes(b"corrupted")
+
+    with pytest.raises(AnalysisBundleError, match="does not match its recorded checksum"):
+        unbundle_analysis_generations(bundle_root, run_root=tmp_path / "destination")
+
+
+def test_unbundle_analysis_generations_refuses_a_content_checksum_mismatch(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source"
+    generation_dir = _publish(source_root, "raw_outputs", "gen-1", extra_files={})
+    artifact = generation_dir / "spine.h5ad"
+    artifact.write_text("fake-spine-bytes", encoding="utf-8")
+    manifest_path = generation_dir / GENERATION_MANIFEST
+    manifest = json.loads(manifest_path.read_text())
+    manifest["artifacts"] = {"spine": {"path": "spine.h5ad", "sha256": "0" * 64}}
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    bundle_root = tmp_path / "bundles"
+    bundle_analysis_generations(source_root, bundle_root=bundle_root)
+
+    with pytest.raises(AnalysisBundleError, match="failed verification"):
+        unbundle_analysis_generations(bundle_root, run_root=tmp_path / "destination")
+    assert not (tmp_path / "destination" / "raw_outputs" / GENERATIONS_SUBDIR / "gen-1").exists()
+
+
+def test_unbundle_analysis_generations_filters_by_stage(tmp_path: Path) -> None:
+    source_root = tmp_path / "source"
+    _publish(source_root, "preprocess_adata_outputs", "gen-pp")
+    _publish(source_root, "hmm_adata_outputs", "gen-hmm")
+    bundle_root = tmp_path / "bundles"
+    bundle_analysis_generations(source_root, bundle_root=bundle_root)
+
+    results = unbundle_analysis_generations(
+        bundle_root, run_root=tmp_path / "destination", stage="hmm"
+    )
+
+    assert len(results) == 1
+    assert results[0]["kind"] == "hmm"
+
+
+def test_unbundle_analysis_generations_filters_by_generation_id(tmp_path: Path) -> None:
+    source_root = tmp_path / "source"
+    _publish(source_root, "preprocess_adata_outputs", "gen-a")
+    _publish(source_root, "preprocess_adata_outputs", "gen-b")
+    bundle_root = tmp_path / "bundles"
+    bundle_analysis_generations(source_root, bundle_root=bundle_root)
+
+    results = unbundle_analysis_generations(
+        bundle_root, run_root=tmp_path / "destination", generation_id="gen-b"
+    )
+
+    assert len(results) == 1
+    assert results[0]["generation_id"] == "gen-b"
+
+
+def test_unbundle_analysis_generations_returns_empty_list_when_bundle_root_missing(
+    tmp_path: Path,
+) -> None:
+    results = unbundle_analysis_generations(
+        tmp_path / "no-such-bundles", run_root=tmp_path / "destination"
+    )
+
+    assert results == []

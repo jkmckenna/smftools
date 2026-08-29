@@ -923,3 +923,109 @@ def test_bundle_analysis_cli_json_output(tmp_path: Path) -> None:
             "path": str(bundle_root / "preprocess" / "gen-1.tar"),
         }
     ]
+
+
+def test_unbundle_analysis_cli_extracts_a_bundle(tmp_path: Path) -> None:
+    source_root = tmp_path / "source"
+    _seed_published_generation(source_root, "preprocess_adata_outputs", "gen-1")
+    bundle_root = tmp_path / "bundles"
+    runner = CliRunner()
+    runner.invoke(cli, ["data", "bundle-analysis", str(source_root), "--to", str(bundle_root)])
+    destination_root = tmp_path / "destination"
+
+    result = runner.invoke(
+        cli, ["data", "unbundle-analysis", str(bundle_root), "--to", str(destination_root)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "preprocess/gen-1: unbundled" in result.output
+    assert (
+        destination_root
+        / "preprocess_adata_outputs"
+        / GENERATIONS_SUBDIR
+        / "gen-1"
+        / GENERATION_MANIFEST
+    ).is_file()
+
+
+def test_unbundle_analysis_cli_reports_already_unbundled_on_rerun(tmp_path: Path) -> None:
+    source_root = tmp_path / "source"
+    _seed_published_generation(source_root, "preprocess_adata_outputs", "gen-1")
+    bundle_root = tmp_path / "bundles"
+    runner = CliRunner()
+    runner.invoke(cli, ["data", "bundle-analysis", str(source_root), "--to", str(bundle_root)])
+    destination_root = tmp_path / "destination"
+    runner.invoke(
+        cli, ["data", "unbundle-analysis", str(bundle_root), "--to", str(destination_root)]
+    )
+
+    result = runner.invoke(
+        cli, ["data", "unbundle-analysis", str(bundle_root), "--to", str(destination_root)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "already unbundled" in result.output
+
+
+def test_unbundle_analysis_cli_reports_no_bundles(tmp_path: Path) -> None:
+    bundle_root = tmp_path / "bundles"
+    bundle_root.mkdir()
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli, ["data", "unbundle-analysis", str(bundle_root), "--to", str(tmp_path / "destination")]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "No bundles found." in result.output
+
+
+def test_unbundle_analysis_cli_refuses_a_corrupted_bundle(tmp_path: Path) -> None:
+    source_root = tmp_path / "source"
+    _seed_published_generation(source_root, "preprocess_adata_outputs", "gen-1")
+    bundle_root = tmp_path / "bundles"
+    runner = CliRunner()
+    runner.invoke(cli, ["data", "bundle-analysis", str(source_root), "--to", str(bundle_root)])
+    (bundle_root / "preprocess" / "gen-1.tar").write_bytes(b"corrupted")
+
+    result = runner.invoke(
+        cli, ["data", "unbundle-analysis", str(bundle_root), "--to", str(tmp_path / "destination")]
+    )
+
+    assert result.exit_code != 0
+    assert "does not match its recorded checksum" in result.output
+
+
+def test_unbundle_analysis_cli_json_output(tmp_path: Path) -> None:
+    source_root = tmp_path / "source"
+    _seed_published_generation(source_root, "preprocess_adata_outputs", "gen-1")
+    bundle_root = tmp_path / "bundles"
+    runner = CliRunner()
+    runner.invoke(cli, ["data", "bundle-analysis", str(source_root), "--to", str(bundle_root)])
+    destination_root = tmp_path / "destination"
+
+    result = runner.invoke(
+        cli,
+        [
+            "data",
+            "unbundle-analysis",
+            str(bundle_root),
+            "--to",
+            str(destination_root),
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload == [
+        {
+            "kind": "preprocess",
+            "generation_id": "gen-1",
+            "status": "unbundled",
+            "path": str(
+                destination_root / "preprocess_adata_outputs" / GENERATIONS_SUBDIR / "gen-1"
+            ),
+            "checksums_verified": False,
+        }
+    ]

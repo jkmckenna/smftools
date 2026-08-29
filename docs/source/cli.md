@@ -428,7 +428,7 @@ using `PSR-08`'s volume identity: its result reports `same_volume` (`true`,
 the CLI prints a warning when source and destination share a volume, so
 someone sequencing several runs by hand can see it rather than guess.
 
-## Bundling an analysis tree for transfer (`TAB-01`)
+## Bundling an analysis tree for transfer (`TAB-01`, `TAB-02`)
 
 An experiment's analysis tree is written as many small, independent
 partition stores, deliberately fine-grained to bound per-task memory and
@@ -458,8 +458,25 @@ that -- `rsync`, Finder, `scp` -- now moving a handful of large files
 instead of millions of tiny ones. `current.json` (which generation is
 *current* per stage) is untouched by bundling; `data sync` above already
 reconciles that correctly and cheaply between two attached locations.
-Unbundling back into an ordinary, directly scannable tree is `TAB-02`, not
-yet built.
+
+```shell
+smftools data unbundle-analysis BUNDLE_DIR --to RUN_ROOT [--stage NAME] [--generation ID] [--json]
+```
+
+Extracts back into an ordinary, directly scannable analysis tree --
+stage-then-atomic-rename, so an interrupted extraction never leaves a
+partial generation directory in place. Verifies twice before trusting the
+result: the bundle's own recorded checksum before extracting (the transfer
+did not corrupt it), then -- for the stages that record one
+(`basecall`/`raw`/`preprocess`) -- every artifact's own recorded checksum
+after extracting (the tar round-trip preserved what the original pipeline
+vouched for, not merely that the tar file itself is intact). Other stages
+(`spatial`/`hmm`/`latent`, ...) do not record per-artifact checksums in
+their manifests today, so unbundling one of those reports
+`checksums_verified: false` -- a narrower guarantee (the manifest parses and
+its `generation_id` matches), reported honestly rather than claimed as full
+verification. `current.json` is untouched by unbundling too; run `data sync`
+to reconcile it.
 
 ## Localizing a config's small inputs
 

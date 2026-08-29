@@ -1,7 +1,10 @@
 # Transfer-time analysis bundling (`TAB`)
 
 **Status:** in progress. `TAB-01` (`data bundle-analysis`) is implemented on
-`feature/tab-01-bundle-analysis`. `TAB-02`/`TAB-03` remain proposed.
+`feature/tab-01-bundle-analysis`. `TAB-02` (`data unbundle-analysis`) is
+implemented on `feature/tab-02-unbundle-analysis` -- see its note for the
+verification scope that actually shipped. `TAB-03` (real-data round-trip
+qualification) remains open.
 
 ## Problem
 
@@ -72,12 +75,13 @@ bundling over a genuinely slow network link instead.
 **Self-contained, so unbundling never phones home.** Tarring the whole
 generation directory includes that generation's own `generation_manifest.json`
 (checksums and all) inside the archive. Unbundling can therefore validate a
-freshly-extracted generation using the *same validator each stage already has*
-for its own generations (e.g. `resolve_current_raw_generation`,
-`resolve_current_preprocess_generation`) -- no new checksum scheme, no need to
-reach back to the source machine to confirm the copy is intact. This mirrors
-`PSR-01`'s "surviving a detached archive" principle and `BCS-07`'s recorded-
-identity validation.
+freshly-extracted generation from the manifest it just extracted alone -- no
+new checksum scheme invented, and no need to reach back to the source
+machine to confirm the copy is intact. (What "validate" actually means
+turned out narrower than first sketched here -- see `TAB-02`'s
+implementation note below, after Work items.) This mirrors `PSR-01`'s
+"surviving a detached archive" principle and `BCS-07`'s recorded-identity
+validation.
 
 **Three separate steps, not one command.** Bundle locally; transfer the
 (now few, large) files with whatever the user already uses -- `rsync`, Finder,
@@ -102,8 +106,8 @@ smftools data bundle-analysis RUN_ROOT --to BUNDLE_DIR [--stage NAME] [--generat
 
 smftools data unbundle-analysis BUNDLE_DIR --to RUN_ROOT
     # extracts each bundle to a staging dir under RUN_ROOT's matching
-    # generation path, atomically renames into place, then runs that
-    # stage's own generation validator against the result
+    # generation path, atomically renames into place, then re-verifies
+    # whatever per-artifact checksums the extracted manifest itself records
 
 smftools data sync RUN_ROOT ...
     # reconciles current.json the same way it already does today
@@ -114,8 +118,43 @@ smftools data sync RUN_ROOT ...
 | item | status | evidence |
 |---|---|---|
 | `TAB-01` `data bundle-analysis`: tar every complete, not-yet-bundled generation under a run root | implemented | `tests/unit/data/test_analysis_bundle.py`, `tests/unit/test_data_cli.py` (`test_bundle_analysis_cli_*`) |
-| `TAB-02` `data unbundle-analysis`: extract, stage-then-rename, validate via each stage's existing generation validator | proposed | -- |
+| `TAB-02` `data unbundle-analysis`: extract, stage-then-rename, verify | implemented | `tests/unit/data/test_analysis_bundle.py` (`test_unbundle_analysis_generations_*`), `tests/unit/test_data_cli.py` (`test_unbundle_analysis_cli_*`) |
 | `TAB-03` real-data round-trip qualification: bundle, copy, unbundle, validate a real partitioned store; confirm file-count and wall-clock improvement over a plain `rsync` of the same tree | proposed | -- |
+
+**`TAB-02` shipped generic checksum re-verification, not a dispatch to each
+stage's own semantic validator, and that turned out to be the right call
+rather than a shortfall.** The Design section above originally sketched
+calling each stage's existing `resolve_current_*_generation`/
+`validate_*_generation` -- but reading `validate_raw_generation` and
+`validate_preprocess_generation` (only `basecall`, `raw`, and `preprocess`
+have one at all; `spatial`/`hmm`/`latent`/`variant`/`chimeric` do not) showed
+they check far more than content integrity: `validate_raw_generation` in
+particular re-derives relative pointer safety from the *destination's*
+`final_dir`/`run_root`, checking the extracted spine's `.uns` pointers
+against the whole run's directory layout, not just the one generation being
+unbundled. That is real, valuable machinery for *publishing* a generation,
+but unbundling only needs to answer "did the round trip preserve every
+byte" -- a narrower, purely content-integrity question the pipeline already
+answered once when it first published the generation. Re-deriving the
+broader business-logic checks by partially wiring into validators built for
+a different caller, without having fully verified every argument they
+expect, was the real risk here, not the narrower scope.
+
+What shipped instead: a bundle's own recorded checksum is verified before
+extracting (proves the *transfer* was not corrupted), and after extracting,
+every artifact `sha256` the generation's own manifest records is
+re-verified generically (proves the *tar round-trip* preserved what the
+original pipeline vouched for) -- reusing the same `artifacts: {<key>:
+{"path", "sha256"}}` shape `basecall`/`raw`/`preprocess` already write via
+`artifact_record(..., checksum=True)`, without needing per-stage knowledge
+of what those artifacts mean. `spatial`/`hmm`/`latent` do not record
+per-artifact checksums in their manifests today, so unbundling one of those
+can only confirm the manifest parses and its `generation_id` matches --
+reported honestly through a `checksums_verified: False` result field, never
+silently claimed as full verification. Extending those stages' manifests to
+record artifact checksums (mirroring what `raw`/`preprocess`/`basecall`
+already do) would let `TAB-02` verify them fully too, but that is a
+manifest-schema change to those stages, not `TAB-02`'s own job.
 
 ## Decided
 
