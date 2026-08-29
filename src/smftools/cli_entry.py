@@ -3037,4 +3037,59 @@ def data_archive_basecall_cmd(run_root: Path, archive_root: Path, as_json: bool)
         )
 
 
+@data_group.command("bundle-analysis")
+@click.argument("run_root", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.option(
+    "--to",
+    "bundle_root",
+    type=click.Path(path_type=Path, file_okay=False),
+    required=True,
+    help="Directory to write bundles into: bundle_root/<stage>/<generation_id>.tar",
+)
+@click.option("--stage", default=None, help="Restrict to one stage (raw, preprocess, ...).")
+@click.option("--generation", "generation_id", default=None, help="Restrict to one generation id.")
+@click.option(
+    "--json", "as_json", is_flag=True, help="Emit machine-readable JSON instead of a summary."
+)
+def data_bundle_analysis_cmd(
+    run_root: Path, bundle_root: Path, stage: str | None, generation_id: str | None, as_json: bool
+):
+    """Tar RUN_ROOT's published generations into few, large files for transfer (`TAB-01`).
+
+    One uncompressed tar per complete, published generation
+    (`<stage>_outputs/generations/<generation_id>/`) -- the codebase's own
+    immutability boundary, so a generation is bundled exactly once, ever;
+    re-running only adds bundles for generations that appeared since. Each
+    bundle carries the generation's own manifest, so `data unbundle-analysis`
+    (`TAB-02`) never needs to reach back to RUN_ROOT to validate what it
+    extracted. `current.json` is untouched -- `data sync` already reconciles
+    that cheaply and correctly; bundling only moves generation content.
+    """
+    from .cli.data_cmd import data_bundle_analysis
+    from .data.analysis_bundle import AnalysisBundleError
+
+    try:
+        results = data_bundle_analysis(
+            run_root, bundle_root=bundle_root, stage=stage, generation_id=generation_id
+        )
+    except AnalysisBundleError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    if as_json:
+        import json
+
+        click.echo(json.dumps(results, sort_keys=True, indent=2))
+        return
+
+    if not results:
+        click.echo("No published generations found.")
+        return
+    for entry in results:
+        if entry["status"] == "skipped":
+            click.echo(f"  {entry['kind']}/{entry['generation_id']}: skipped -- {entry['reason']}")
+        else:
+            verb = "bundled" if entry["status"] == "bundled" else "already bundled"
+            click.echo(f"  {entry['kind']}/{entry['generation_id']}: {verb} at {entry['path']}")
+
+
 ##########################################

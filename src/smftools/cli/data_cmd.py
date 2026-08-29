@@ -544,3 +544,21 @@ def data_archive_basecall(run_root: str | Path, *, archive_root: str | Path) -> 
 
     result = archive_basecall_generation(run_root, archive_root=archive_root)
     return {**result, "path": str(result["path"])}
+
+
+def data_bundle_analysis(
+    run_root: str | Path,
+    *,
+    bundle_root: str | Path,
+    stage: str | None = None,
+    generation_id: str | None = None,
+) -> list[dict]:
+    """Tar `run_root`'s complete, not-yet-bundled generations into `bundle_root` (`TAB-01`)."""
+    from ..data.analysis_bundle import bundle_analysis_generations
+
+    results = bundle_analysis_generations(
+        run_root, bundle_root=bundle_root, stage=stage, generation_id=generation_id
+    )
+    return [
+        {**entry, "path": str(entry["path"])} if "path" in entry else entry for entry in results
+    ]

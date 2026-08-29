@@ -57,6 +57,7 @@ An active branch, some items merged and others open.
 |---|---|
 | `selective_pod5_rebasecalling_implementation_plan.md` | `SRB` |
 | `duplicate_detection_span_agnostic_implementation_plan.md` | `DSA` span-agnostic duplicate detection; drafted, `DSA-05` real-data qualification open |
+| `transfer_time_analysis_bundling_plan.md` | `TAB` bundle a run's analysis-tree generations into few large files before moving them between drives; `TAB-01` implemented, `TAB-02`/`TAB-03` open; zarr v3 sharding and coarser source-side partitioning both ruled out first, on real data |
 
 ## `proposed/`
 

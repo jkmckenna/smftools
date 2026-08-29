@@ -12,6 +12,11 @@ from smftools.config.roots import ENV_PREFIX, ENV_VOLUME_SEARCH_PATHS
 from smftools.data import volume_discovery
 from smftools.data.volume_stamp import STAMP_FILENAME, init_volume, read_volume_stamp
 from smftools.informatics.basecall_generation import publish_basecall_generation
+from smftools.informatics.generation_listing import (
+    CURRENT_FILENAME,
+    GENERATION_MANIFEST,
+    GENERATIONS_SUBDIR,
+)
 from smftools.informatics.input_manifest import resolve_input_manifest
 
 pytestmark = pytest.mark.unit
@@ -809,3 +814,112 @@ def test_archive_basecall_cli_json_output(tmp_path: Path) -> None:
     payload = json.loads(result.output)
     assert payload["status"] == "archived"
     assert payload["generation_id"] == generation_id
+
+
+def _seed_published_generation(
+    run_root: Path, stage_dir: str, generation_id: str, *, status: str = "complete"
+) -> Path:
+    container = run_root / stage_dir
+    generation_dir = container / GENERATIONS_SUBDIR / generation_id
+    generation_dir.mkdir(parents=True, exist_ok=True)
+    (generation_dir / GENERATION_MANIFEST).write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "status": status,
+                "generation_id": generation_id,
+                "config_hash": "abc123",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (generation_dir / "spine.h5ad").write_text("fake-spine-bytes", encoding="utf-8")
+    (container / CURRENT_FILENAME).write_text(
+        json.dumps({"schema_version": 1, "generation_id": generation_id}), encoding="utf-8"
+    )
+    return generation_dir
+
+
+def test_bundle_analysis_cli_bundles_every_complete_generation(tmp_path: Path) -> None:
+    run_root = tmp_path / "run"
+    _seed_published_generation(run_root, "preprocess_adata_outputs", "gen-1")
+    _seed_published_generation(run_root, "hmm_adata_outputs", "gen-2")
+    bundle_root = tmp_path / "bundles"
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli, ["data", "bundle-analysis", str(run_root), "--to", str(bundle_root)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "preprocess/gen-1: bundled" in result.output
+    assert "hmm/gen-2: bundled" in result.output
+    assert (bundle_root / "preprocess" / "gen-1.tar").is_file()
+    assert (bundle_root / "hmm" / "gen-2.tar").is_file()
+
+
+def test_bundle_analysis_cli_filters_by_stage(tmp_path: Path) -> None:
+    run_root = tmp_path / "run"
+    _seed_published_generation(run_root, "preprocess_adata_outputs", "gen-1")
+    _seed_published_generation(run_root, "hmm_adata_outputs", "gen-2")
+    bundle_root = tmp_path / "bundles"
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli,
+        ["data", "bundle-analysis", str(run_root), "--to", str(bundle_root), "--stage", "hmm"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "hmm/gen-2: bundled" in result.output
+    assert "preprocess" not in result.output
+
+
+def test_bundle_analysis_cli_reports_skipped_generations(tmp_path: Path) -> None:
+    run_root = tmp_path / "run"
+    _seed_published_generation(run_root, "preprocess_adata_outputs", "gen-1", status="staging")
+    bundle_root = tmp_path / "bundles"
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli, ["data", "bundle-analysis", str(run_root), "--to", str(bundle_root)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "skipped" in result.output
+
+
+def test_bundle_analysis_cli_reports_nothing_published(tmp_path: Path) -> None:
+    run_root = tmp_path / "run"
+    run_root.mkdir()
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli, ["data", "bundle-analysis", str(run_root), "--to", str(tmp_path / "bundles")]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "No published generations found." in result.output
+
+
+def test_bundle_analysis_cli_json_output(tmp_path: Path) -> None:
+    run_root = tmp_path / "run"
+    _seed_published_generation(run_root, "preprocess_adata_outputs", "gen-1")
+    bundle_root = tmp_path / "bundles"
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli,
+        ["data", "bundle-analysis", str(run_root), "--to", str(bundle_root), "--json"],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload == [
+        {
+            "kind": "preprocess",
+            "generation_id": "gen-1",
+            "status": "bundled",
+            "path": str(bundle_root / "preprocess" / "gen-1.tar"),
+        }
+    ]
