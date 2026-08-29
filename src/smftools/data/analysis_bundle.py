@@ -15,7 +15,7 @@ on disk, one archive per *published generation* -- a generation directory
 immutability boundary (`staged_generation` publishes it atomically and it
 never changes again), so a generation needs bundling exactly once, ever. A
 later run only adds bundles for new generations; it never re-touches old
-ones. See `dev/plans/proposed/transfer_time_analysis_bundling_plan.md` for
+ones. See `dev/plans/in-progress/transfer_time_analysis_bundling_plan.md` for
 the full design and the alternatives (zarr v3 sharding, coarser source-side
 partitioning) it deliberately does not revisit.
 
@@ -25,17 +25,36 @@ spends CPU for negligible size benefit -- and is self-contained: the
 generation's own `generation_manifest.json` travels inside it, so unbundling
 (`TAB-02`) never needs to reach back to the source to validate what it
 extracted.
+
+`unbundle_analysis_generations` (`TAB-02`) is the inverse: extract each
+bundle into `run_root`'s matching `<stage>_outputs/generations/<id>/` path,
+stage-then-atomic-rename so an interrupted extraction never leaves a partial
+generation directory that looks real, and verify twice before trusting the
+result -- the bundle's own recorded checksum before extracting (proves the
+*transfer* did not corrupt it), then, for the stages that record one
+(`basecall`/`raw`/`preprocess`), every artifact's own recorded checksum
+after extracting (proves the *tar round-trip* preserved content the original
+pipeline vouched for, not merely that the tar file itself is intact). Other
+stages (`spatial`/`hmm`/`latent`, ...) do not record per-artifact checksums
+in their manifests today, so unbundling one can only confirm the manifest
+parses and its `generation_id` matches -- reported honestly as such, not
+silently claimed as full verification. `current.json` stays untouched here
+too; `data sync` already reconciles it.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import shutil
 import tarfile
 from pathlib import Path
 from typing import Any, Optional
 
 from ..informatics.generation_listing import (
+    GENERATION_MANIFEST,
+    GENERATIONS_SUBDIR,
+    STAGE_GENERATION_DIRS,
     STATE_OK,
     GenerationRecord,
     list_experiment_generations,
@@ -46,6 +65,7 @@ from ..readwrite import atomic_write_json
 BUNDLE_SUFFIX = ".tar"
 BUNDLE_SIDECAR_SUFFIX = ".tar.json"
 BUNDLE_MANIFEST_SCHEMA_VERSION = 1
+UNBUNDLE_STAGING_SUBDIR = ".bundle-staging"
 
 
 class AnalysisBundleError(RuntimeError):
@@ -184,4 +204,180 @@ def bundle_analysis_generations(
             )
             continue
         results.append(_bundle_one(run_root, record, bundle_root))
+    return results
+
+
+def _verify_extracted_generation(
+    generation_dir: Path, expected_generation_id: str
+) -> tuple[bool, list[str]]:
+    """Re-verify a freshly-extracted generation against its own manifest.
+
+    Returns ``(any_checksum_verified, problems)``. ``problems`` is non-empty
+    only for a real integrity failure (missing/unreadable manifest, a
+    `generation_id` mismatch, a missing or corrupt artifact) -- never for a
+    stage simply not recording per-artifact checksums yet, which is reported
+    through ``any_checksum_verified`` being `False` with an empty
+    ``problems`` list instead.
+    """
+    manifest_path = generation_dir / GENERATION_MANIFEST
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return False, [f"generation manifest is missing or unreadable: {exc}"]
+
+    declared_id = str(manifest.get("generation_id", ""))
+    if declared_id != expected_generation_id:
+        return False, [
+            f"manifest generation_id {declared_id!r} does not match bundle "
+            f"{expected_generation_id!r}"
+        ]
+
+    artifacts = manifest.get("artifacts")
+    if not isinstance(artifacts, dict) or not artifacts:
+        return False, []
+
+    checked_any = False
+    problems: list[str] = []
+    for key, record in artifacts.items():
+        if not (isinstance(record, dict) and "path" in record and "sha256" in record):
+            continue
+        checked_any = True
+        artifact_path = generation_dir / str(record["path"])
+        if not artifact_path.is_file():
+            problems.append(f"artifact {key!r} is missing: {artifact_path}")
+            continue
+        try:
+            actual = sha256_file(artifact_path)
+        except OSError as exc:
+            problems.append(f"artifact {key!r} could not be checksummed: {exc}")
+            continue
+        if actual != str(record["sha256"]):
+            problems.append(f"artifact {key!r} checksum mismatch after unbundling")
+    return checked_any, problems
+
+
+def _unbundle_one(
+    bundle_path: Path,
+    sidecar_path: Path,
+    kind: str,
+    generation_id: str,
+    run_root: Path,
+) -> dict[str, Any]:
+    stage_dirname = STAGE_GENERATION_DIRS.get(kind)
+    if stage_dirname is None:
+        raise AnalysisBundleError(
+            f"unknown stage kind {kind!r} in bundle {bundle_path}; no generation directory mapping"
+        )
+    destination = run_root / stage_dirname / GENERATIONS_SUBDIR / generation_id
+
+    try:
+        sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise AnalysisBundleError(
+            f"bundle sidecar is missing or unreadable: {sidecar_path}"
+        ) from exc
+    recorded_sha256 = str(sidecar.get("sha256", ""))
+    if not recorded_sha256 or sha256_file(bundle_path) != recorded_sha256:
+        raise AnalysisBundleError(
+            f"bundle {bundle_path} does not match its recorded checksum -- refusing to "
+            "extract a possibly-corrupt transfer"
+        )
+
+    if destination.is_dir():
+        checked, problems = _verify_extracted_generation(destination, generation_id)
+        if not problems:
+            return {
+                "kind": kind,
+                "generation_id": generation_id,
+                "status": "already_unbundled",
+                "path": destination,
+                "checksums_verified": checked,
+            }
+        # A destination exists but fails verification: fall through and
+        # re-extract rather than trusting or silently leaving it in place.
+
+    staging_parent = run_root / stage_dirname / GENERATIONS_SUBDIR / UNBUNDLE_STAGING_SUBDIR
+    staging_parent.mkdir(parents=True, exist_ok=True)
+    staged_generation_dir = staging_parent / generation_id
+    if staged_generation_dir.exists():
+        shutil.rmtree(staged_generation_dir)
+    with tarfile.open(bundle_path, "r") as tar:
+        tar.extractall(staging_parent, filter="data")
+
+    checked, problems = _verify_extracted_generation(staged_generation_dir, generation_id)
+    if problems:
+        shutil.rmtree(staged_generation_dir, ignore_errors=True)
+        raise AnalysisBundleError(
+            f"unbundled generation {generation_id!r} ({kind}) failed verification: "
+            + "; ".join(problems)
+        )
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.is_dir():
+        shutil.rmtree(destination)
+    os.replace(staged_generation_dir, destination)
+    try:
+        staging_parent.rmdir()
+    except OSError:
+        pass  # not empty -- another generation for this stage is mid-extraction
+
+    return {
+        "kind": kind,
+        "generation_id": generation_id,
+        "status": "unbundled",
+        "path": destination,
+        "checksums_verified": checked,
+    }
+
+
+def unbundle_analysis_generations(
+    bundle_root: str | Path,
+    *,
+    run_root: str | Path,
+    stage: Optional[str] = None,
+    generation_id: Optional[str] = None,
+) -> list[dict[str, Any]]:
+    """Extract bundles from `bundle_root` into `run_root`'s matching generation paths.
+
+    Args:
+        bundle_root: Directory `bundle_analysis_generations` wrote bundles
+            into -- `bundle_root/<kind>/<generation_id>.tar` plus its
+            `.tar.json` sidecar.
+        run_root: The destination experiment output directory. Need not
+            exist yet; `<stage>_outputs/generations/` is created as needed.
+        stage: Restrict to one stage's bundles. All stages if `None`.
+        generation_id: Restrict to one generation id. All if `None`.
+
+    Returns:
+        One dict per bundle considered: `kind`, `generation_id`, `status`
+        (`"unbundled"`, `"already_unbundled"`), `path` (the destination
+        generation directory), and `checksums_verified` (whether the stage's
+        manifest recorded per-artifact checksums to actually verify against
+        -- `False` does not mean a problem was found, only that this stage
+        does not yet record enough to fully prove content integrity).
+
+    Raises:
+        AnalysisBundleError: A bundle's own checksum does not match its
+            sidecar (refuses to extract a possibly-corrupt transfer), or the
+            freshly-extracted generation fails verification against its own
+            manifest (refuses to leave a corrupt generation at the
+            destination) -- either way nothing partial is left behind.
+    """
+    bundle_root = Path(bundle_root)
+    run_root = Path(run_root)
+    results: list[dict[str, Any]] = []
+    if not bundle_root.is_dir():
+        return results
+    for kind_dir in sorted(p for p in bundle_root.iterdir() if p.is_dir()):
+        kind = kind_dir.name
+        if stage is not None and kind != stage:
+            continue
+        for bundle_path in sorted(kind_dir.glob(f"*{BUNDLE_SUFFIX}")):
+            found_generation_id = bundle_path.stem
+            if generation_id is not None and found_generation_id != generation_id:
+                continue
+            sidecar_path = kind_dir / f"{found_generation_id}{BUNDLE_SIDECAR_SUFFIX}"
+            results.append(
+                _unbundle_one(bundle_path, sidecar_path, kind, found_generation_id, run_root)
+            )
     return results
