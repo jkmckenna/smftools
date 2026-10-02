@@ -32,7 +32,10 @@ BARCODE_IDENTITY_SCHEMA_VERSION = 2
 #:
 #: 2: `F36` -- an `unclassified` directory resolves to `"unclassified"` rather
 #:    than to the filename stem, and the parent directory is consulted.
-BARCODE_IDENTITY_RESOLVER_VERSION = 2
+#: 3: `F58` -- BAM tag evidence that carries no barcode (a bare read-group ID),
+#:    or names a different kit than the configured one, no longer outranks the
+#:    sequence classifier; it is consulted only when nothing else assigns one.
+BARCODE_IDENTITY_RESOLVER_VERSION = 3
 BARCODE_IDENTITY_REPORT_SUFFIX = ".identity_report.json"
 BARCODE_IDENTITY_COLUMNS = (
     "identity_schema_version",
@@ -85,6 +88,60 @@ def _value(value: Any) -> str:
 
 def _classified(value: str) -> bool:
     return value.lower() not in _UNKNOWN | _UNCLASSIFIED
+
+
+_KIT_RE = re.compile(r"(SQK-[A-Z0-9]+)-[0-9]+", re.IGNORECASE)
+
+
+def _kit_of(value: str) -> str:
+    """The kit family a barcode/read-group value names, or ``""``.
+
+    Only the family is compared (``SQK-NBD114`` from ``SQK-NBD114-24``): the
+    24- and 96-barcode variants of one family share barcode sequences, so a tag
+    from the 24-barcode kit is valid evidence for a run configured with the
+    96-barcode one. A different family (rapid vs native) is not.
+    """
+    match = _KIT_RE.search(value)
+    return match.group(1).upper() if match else ""
+
+
+def _bam_tag_tiers(
+    bam_barcode: str,
+    read_group: str,
+    expected_kit: str,
+) -> tuple[list[str], list[str], list[str], list[str]]:
+    """Split BAM BC/RG evidence into authoritative and fallback-only values.
+
+    A read group only identifies a barcode when it names one: MinKNOW writes
+    ``<run>_<model>_<kit>_barcodeNN`` for classified reads but a bare
+    ``<run>_<model>`` for the rest, and that bare ID is not "unclassified" to
+    `_classified`, so ranking it above the sequence classifier made every
+    untagged read take the read-group string as its barcode (`F58`). Tags
+    naming a kit other than the configured one came from a classification run
+    with the wrong kit and likewise must not outrank a fresh one. Both stay
+    available as a last resort, which keeps an unbarcoded run's identity.
+
+    Returns:
+        ``(bc_primary, rg_primary, bc_fallback, rg_fallback)``.
+    """
+
+    expected_family = _kit_of(expected_kit)
+
+    def foreign(value: str) -> bool:
+        kit = _kit_of(value)
+        return bool(expected_family and kit and kit != expected_family)
+
+    bc_primary, bc_fallback = [], []
+    if bam_barcode:
+        (bc_fallback if foreign(bam_barcode) else bc_primary).append(bam_barcode)
+    rg_primary, rg_fallback = [], []
+    if read_group:
+        names_barcode = bool(_BARCODE_TOKEN_RE.search(read_group))
+        if names_barcode and not foreign(read_group):
+            rg_primary.append(read_group)
+        else:
+            rg_fallback.append(read_group)
+    return bc_primary, rg_primary, bc_fallback, rg_fallback
 
 
 def _evidence(value: Any) -> str:
@@ -379,6 +436,7 @@ def publish_barcode_identity_sidecar(
     classifier_sidecar: str | Path | None = None,
     classifier_source: str = "sequence",
     directory_authoritative: bool = False,
+    expected_barcode_kit: str | None = None,
 ) -> tuple[Path, Path]:
     """Resolve all barcode/sample authorities and publish canonical schema 1.
 
@@ -395,6 +453,8 @@ def publish_barcode_identity_sidecar(
             where the directory a read arrived in *is* its assignment and must
             outrank sequence re-derivation. The re-derived call is still kept,
             as ``barcode_rederived``, so the two can be compared.
+        expected_barcode_kit: The configured barcode kit. BAM BC/RG tags that
+            name a different kit are consulted only after the classifier.
 
     Returns:
         The canonical sidecar and validation-report paths.
@@ -483,21 +543,28 @@ def publish_barcode_identity_sidecar(
         directory_barcode = next((value for value in directory_barcodes if _value(value)), "")
 
         classifier_confidence = _confidence(classifier.get("barcode_confidence"), 0.75)
+        bc_primary, rg_primary, bc_fallback, rg_fallback = _bam_tag_tiers(
+            bam_barcode_evidence, bam_read_group_evidence, expected_barcode_kit or ""
+        )
         if directory_authoritative:
             barcode_tiers = (
                 ("manifest", 1.0, manifest_barcodes),
                 ("demux_directory", 0.97, directory_barcodes),
-                ("bam:BC", 0.95, [bam_barcode_evidence]),
-                ("bam:RG", 0.9, [bam_read_group_evidence]),
+                ("bam:BC", 0.95, bc_primary),
+                ("bam:RG", 0.9, rg_primary),
                 (classifier_source, classifier_confidence, [classifier_barcode]),
+                ("bam:BC", 0.5, bc_fallback),
+                ("bam:RG", 0.3, rg_fallback),
             )
         else:
             barcode_tiers = (
                 ("manifest", 1.0, manifest_barcodes),
-                ("bam:BC", 0.95, [bam_barcode_evidence]),
-                ("bam:RG", 0.9, [bam_read_group_evidence]),
+                ("bam:BC", 0.95, bc_primary),
+                ("bam:RG", 0.9, rg_primary),
                 (classifier_source, classifier_confidence, [classifier_barcode]),
                 ("filename", 0.25, directory_barcodes),
+                ("bam:BC", 0.5, bc_fallback),
+                ("bam:RG", 0.3, rg_fallback),
             )
         barcode, barcode_source, barcode_confidence, conflicts = _select(
             barcode_tiers,
