@@ -14,11 +14,12 @@ from smftools.cli.raw_adata import (
     _attach_direct_signals_from_bam,
     _attach_pod5_metadata,
     _attach_signal_features,
-    _bucket_read_ids,
     _ChromosomeGroupAccumulator,
+    _contiguous_buckets,
     _conversion_signal,
     _map_references_parallel,
     _n_buckets_for_reference,
+    _read_ids_and_offsets_for_reference,
     _resolve_direct_call,
     _split_by_reference_strand,
     _split_modkit_tsv_by_bucket,
@@ -661,38 +662,133 @@ def test_map_references_parallel_bounds_in_flight_submissions(monkeypatch):
     assert len(submit_calls) == 6
 
 
-def test_bucket_read_ids_splits_evenly_regardless_of_clustering():
-    # Reproduces the real-data shape that broke position-based windowing:
-    # many reads share the exact same genomic position (PCR/library
-    # duplication), so no position boundary can split them -- round-robin
-    # over read identity doesn't care, and still balances exactly.
+def test_contiguous_buckets_split_evenly_in_bam_order():
+    # Same-position clustering (the shape that broke position windows) is
+    # irrelevant: the split is by count, so sizes still differ by at most one.
     read_ids = [f"read{i}" for i in range(1000)]
+    offsets = list(range(0, 10_000, 10))
 
-    buckets = _bucket_read_ids(read_ids, n_buckets=8)
+    buckets = _contiguous_buckets(read_ids, offsets, n_buckets=8)
 
     assert len(buckets) == 8
-    counts = [len(bucket) for bucket in buckets]
+    counts = [len(ids) for ids, _range in buckets]
     assert max(counts) - min(counts) <= 1
-    # Every read assigned to exactly one bucket, none lost or duplicated.
-    union = set().union(*buckets)
-    assert union == set(read_ids)
+    assert set().union(*(ids for ids, _range in buckets)) == set(read_ids)
     assert sum(counts) == len(read_ids)
+    # Contiguous: each range ends where the next starts; the last is open.
+    ranges = [scan_range for _ids, scan_range in buckets]
+    assert ranges[0][0] == offsets[0]
+    assert all(a[1] == b[0] for a, b in zip(ranges, ranges[1:]))
+    assert ranges[-1][1] is None
 
 
-def test_bucket_read_ids_no_reads_yields_no_buckets():
-    assert _bucket_read_ids([], n_buckets=4) == []
+def test_contiguous_buckets_no_reads_yields_no_buckets():
+    assert _contiguous_buckets([], [], n_buckets=4) == []
 
 
-def test_bucket_read_ids_single_bucket_covers_all_reads():
-    read_ids = ["a", "b", "c"]
-    assert _bucket_read_ids(read_ids, n_buckets=1) == [{"a", "b", "c"}]
+def test_contiguous_buckets_single_bucket_covers_all_reads():
+    assert _contiguous_buckets(["a", "b", "c"], [5, 9, 13], n_buckets=1) == [
+        ({"a", "b", "c"}, (5, None))
+    ]
 
 
-def test_bucket_read_ids_more_buckets_than_reads_drops_empty_buckets():
-    read_ids = ["a", "b"]
-    buckets = _bucket_read_ids(read_ids, n_buckets=8)
-    assert len(buckets) == 2
-    assert set().union(*buckets) == {"a", "b"}
+def test_contiguous_buckets_more_buckets_than_reads_drops_empty_buckets():
+    buckets = _contiguous_buckets(["a", "b"], [5, 9], n_buckets=8)
+    assert buckets == [({"a"}, (5, 9)), ({"b"}, (9, None))]
+
+
+def _clustered_sorted_bam(tmp_path):
+    """Coordinate-sorted, indexed BAM spanning many BGZF blocks: two contigs,
+    heavy same-start clustering, secondary/supplementary records interleaved,
+    unmapped reads at the end."""
+    pysam = pytest.importorskip("pysam")
+    rng = np.random.default_rng(0)
+    refs = {name: "".join(rng.choice(list("ACGT"), 3000)) for name in ("refA", "refB")}
+    header = {
+        "HD": {"VN": "1.6", "SO": "coordinate"},
+        "SQ": [{"SN": name, "LN": len(seq)} for name, seq in refs.items()],
+    }
+    unsorted = tmp_path / "unsorted.bam"
+    with pysam.AlignmentFile(str(unsorted), "wb", header=header) as bam:
+        for index in range(2400):
+            contig = 0 if index < 2000 else 1
+            name = list(refs)[contig]
+            start = 100 if index % 3 == 0 else int(rng.integers(0, 2700))
+            for kind in ("primary", "secondary", "supplementary"):
+                if kind != "primary" and index % 5:
+                    continue
+                read = pysam.AlignedSegment()
+                read.query_name = f"r{index:05d}"
+                # Some primaries are stored without SEQ, as real BAMs have.
+                if index % 97 != 0:
+                    read.query_sequence = refs[name][start : start + 250]
+                    read.query_qualities = pysam.qualitystring_to_array("I" * 250)
+                read.reference_id = contig
+                read.reference_start = start
+                read.cigarstring = "250M"
+                read.mapping_quality = 30
+                read.is_secondary = kind == "secondary"
+                read.is_supplementary = kind == "supplementary"
+                bam.write(read)
+        for index in range(50):
+            read = pysam.AlignedSegment()
+            read.query_name = f"u{index:03d}"
+            read.query_sequence = "ACGT" * 20
+            read.query_qualities = pysam.qualitystring_to_array("I" * 80)
+            read.is_unmapped = True
+            bam.write(read)
+    sorted_bam = tmp_path / "sorted.bam"
+    pysam.sort("-o", str(sorted_bam), str(unsorted))
+    pysam.index(str(sorted_bam))
+    return sorted_bam, refs
+
+
+def _records_by_id(records):
+    def plain(value):
+        return value.tolist() if hasattr(value, "tolist") else value
+
+    return {r["read_id"]: {k: plain(v) for k, v in r.items()} for r in records}
+
+
+@pytest.mark.parametrize("threads", [1, 3])
+def test_scan_ranges_extract_exactly_the_full_reference(tmp_path, threads):
+    from smftools.informatics.bam_functions import extract_read_relative_base_identities
+
+    bam, refs = _clustered_sorted_bam(tmp_path)
+    full = extract_read_relative_base_identities(
+        bam, "refA", refs["refA"], samtools_backend="python", primary_only=True
+    )
+    read_ids, offsets = _read_ids_and_offsets_for_reference(bam, "refA", threads=threads)
+    seqless = {f"r{index:05d}" for index in range(2000) if index % 97 == 0}
+    assert len(read_ids) == 2000
+    # SEQ-less primaries are planned into buckets but never extracted.
+    assert len(full) == 2000 - len(seqless)
+    assert not seqless & {r["read_id"] for r in full}
+
+    pieces = []
+    for bucket, scan_range in _contiguous_buckets(read_ids, offsets, n_buckets=7):
+        got = extract_read_relative_base_identities(
+            bam,
+            "refA",
+            refs["refA"],
+            samtools_backend="python",
+            primary_only=True,
+            read_name_filter=bucket,
+            scan_range=scan_range,
+        )
+        # A bucket's range holds exactly its own reads: nothing from a
+        # neighbouring bucket, the next contig, or the unmapped tail.
+        assert {r["read_id"] for r in got} == bucket - seqless
+        pieces.extend(got)
+
+    assert _records_by_id(pieces) == _records_by_id(full)
+
+
+def test_offsets_are_identical_with_and_without_threads(tmp_path):
+    bam, _refs = _clustered_sorted_bam(tmp_path)
+    assert _read_ids_and_offsets_for_reference(
+        bam, "refB", threads=1
+    ) == _read_ids_and_offsets_for_reference(bam, "refB", threads=4)
 
 
 def test_n_buckets_for_reference_caps_at_max_workers_when_memory_allows():

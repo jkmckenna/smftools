@@ -4112,6 +4112,24 @@ def rebuild_barcode_sidecar_via_dorado_classification(
     return barcode_sidecar
 
 
+def _iter_virtual_offset_range(bam, record: str, start_offset: int, end_offset: int | None):
+    """Yield ``record``'s alignments from BGZF virtual offset ``start_offset``.
+
+    Stops before the record at ``end_offset`` (or, with ``None``, where the
+    contig ends). Offsets come from ``AlignmentFile.tell()`` taken before
+    reading a record, so a bucket boundary lands exactly on a record start.
+    """
+    bam.seek(int(start_offset))
+    while end_offset is None or bam.tell() < end_offset:
+        try:
+            read = next(bam)
+        except StopIteration:
+            return
+        if read.reference_name != record:
+            return
+        yield read
+
+
 def extract_read_relative_base_identities(
     bam_file,
     record,
@@ -4121,6 +4139,7 @@ def extract_read_relative_base_identities(
     read_name_filter: set | None = None,
     start: int | None = None,
     end: int | None = None,
+    scan_range: tuple[int, int | None] | None = None,
 ):
     """Extract aligned reads as query-coordinate ragged records.
 
@@ -4143,6 +4162,12 @@ def extract_read_relative_base_identities(
             which would otherwise double-count a read across two adjacent
             windows it spans.
         end: 0-based exclusive upper bound on ``reference_start``. See ``start``.
+        scan_range: ``(start_offset, end_offset)`` BGZF virtual offsets bounding
+            the records to read, as planned by the raw stage's contiguous
+            buckets; ``end_offset`` may be ``None`` for "to the end of
+            ``record``". Read with pysam directly instead of fetching the whole
+            reference, so a bucket costs its own records rather than a full
+            contig scan (`F59`). All other filters still apply.
 
     Returns:
         list[dict[str, object]]: One validated-compatible ragged record per read.
@@ -4156,10 +4181,15 @@ def extract_read_relative_base_identities(
 
     backend_choice = _resolve_samtools_backend(samtools_backend)
     records = []
-    if backend_choice == "python":
+    if scan_range is not None or backend_choice == "python":
         pysam_mod = _require_pysam()
         with pysam_mod.AlignmentFile(str(bam_file), "rb") as bam:
-            fetch_iter = bam.fetch(record, start, end) if windowed else bam.fetch(record)
+            if scan_range is not None:
+                fetch_iter = _iter_virtual_offset_range(bam, str(record), *scan_range)
+            elif windowed:
+                fetch_iter = bam.fetch(record, start, end)
+            else:
+                fetch_iter = bam.fetch(record)
             for read in fetch_iter:
                 if read.is_unmapped:
                     continue
@@ -4169,6 +4199,12 @@ def extract_read_relative_base_identities(
                 if read_name_filter is not None and segment_id not in read_name_filter:
                     continue
                 if not _in_window(read.reference_start):
+                    continue
+                # A primary record can carry no SEQ ("*"); the samtools path
+                # below skips it, and so must this one -- real BAMs have them
+                # (28 in one 4,000-read bucket), and alignment_to_ragged_record
+                # rejects a sequence that does not span the CIGAR.
+                if read.query_sequence is None or read.cigarstring is None:
                     continue
                 records.append(
                     alignment_to_ragged_record(
