@@ -103,6 +103,10 @@ LATENT_MODELS_SUBDIR = "models"
 LATENT_TASK_CATALOG_SCHEMA_VERSION = 4
 LATENT_GENERATION_SCHEMA_VERSION = 2
 _LATENT_SOURCE_ESTIMATE_DTYPE = "float64"
+_UMAP_N_COMPONENTS = 2
+# UMAP's spectral init solves for n_components + 1 eigenvectors and fails with
+# "k >= N" unless there are more fit reads than that (`F56`).
+_UMAP_MIN_FIT_READS = _UMAP_N_COMPONENTS + 2
 _LATENT_TASK_REQUIRED_COLUMNS = {
     "reference",
     "analysis_mode",
@@ -1036,10 +1040,18 @@ def _fit_matrix_representations(
                 int(getattr(cfg, "latent_knn_neighbors", 15)),
                 max(2, len(fit_indices) - 1),
             )
-            if len(fit_indices) >= 3:
+            if len(fit_indices) < _UMAP_MIN_FIT_READS:
+                logger.warning(
+                    "Skipping UMAP and Leiden for %s: %d fit read(s), UMAP needs at least %d; "
+                    "PCA and NMF are kept",
+                    suffix,
+                    len(fit_indices),
+                    _UMAP_MIN_FIT_READS,
+                )
+            else:
                 model = umap.UMAP(
                     n_neighbors=n_neighbors,
-                    n_components=2,
+                    n_components=_UMAP_N_COMPONENTS,
                     metric="euclidean",
                     random_state=random_state,
                     n_jobs=max(1, int(getattr(cfg, "threads", 1) or 1)),
