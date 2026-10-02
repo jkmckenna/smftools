@@ -417,6 +417,46 @@ def test_fitted_latent_space_transforms_additional_reads():
     assert transformed["leiden_test"].shape == (2,)
 
 
+def test_latent_unit_too_small_for_umap_keeps_pca_and_nmf():
+    # Three fit reads: UMAP's spectral init needs more points than
+    # n_components + 1 and used to crash here ("k >= N", F56).
+    fit = ad.AnnData(np.empty((3, 4)))
+    fit.layers["signal"] = np.asarray(
+        [[0.0, 0.1, 0.0, 0.1], [0.9, 1.0, 0.9, 1.0], [0.5, 0.4, 0.6, 0.5]],
+        dtype=np.float32,
+    )
+    cfg = SimpleNamespace(
+        latent_random_state=0,
+        latent_run_pca_umap=True,
+        latent_run_nmf=True,
+        latent_n_pcs=10,
+        latent_knn_neighbors=15,
+        latent_leiden_resolution=0.1,
+        latent_nmf_components=2,
+        latent_nmf_max_iter=500,
+        threads=1,
+    )
+
+    fitted = partitioned_latent._fit_matrix_representations(
+        fit,
+        layer="signal",
+        mask=np.ones(4, dtype=bool),
+        suffix="small",
+        cfg=cfg,
+        fit_indices=np.arange(fit.n_obs),
+    )
+
+    assert "X_pca_small" in fit.obsm
+    assert "X_nmf_small" in fit.obsm
+    assert "X_umap_small" not in fit.obsm
+    assert "leiden_small" not in fit.obs
+    extra = ad.AnnData(np.empty((1, 4)))
+    extra.layers["signal"] = np.asarray([[0.1, 0.1, 0.0, 0.1]], dtype=np.float32)
+    transformed = partitioned_latent._transform_matrix_representations(extra, fitted)
+    assert "X_pca_small" in transformed
+    assert "X_umap_small" not in transformed
+
+
 def test_partitioned_latent_publishes_catalog_and_thin_spine(tmp_path, monkeypatch):
     frame = pd.DataFrame(
         [
