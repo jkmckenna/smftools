@@ -40,6 +40,8 @@ class RescueSummary:
     n_reads_examined: int = 0
     n_reads_rescued: int = 0
     reassignment_counts: Dict[Tuple[str, str], int] = field(default_factory=dict)
+    # False when nothing was rescued and the output BAM was therefore not written.
+    output_written: bool = True
 
     def to_dataframe(self):
         import pandas as pd
@@ -112,11 +114,15 @@ def rescue_secondary_alignments(
         min_margin_fraction: Minimum relative advantage (as a fraction of the
             winning record's own `query_alignment_length`) required in
             addition to `min_margin_bp`. Both must hold.
-        threads: Optional thread count forwarded to BAM re-indexing.
+        threads: Optional thread count for BGZF decompression/compression in
+            both passes and for BAM re-indexing.
 
     Returns:
-        RescueSummary with counts of reads examined/rescued and a breakdown
-        of (old_chromosome, new_chromosome) reassignment counts.
+        RescueSummary with counts of reads examined/rescued, a breakdown of
+        (old_chromosome, new_chromosome) reassignment counts, and
+        ``output_written``. When no read is rescued, ``output_path`` is not
+        written and ``output_written`` is False: ``bam_path`` is already the
+        correct result.
 
     Notes:
         Supplementary alignments are never inspected or modified -- they
@@ -129,6 +135,9 @@ def rescue_secondary_alignments(
     pysam_mod = _require_pysam()
     bam_path = str(bam_path)
     output_path = str(output_path)
+    # BGZF (de)compression is the cost of both passes; without `threads` pysam
+    # does it on the calling thread (`F53`).
+    bgzf_threads = {"threads": int(threads)} if threads and int(threads) > 1 else {}
 
     # ------------------------------------------------------------------
     # Pass 1 (read-only): for each read, find the best-covering record per
@@ -145,7 +154,7 @@ def rescue_secondary_alignments(
     n_reads_examined = 0
     unknown_records: set[str] = set()
 
-    with pysam_mod.AlignmentFile(bam_path, "rb") as bam:
+    with pysam_mod.AlignmentFile(bam_path, "rb", **bgzf_threads) as bam:
         for read in bam.fetch(until_eof=True):
             if read.is_unmapped or read.is_supplementary:
                 continue
@@ -233,15 +242,28 @@ def rescue_secondary_alignments(
         dict(reassignment_counts),
     )
 
+    if not promotions:
+        # Nothing to re-flag: the input is already the answer. Rewriting it
+        # would cost a full decompress/recompress of the BAM for no change
+        # (`F53`), so leave it in place and tell the caller.
+        logger.info("rescue_secondary_alignments: no reads rescued; input BAM left unchanged.")
+        return RescueSummary(
+            n_reads_examined=n_reads_examined,
+            n_reads_rescued=0,
+            reassignment_counts={},
+            output_written=False,
+        )
+
     # ------------------------------------------------------------------
     # Pass 2: rewrite the BAM, flipping the secondary FLAG bit for exactly
     # the winning/demoted record pair per rescued read. Records aren't
     # reordered, so the output stays coordinate-sorted -- only re-indexing
     # is needed, not a re-sort.
     # ------------------------------------------------------------------
+    logger.info("rescue_secondary_alignments: rewriting BAM with corrected flags.")
     with (
-        pysam_mod.AlignmentFile(bam_path, "rb") as in_bam,
-        pysam_mod.AlignmentFile(output_path, "wb", header=in_bam.header) as out_bam,
+        pysam_mod.AlignmentFile(bam_path, "rb", **bgzf_threads) as in_bam,
+        pysam_mod.AlignmentFile(output_path, "wb", header=in_bam.header, **bgzf_threads) as out_bam,
     ):
         for read in in_bam.fetch(until_eof=True):
             promotion = promotions.get(read.query_name)
@@ -260,6 +282,7 @@ def rescue_secondary_alignments(
             out_bam.write(read)
 
     _index_bam_with_pysam(output_path, threads=threads)
+    logger.info("rescue_secondary_alignments: rewrite and re-index complete.")
 
     return RescueSummary(
         n_reads_examined=n_reads_examined,

@@ -68,6 +68,12 @@ def _read_records(bam_path):
     return out
 
 
+def _assert_not_rewritten(summary, out_path):
+    """Nothing rescued: the input BAM is the result and no output is written."""
+    assert summary.output_written is False
+    assert not out_path.exists()
+
+
 # pysam CIGAR op codes: M(atch)=0, S(oft clip)=4
 CIGAR_M, CIGAR_S = 0, 4
 
@@ -107,6 +113,7 @@ def test_rescue_swaps_worse_primary_for_better_secondary(tmp_path):
     assert summary.n_reads_examined == 1
     assert summary.n_reads_rescued == 1
     assert summary.reassignment_counts == {("6B6", "6B6_enh_del"): 1}
+    assert summary.output_written
 
     records = {(r["reference_name"], r["reference_start"]): r for r in _read_records(out_path)}
     winner = records[("6B6_enh_del_top", 100)]
@@ -149,7 +156,8 @@ def test_rescue_leaves_near_tied_candidates_unchanged(tmp_path):
     summary = rescue_secondary_alignments(bam_path, out_path, record_chromosome)
 
     assert summary.n_reads_rescued == 0
-    records = _read_records(out_path)
+    _assert_not_rewritten(summary, out_path)
+    records = _read_records(bam_path)
     primary = next(r for r in records if not r["is_secondary"])
     assert primary["reference_name"] == "6B6_top"
     assert primary["mapping_quality"] == 5
@@ -188,7 +196,8 @@ def test_rescue_ignores_secondary_to_same_chromosome(tmp_path):
     summary = rescue_secondary_alignments(bam_path, out_path, record_chromosome)
 
     assert summary.n_reads_rescued == 0
-    primary = next(r for r in _read_records(out_path) if not r["is_secondary"])
+    _assert_not_rewritten(summary, out_path)
+    primary = next(r for r in _read_records(bam_path) if not r["is_secondary"])
     assert primary["reference_name"] == "6B6_5mC_top"
 
 
@@ -225,7 +234,8 @@ def test_rescue_ignores_supplementary_alignments(tmp_path):
     summary = rescue_secondary_alignments(bam_path, out_path, record_chromosome)
 
     assert summary.n_reads_rescued == 0
-    records = _read_records(out_path)
+    _assert_not_rewritten(summary, out_path)
+    records = _read_records(bam_path)
     primary = next(r for r in records if not r["is_secondary"] and not r["is_supplementary"])
     assert primary["reference_name"] == "6B6_top"
     assert primary["mapping_quality"] == 4
@@ -258,10 +268,61 @@ def test_rescue_passthrough_for_single_alignment_reads(tmp_path):
 
     assert summary.n_reads_examined == 1
     assert summary.n_reads_rescued == 0
-    records = _read_records(out_path)
+    _assert_not_rewritten(summary, out_path)
+    records = _read_records(bam_path)
     assert len(records) == 1
     assert records[0]["mapping_quality"] == 42
     assert not records[0]["is_secondary"]
+
+
+@requires_pysam
+def test_rescue_threaded_output_matches_unthreaded(tmp_path):
+    bam_path = tmp_path / "in.bam"
+    records = []
+    # Many reads, each with a worse primary and a better secondary, plus
+    # single-alignment reads, so the output spans more than one BGZF block.
+    for i in range(400):
+        start = 100 + (i % 50)
+        records.append(
+            {
+                "name": f"rescued{i}",
+                "contig": 0,
+                "start": start,
+                "cigar": [(CIGAR_M, 2000), (CIGAR_S, 300)],
+                "mapping_quality": 7,
+            }
+        )
+        records.append(
+            {
+                "name": f"rescued{i}",
+                "contig": 1,
+                "start": start,
+                "cigar": [(CIGAR_M, 2300)],
+                "secondary": True,
+                "mapping_quality": 0,
+            }
+        )
+        records.append(
+            {"name": f"single{i}", "contig": 0, "start": start, "cigar": [(CIGAR_M, 2000)]}
+        )
+    records.sort(key=lambda r: (r["contig"], r["start"]))
+    _write_bam(bam_path, [("6B6_top", 5000), ("6B6_enh_del_top", 4500)], records)
+    record_chromosome = {"6B6_top": "6B6", "6B6_enh_del_top": "6B6_enh_del"}
+
+    serial = rescue_secondary_alignments(bam_path, tmp_path / "serial.bam", record_chromosome)
+    threaded = rescue_secondary_alignments(
+        bam_path, tmp_path / "threaded.bam", record_chromosome, threads=4
+    )
+
+    assert serial == threaded
+    assert threaded.n_reads_rescued == 400
+
+    def full_records(path):
+        with _pysam.AlignmentFile(str(path), "rb") as fh:
+            return [read.to_string() for read in fh.fetch(until_eof=True)]
+
+    assert full_records(tmp_path / "threaded.bam") == full_records(tmp_path / "serial.bam")
+    assert (tmp_path / "threaded.bam.bai").exists()
 
 
 @requires_pysam
