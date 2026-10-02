@@ -1,8 +1,8 @@
 # Pipeline throughput (`THR`)
 
-**Status:** proposed. Plan drafted on `docs/pipeline-throughput-plan`, cut from
-`968383c`. No implementation branch yet; each item gets its own
-`fix/<description>` branch from `main`.
+**Status:** proposed; `THR-01` and `THR-02` implemented on their own
+`fix/<description>` branches from `968383c`, not yet merged. Plan drafted on
+`docs/pipeline-throughput-plan`.
 
 Motivated by `F53`-`F57` in `logs/pipeline_findings.md`, measured on a
 14-experiment `experiment batch full` regeneration (conversion and deaminase,
@@ -13,8 +13,8 @@ measurements.
 
 | item | status | evidence |
 |---|---|---|
-| `THR-01` alignment rescue: threaded BGZF, skip the rewrite when nothing is rescued | proposed | -- |
-| `THR-02` latent: derive the per-unit read floor from method parameters; no crash on tiny units | proposed | -- |
+| `THR-01` alignment rescue: threaded BGZF, skip the rewrite when nothing is rescued | implemented, not merged | `dc1f45c` on `fix/alignment-rescue-bam-threads`; `test_rescue_threaded_output_matches_unthreaded`; `F53` follow-up |
+| `THR-02` latent: skip UMAP (not the unit) below UMAP's own minimum; no crash on tiny units | implemented, not merged | `5c890ba` on `fix/latent-unit-read-floor`; `test_latent_unit_too_small_for_umap_keeps_pca_and_nmf` |
 | `THR-03` duplicate detection: size-derived group memory estimate, largest-first dispatch | proposed | -- |
 | `THR-04` latent: fit units in a worker pool | proposed | -- |
 | `THR-05` `experiment batch`: run experiments concurrently under the memory envelope | proposed | -- |
@@ -58,19 +58,26 @@ recorded in a finding, before and after.
 **Not in scope.** Replacing the per-record Python loop. Revisit only if `F53`'s
 follow-up shows it is the floor once compression is parallel.
 
-### `THR-02` Latent: a parameter-derived unit floor
+### `THR-02` Latent: skip UMAP, not the unit, below UMAP's minimum
 
-`tools/partitioned_latent.py`, `config/experiment_config.py`.
+`tools/partitioned_latent.py`.
 
-- Compute the effective minimum read count per unit from the methods that will
-  run on it: UMAP needs N > `n_neighbors` and N > `n_components` + 1 for
-  spectral init; PCA/NMF need N > `n_components`. Skip, with the existing
-  warning, any unit below `max(latent_min_reads, derived_floor)`.
-- Keep `latent_min_reads` as a user floor; do not silently raise the default.
+**As implemented (revised from the first draft).** The first draft proposed a
+parameter-derived whole-unit floor. Measuring first showed that was the wrong
+shape: with umap 0.5.12 the failure is exactly N = `n_components` + 1 = 3 fit
+reads; N >= 4 succeeds, including disconnected graphs with 1-4 point
+components and all-identical rows, and `n_neighbors` is already clamped to
+N - 1. PCA and NMF already clamp their component counts. So the fix gates
+only UMAP (and its Leiden clustering) on `_UMAP_MIN_FIT_READS` =
+`n_components` + 2 and logs a warning; PCA/NMF are kept. Downstream already
+tolerated a unit without UMAP (availability is per unit, and
+`latent_min_reads: 2` could reach that state before). `latent_min_reads` is
+unchanged.
 
-**Acceptance.** A unit test with N between the old floor (3) and `n_neighbors`
-that crashes today and is skipped with a warning afterwards. A full-latent
-fixture result unchanged for units above the floor.
+**Acceptance.** Met: a 3-read unit test reproduces the production
+`k >= N` error before the fix and keeps PCA/NMF without UMAP after it. Existing
+latent tests pass. Not yet verified by a real-data latent rerun on the new
+code.
 
 ### `THR-03` Duplicate detection: size-derived group estimate, largest-first dispatch
 
