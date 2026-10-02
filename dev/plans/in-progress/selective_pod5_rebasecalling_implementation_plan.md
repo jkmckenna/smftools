@@ -522,8 +522,7 @@ inside `lineage.complete`.
 
 ### SRB-01 — request, selection, and read-only planning contract
 
-**Status:** `SRB-01a` merged in PR #515. `SRB-01b` is implemented on
-`feature/rebasecall-selection-freezing` and awaiting commit/review. Accepted
+**Status:** `SRB-01a` merged in PR #515, `SRB-01b` in PR #518. Accepted
 plans can now freeze authoritative selections during run preparation without
 starting Dorado or publishing lineage state.
 
@@ -554,7 +553,7 @@ blocking reason without creating scientific artifacts.
 ### SRB-02 — durable POD5 origin identity and historical resolution
 
 **Status:** `SRB-02a` merged in PR #516 and `SRB-02b` merged in PR #517.
-Selection freezing is implemented in the follow-on `SRB-01b` branch.
+Selection freezing landed in `SRB-01b` (PR #518).
 
 **Delivery split**
 
@@ -594,8 +593,7 @@ POD5 UUID with recorded evidence or blocks before basecalling.
 
 ### SRB-03 — checksum-based source resolver and optional signal materialization
 
-**Status:** `SRB-03a` merged in PR #519. `SRB-03b` is implemented on
-`feature/rebasecall-signal-materialization` and awaiting commit/review.
+**Status:** `SRB-03a` merged in PR #519, `SRB-03b` in PR #520.
 Exact-byte source resolution, atomic filtered signal publication, strict
 artifact validation, and replay without the original sources are complete.
 
@@ -690,8 +688,7 @@ basecall manifest or fails without a reusable commit.
 
 **Status:** `SRB-05a` (transaction and provenance) is **merged** (PR #523,
 `c22574d`; main `3e617e5`); `SRB-05b` (the real raw stage inside that
-transaction) is implemented on `feature/rebasecall-lineage-raw-stage`
-(`c248f64`). See the ledger rows.
+transaction) is merged (PR #524, `c248f64`). See the ledger rows.
 
 **Scope amendment.** The third scope bullet below — "stage an ordinary
 experiment run beneath a unique lineage root" — predates the artifact layout in

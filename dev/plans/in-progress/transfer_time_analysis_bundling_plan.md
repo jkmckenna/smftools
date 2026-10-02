@@ -1,10 +1,19 @@
 # Transfer-time analysis bundling (`TAB`)
 
-**Status:** in progress. `TAB-01` (`data bundle-analysis`) is implemented on
-`feature/tab-01-bundle-analysis`. `TAB-02` (`data unbundle-analysis`) is
-implemented on `feature/tab-02-unbundle-analysis` -- see its note for the
-verification scope that actually shipped. `TAB-03` (real-data round-trip
-qualification) remains open.
+**Status:** in progress. `TAB-01` (`data bundle-analysis`) merged (#630). `TAB-02` (`data
+unbundle-analysis`) merged (#631; directory checksum fix #635) -- see its note
+for the verification scope that actually shipped. `TAB-03` (real-data round-trip
+qualification) has a first real-data run (see Work items below, `F52`):
+correctness holds, but no configuration tested so far actually beat plain
+`rsync` -- bundling lost by 2.5x on an exFAT destination and, once that was
+controlled for, still lost by 1.6x on same-filesystem APFS, because bundling
+does three I/O passes over the data (write into tar, extract out, re-checksum)
+against rsync's one. The plan's motivating win requires a transfer path slow
+enough per-file that collapsing file count outweighs that extra I/O -- neither
+tested configuration reached one. `TAB-03` remains open pending a test at the
+plan's actual motivating scale (millions of files) or over a real network
+transport, since local-disk and single-generation tests so far have not found
+the regime where bundling helps.
 
 ## Problem
 
@@ -117,9 +126,9 @@ smftools data sync RUN_ROOT ...
 
 | item | status | evidence |
 |---|---|---|
-| `TAB-01` `data bundle-analysis`: tar every complete, not-yet-bundled generation under a run root | implemented | `tests/unit/data/test_analysis_bundle.py`, `tests/unit/test_data_cli.py` (`test_bundle_analysis_cli_*`) |
-| `TAB-02` `data unbundle-analysis`: extract, stage-then-rename, verify | implemented | `tests/unit/data/test_analysis_bundle.py` (`test_unbundle_analysis_generations_*`), `tests/unit/test_data_cli.py` (`test_unbundle_analysis_cli_*`) |
-| `TAB-03` real-data round-trip qualification: bundle, copy, unbundle, validate a real partitioned store; confirm file-count and wall-clock improvement over a plain `rsync` of the same tree | proposed | -- |
+| `TAB-01` `data bundle-analysis`: tar every complete, not-yet-bundled generation under a run root | merged (#630) | `tests/unit/data/test_analysis_bundle.py`, `tests/unit/test_data_cli.py` (`test_bundle_analysis_cli_*`) |
+| `TAB-02` `data unbundle-analysis`: extract, stage-then-rename, verify | merged (#631, #635) | `tests/unit/data/test_analysis_bundle.py` (`test_unbundle_analysis_generations_*`), `tests/unit/test_data_cli.py` (`test_unbundle_analysis_cli_*`) |
+| `TAB-03` real-data round-trip qualification: bundle, copy, unbundle, validate a real partitioned store; confirm file-count and wall-clock improvement over a plain `rsync` of the same tree | blocked -- correctness confirmed, no tested configuration beat plain `rsync` yet (lost by 2.5x on exFAT, 1.6x on same-filesystem APFS) | `logs/pipeline_findings.md` `F52` |
 
 **`TAB-02` shipped generic checksum re-verification, not a dispatch to each
 stage's own semantic validator, and that turned out to be the right call
@@ -171,3 +180,16 @@ manifest-schema change to those stages, not `TAB-02`'s own job.
 - **Neither zarr v3 sharding nor coarser source-side partitioning is
   revisited by this plan** (2026-08-28). Both were tested/considered and
   rejected before this plan was written -- see Problem above.
+- **A metadata-slow filesystem (exFAT and likely similar) should never hold
+  the live, unpacked analysis tree -- source or destination** (2026-08-31,
+  from `F52`). The partitioned write path (`preprocessing/partitioned_executor.py`,
+  `tools/partitioned_hmm.py`/`partitioned_spatial.py`) writes hundreds of
+  thousands of small per-task stores by design; that pattern hits the same
+  per-file metadata cost `F52` measured for `unbundle`, so a slow-metadata
+  filesystem taxes every pipeline run, not just transfers -- not directly
+  measured for the live write path, but the same root cause. Such a
+  filesystem's only sound role is as a passive carrier for the bundled
+  (`.tar`) form: bundle on a native source filesystem, ship the tar, and
+  unbundle onto a native destination filesystem -- never `unbundle --to` a
+  slow-metadata target, and never point the pipeline's own `run_root` at
+  one.

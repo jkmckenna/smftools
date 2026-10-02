@@ -1,8 +1,7 @@
 # Span-agnostic duplicate detection (`DSA`)
 
-**Status:** in progress. Drafted on `fix/duplicate-detection-span-agnostic`, cut
-from `3301793`. Not yet committed, so the evidence column names tests rather
-than shas; replace them as items land.
+**Status:** in progress. `DSA-01`–`DSA-04` merged (#594), `DSA-06` merged (#638);
+`DSA-05` measured on real data, with the hierarchical-cap revisit still open.
 
 Motivated by `F51` in `logs/pipeline_findings.md`, which reproduces the defect
 and dates it. This plan does not restate that investigation -- read it first.
@@ -69,12 +68,12 @@ survivor reshuffle. Fixing candidate generation fixes both.
 
 | item | status | evidence |
 |---|---|---|
-| `DSA-01` anchor-window planner and anchored banding passes | drafted | `test_differing_span_duplicates_are_clustered`, `test_plan_anchor_windows_selects_only_covering_reads` |
-| `DSA-02` derive the window geometry from `min_overlap_positions` | drafted | `test_random_fragmentation_recovers_every_comparable_pair`, `test_derived_geometry_reaches_the_configured_minimum_overlap` |
-| `DSA-03` config surface and semantic fingerprint entries | drafted | `duplicate_detection_span_agnostic_banding` and three siblings in `semantic_upgrade.py` |
-| `DSA-04` route the hierarchical-skip notice to the logger | drafted | `test_hierarchical_topup_skipped_above_representative_cap` |
+| `DSA-01` anchor-window planner and anchored banding passes | merged (#594) | `test_differing_span_duplicates_are_clustered`, `test_plan_anchor_windows_selects_only_covering_reads` |
+| `DSA-02` derive the window geometry from `min_overlap_positions` | merged (#594) | `test_random_fragmentation_recovers_every_comparable_pair`, `test_derived_geometry_reaches_the_configured_minimum_overlap` |
+| `DSA-03` config surface and semantic fingerprint entries | merged (#594) | `duplicate_detection_span_agnostic_banding` and three siblings in `semantic_upgrade.py` |
+| `DSA-04` route the hierarchical-skip notice to the logger | merged (#594) | `test_hierarchical_topup_skipped_above_representative_cap` |
 | `DSA-05` qualify on a real fragmented run; revisit the hierarchical cap | measured | see Real-data qualification below; cap revisit still open |
-| `DSA-06` skip anchored banding for groups whose reads already share one span | implemented, not merged | `cd30c34` on `fix/dsa-skip-banding-uniform-spans`; `test_uniform_span_group_skips_anchored_passes_and_still_clusters`; `F60` |
+| `DSA-06` skip anchored banding for groups whose reads already share one span | merged (#638) | `cd30c34` on `fix/dsa-skip-banding-uniform-spans`; `test_uniform_span_group_skips_anchored_passes_and_still_clusters`; `F60` |
 
 ### `DSA-01` — anchored banding
 
