@@ -67,7 +67,11 @@ _STAGE_ALGORITHM_VERSIONS = {
     #    reads on a spike-in reference are retained rather than filtered. Both
     #    change what raw publishes, and generation 45b4aefa already exists at
     #    "2", so this bumps rather than amending the note above.
-    "raw": "3",
+    # 4: `F58` -- untagged reads take the sequence classifier's barcode instead
+    #    of their read-group ID, and tags naming another kit family no longer
+    #    outrank it. Changes Barcode/Sample in raw obs for every BAM input;
+    #    generations already exist at "3".
+    "raw": "4",
     # 2: mismatch integer-encoding clustermaps added to the stage output
     #    (EGL-26).
     "preprocess": "2",
