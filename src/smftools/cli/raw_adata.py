@@ -1089,50 +1089,67 @@ def _raw_result_work_counts(result) -> tuple[int, int]:
     return rows, bases
 
 
-def _read_ids_for_reference(aligned_bam: Path, record: str) -> list[str]:
-    """Primary-mapped read_ids for one reference, in BAM traversal order.
+def _read_ids_and_offsets_for_reference(
+    aligned_bam: Path, record: str, *, threads: int = 1
+) -> tuple[list[str], list[int]]:
+    """Primary-mapped read_ids for one reference, in BAM order, with offsets.
 
-    A cheap pre-scan (name only, no CIGAR/sequence/tag decode -- the
-    expensive part of extraction) used to build balanced read-id buckets
-    before dispatching the real per-bucket extraction work; see
-    ``_bucket_read_ids``.
+    A cheap pre-scan (no per-base extraction) used to plan contiguous buckets
+    before dispatching the real per-bucket work; see ``_contiguous_buckets``.
+    Each read's BGZF virtual offset is taken with ``tell()`` *before* the
+    record is read, so a bucket can start exactly on its first read.
     """
     import pysam
 
     read_ids: list[str] = []
-    with pysam.AlignmentFile(str(aligned_bam), "rb") as bam:
-        for read in bam.fetch(record):
+    offsets: list[int] = []
+    open_kwargs = {"threads": int(threads)} if threads and int(threads) > 1 else {}
+    with pysam.AlignmentFile(str(aligned_bam), "rb", **open_kwargs) as bam:
+        reads = bam.fetch(record)
+        while True:
+            offset = bam.tell()
+            try:
+                read = next(reads)
+            except StopIteration:
+                break
             if read.is_unmapped or read.is_secondary or read.is_supplementary:
                 continue
             read_ids.append(alignment_segment_id(read))
-    return read_ids
+            offsets.append(offset)
+    return read_ids, offsets
 
 
-def _bucket_read_ids(read_ids: list[str], n_buckets: int) -> list[set[str]]:
-    """Split ``read_ids`` into ``n_buckets`` buckets by round-robin assignment.
+def _contiguous_buckets(
+    read_ids: list[str], offsets: list[int], n_buckets: int
+) -> list[tuple[set[str], tuple[int, int | None]]]:
+    """Split a reference's reads into ``n_buckets`` contiguous runs in BAM order.
 
-    Genomic-position windowing was tried first (split ``[0, record_length)``
-    into sub-ranges, fetch each independently) and found badly imbalanced on
-    real amplicon data: many reads share an *exact* ``reference_start`` (PCR/
-    library duplication at a fixed primer site), so no position-based
-    boundary can split them apart -- one window still absorbed the majority
-    of a reference's reads regardless of how the boundaries were chosen
-    (equal-width, even read-count quantiles -- both tried, both still
-    imbalanced by that clustering). Round-robin over read *identity* instead
-    of position sidesteps the problem entirely: buckets differ in size by at
-    most one read, regardless of how reads cluster genomically. Each worker
-    still fetches the *whole* reference (cheap iteration) but only extracts
-    reads in its own bucket, via ``extract_read_relative_base_identities``'s
-    existing ``read_name_filter`` parameter -- trading N-way redundant (but
-    cheap) iteration for exact balance, rather than N-way redundant (and
-    expensive) per-base extraction.
+    Each bucket is ``(read_ids, (start_offset, end_offset))``: the run's read
+    ids and the virtual-offset range holding them, ``end_offset`` being the
+    next bucket's first read (``None`` for the last bucket, "to the end of the
+    reference"). A worker reads only its range.
+
+    The split is by *count*, not by genomic position, so it keeps the balance
+    the earlier round-robin split was introduced for: position windows were
+    badly imbalanced on amplicons, where many reads share an exact
+    ``reference_start``, but a count split puts the same number of reads in
+    every bucket (sizes differ by at most one) however they cluster. What
+    changes is the cost. Round-robin buckets each had to scan the whole
+    reference to find their own reads, and that scan was not cheap: on a
+    740k-read reference it was 97% of every task (`F59`).
     """
-    if n_buckets <= 1:
-        return [set(read_ids)] if read_ids else []
-    buckets: list[set[str]] = [set() for _ in range(n_buckets)]
-    for index, read_id in enumerate(read_ids):
-        buckets[index % n_buckets].add(read_id)
-    return [bucket for bucket in buckets if bucket]
+    if not read_ids:
+        return []
+    n_buckets = max(1, min(int(n_buckets), len(read_ids)))
+    base, extra = divmod(len(read_ids), n_buckets)
+    buckets: list[tuple[set[str], tuple[int, int | None]]] = []
+    lo = 0
+    for index in range(n_buckets):
+        hi = lo + base + (1 if index < extra else 0)
+        end_offset = offsets[hi] if hi < len(read_ids) else None
+        buckets.append((set(read_ids[lo:hi]), (offsets[lo], end_offset)))
+        lo = hi
+    return buckets
 
 
 def _n_buckets_for_reference(
@@ -1196,7 +1213,7 @@ def _split_modkit_tsv_by_bucket(
     ~40GB loaded whole streams through in fixed-size pieces here), routing
     each chunk's rows to their bucket's output file by ``read_id`` using the
     same read-id -> bucket assignment already computed for the pysam
-    backend's per-reference parallel dispatch (``_bucket_read_ids``), so
+    backend's per-reference parallel dispatch (``_contiguous_buckets``), so
     both backends parallelize identically from the caller's point of view.
     Rows whose read_id has no bucket assignment (not a wanted primary read)
     are dropped -- the same effective filter as ``_attach_direct_signals``'s
@@ -1242,6 +1259,7 @@ def _extract_convertible_reference(
     metrics: dict,
     info,
     deaminase: bool,
+    scan_range: tuple[int, int | None] | None = None,
     *,
     cfg,
     aligned_bam: Path,
@@ -1254,7 +1272,7 @@ def _extract_convertible_reference(
     ``_map_references_parallel`` -- see ``_build_ragged_records_streaming_
     convertible``. ``read_name_filter`` may be a read-id bucket (parallelizing
     a single large/deep reference across several workers, see
-    ``_bucket_read_ids``) or ``None`` (the whole reference, one bucket).
+    ``_contiguous_buckets``) or ``None`` (the whole reference, one bucket).
     ``metrics`` must already be sliced down to just this bucket's read_ids by
     the caller -- passing the whole-experiment metrics dict (tens of MB) to
     every one of dozens of worker tasks was itself the dominant cost of
@@ -1277,6 +1295,7 @@ def _extract_convertible_reference(
         samtools_backend=cfg.samtools_backend,
         primary_only=True,
         read_name_filter=read_name_filter,
+        scan_range=scan_range,
     )
     if not extracted:
         return None, []
@@ -1309,6 +1328,7 @@ def _extract_direct_reference(
     sequence: str,
     read_name_filter: set[str] | None,
     metrics: dict,
+    scan_range: tuple[int, int | None] | None = None,
     *,
     cfg,
     aligned_bam: Path,
@@ -1331,6 +1351,7 @@ def _extract_direct_reference(
         samtools_backend=cfg.samtools_backend,
         primary_only=True,
         read_name_filter=read_name_filter,
+        scan_range=scan_range,
     )
     if not extracted:
         return None, []
@@ -1363,6 +1384,7 @@ def _extract_direct_reference_modkit(
     read_name_filter: set[str] | None,
     metrics: dict,
     split_tsv_path: Path | None,
+    scan_range: tuple[int, int | None] | None = None,
     *,
     cfg,
     aligned_bam: Path,
@@ -1386,6 +1408,7 @@ def _extract_direct_reference_modkit(
         samtools_backend=cfg.samtools_backend,
         primary_only=True,
         read_name_filter=read_name_filter,
+        scan_range=scan_range,
     )
     if not extracted:
         return None, []
@@ -1499,7 +1522,7 @@ def _build_ragged_records_streaming_convertible(
         # just one item per reference -- parallelizing per-reference alone
         # caps concurrency at the reference count and load-balances poorly
         # when read depth is uneven across references (see
-        # _n_buckets_for_reference/_bucket_read_ids).
+        # _n_buckets_for_reference/_contiguous_buckets).
         #
         # IMPORTANT: reference_map has one entry per alignment target, not one
         # per chromosome -- conversion modality aligns against multiple
@@ -1515,13 +1538,15 @@ def _build_ragged_records_streaming_convertible(
         for planned, (record, (_length, sequence)) in enumerate(reference_map.items(), start=1):
             info = record_info[record]
             record_chromosome[record] = info.chromosome
-            read_ids = _read_ids_for_reference(aligned_bam, record)
+            read_ids, offsets = _read_ids_and_offsets_for_reference(
+                aligned_bam, record, threads=max_workers
+            )
             n_buckets = _n_buckets_for_reference(
                 len(read_ids),
                 max_workers,
                 max_reads_per_bucket=int(getattr(cfg, "raw_bucket_max_reads", 4000)),
             )
-            buckets = _bucket_read_ids(read_ids, n_buckets)
+            buckets = _contiguous_buckets(read_ids, offsets, n_buckets)
             buckets_remaining[record] = len(buckets)
             _log_planning_progress(
                 "bucketing references",
@@ -1532,12 +1557,12 @@ def _build_ragged_records_streaming_convertible(
                 reads=len(read_ids),
                 buckets=len(buckets),
             )
-            for bucket in buckets:
+            for bucket, scan_range in buckets:
                 # Sliced to this bucket's own read_ids -- passing the whole
                 # experiment's metrics dict to every bucket task is itself the
                 # dominant IPC cost at scale (see _extract_convertible_reference).
                 metrics_slice = {rid: metrics[rid] for rid in bucket if rid in metrics}
-                items.append((record, sequence, bucket, metrics_slice, info, deaminase))
+                items.append((record, sequence, bucket, metrics_slice, info, deaminase, scan_range))
         worker_kwargs = dict(
             cfg=cfg,
             aligned_bam=aligned_bam,
@@ -1688,13 +1713,15 @@ def _build_ragged_records_streaming_direct(
         for planned, (record, (_record_length, sequence)) in enumerate(
             reference_map.items(), start=1
         ):
-            read_ids = _read_ids_for_reference(aligned_bam, record)
+            read_ids, offsets = _read_ids_and_offsets_for_reference(
+                aligned_bam, record, threads=max_workers
+            )
             n_buckets = _n_buckets_for_reference(
                 len(read_ids),
                 max_workers,
                 max_reads_per_bucket=int(getattr(cfg, "raw_bucket_max_reads", 4000)),
             )
-            buckets = _bucket_read_ids(read_ids, n_buckets)
+            buckets = _contiguous_buckets(read_ids, offsets, n_buckets)
             buckets_remaining[record] = len(buckets)
             _log_planning_progress(
                 "bucketing references",
@@ -1705,15 +1732,17 @@ def _build_ragged_records_streaming_direct(
                 reads=len(read_ids),
                 buckets=len(buckets),
             )
-            for bucket in buckets:
+            for bucket, scan_range in buckets:
                 metrics_slice = {rid: metrics[rid] for rid in bucket if rid in metrics}
                 if backend == "modkit":
                     for read_id in bucket:
                         read_id_to_bucket_id[read_id] = bucket_id_counter
-                    items.append((record, sequence, bucket, metrics_slice, bucket_id_counter))
+                    items.append(
+                        (record, sequence, bucket, metrics_slice, bucket_id_counter, scan_range)
+                    )
                     bucket_id_counter += 1
                 else:
-                    items.append((record, sequence, bucket, metrics_slice))
+                    items.append((record, sequence, bucket, metrics_slice, scan_range))
 
         split_dir: Path | None = None
         if backend == "modkit":
@@ -1722,8 +1751,8 @@ def _build_ragged_records_streaming_direct(
                 list(mod_tsv_paths), read_id_to_bucket_id, split_dir
             )
             items = [
-                (record, sequence, bucket, metrics_slice, split_paths.get(bucket_id))
-                for record, sequence, bucket, metrics_slice, bucket_id in items
+                (record, sequence, bucket, metrics_slice, split_paths.get(bucket_id), scan_range)
+                for record, sequence, bucket, metrics_slice, bucket_id, scan_range in items
             ]
 
         worker = (

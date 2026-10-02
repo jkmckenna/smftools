@@ -18,6 +18,7 @@ measurements.
 | `THR-03` duplicate detection: size-derived group memory estimate, largest-first dispatch | proposed | -- |
 | `THR-04` latent: fit units in a worker pool | proposed | -- |
 | `THR-05` `experiment batch`: run experiments concurrently under the memory envelope | proposed | -- |
+| `THR-06` raw extraction: contiguous buckets read by virtual-offset range, not a full-contig scan per bucket | implemented, not merged | `7f33fbb` on `fix/raw-contiguous-shards`; `test_scan_ranges_extract_exactly_the_full_reference`; `F59` |
 
 Ordered by value per unit of risk. `THR-01` and `THR-02` are small and
 independent; `THR-03` should land before `THR-05`, because concurrent
@@ -141,6 +142,47 @@ no watchdog kill on a batch that completes cleanly at `--jobs 1`.
 `THR-01`, `THR-03` and `THR-04` close most of the serial time, this may not be
 worth its complexity. `BCS-09` already notes that no batch orchestrator exists
 to enforce scheduling within.
+
+### `THR-06` Raw extraction: one scan per reference, not one per bucket
+
+`cli/raw_adata.py`, `informatics/bam_functions.py`. Motivated by `F59`.
+
+Raw extraction split each reference's reads round-robin into buckets of
+`raw_bucket_max_reads`, and every bucket task streamed the *whole* reference
+through `samtools view` to find its own reads. The docstring called that scan
+cheap; on a 740k-read reference it was 97% of every task.
+
+**As implemented.**
+
+- The existing per-reference pre-scan (`_read_ids_and_offsets_for_reference`)
+  now runs threaded and records each primary read's BGZF virtual offset,
+  taken with `tell()` before the record.
+- `_contiguous_buckets` splits those reads into the same number of buckets,
+  but as contiguous runs in BAM order, sizes differing by at most one. Each
+  bucket carries `(start_offset, end_offset)`. The split is by count, so the
+  balance the round-robin split existed for -- position windows were badly
+  imbalanced on amplicons with pile-ups at primer sites -- is unchanged.
+- `extract_read_relative_base_identities(scan_range=...)` seeks to the
+  bucket's start with pysam and stops at its end (or the reference's end).
+  The read-name filter still applies.
+- The pysam path now skips primary records stored without SEQ, as the
+  samtools path always has. Real BAMs carry them (28 in one 4,000-read
+  bucket); without the skip the pysam path raised on the first one. This was
+  latent in the existing `python` backend too.
+
+**Acceptance.** Met. On real data (a 740k-read reference, 185 buckets),
+records from the new path are identical, field for field, to the samtools
+full-scan path for the first, middle and last buckets: 3.4s against 77.7s per
+bucket (22-23x; 165x for the last). Planning the whole reference took 4.3s
+threaded. Unit tests cover range extraction against a full-reference
+extraction on a multi-block BAM with pile-ups, secondary/supplementary and
+SEQ-less records, a following contig and an unmapped tail, with planning
+threads on and off.
+
+**Raw algorithm version not bumped.** Per-read records are identical; only
+which reads share a bucket changes, and bucket completion order already made
+shard layout run-dependent. Pending regenerations are forced by `F58`'s
+bump to `"4"` regardless.
 
 ## Not covered
 
