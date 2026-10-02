@@ -51,6 +51,7 @@ import tarfile
 from pathlib import Path
 from typing import Any, Optional
 
+from ..informatics.experiment_manifest import artifact_record
 from ..informatics.generation_listing import (
     GENERATION_MANIFEST,
     GENERATIONS_SUBDIR,
@@ -243,11 +244,19 @@ def _verify_extracted_generation(
             continue
         checked_any = True
         artifact_path = generation_dir / str(record["path"])
-        if not artifact_path.is_file():
+        if not artifact_path.exists():
             problems.append(f"artifact {key!r} is missing: {artifact_path}")
             continue
         try:
-            actual = sha256_file(artifact_path)
+            # `artifact_record`'s own checksum -- not `sha256_file` -- since an
+            # artifact may be a directory (e.g. preprocess's bulk `store/`),
+            # hashed by name+content across every file in it, not one file's
+            # bytes; reusing the same function that *wrote* the recorded
+            # checksum is what makes this a real re-verification rather than
+            # a mismatched algorithm reported as corruption.
+            actual = str(
+                artifact_record(artifact_path, artifact_path.parent, checksum=True)["sha256"]
+            )
         except OSError as exc:
             problems.append(f"artifact {key!r} could not be checksummed: {exc}")
             continue

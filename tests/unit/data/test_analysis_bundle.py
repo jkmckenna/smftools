@@ -262,6 +262,34 @@ def test_unbundle_analysis_generations_verifies_recorded_artifact_checksums(
     assert results[0]["checksums_verified"] is True
 
 
+def test_unbundle_analysis_generations_verifies_a_directory_artifact(tmp_path: Path) -> None:
+    """Production `raw`/`preprocess` manifests checksum whole directories (the bulk
+    partitioned `store/`), not just single files -- via `experiment_manifest.artifact_record`'s
+    name+content digest across every file in the tree, not one file's bytes."""
+    from smftools.informatics.experiment_manifest import artifact_record
+
+    source_root = tmp_path / "source"
+    generation_dir = _publish(source_root, "preprocess_adata_outputs", "gen-1", extra_files={})
+    store_dir = generation_dir / "store"
+    (store_dir / "reference=a" / "chunk=0").mkdir(parents=True)
+    (store_dir / "reference=a" / "chunk=0" / "data.bin").write_bytes(b"payload-a")
+    (store_dir / "reference=b").mkdir(parents=True)
+    (store_dir / "reference=b" / "data.bin").write_bytes(b"payload-b")
+    digest = artifact_record(store_dir, generation_dir, checksum=True)["sha256"]
+    manifest_path = generation_dir / GENERATION_MANIFEST
+    manifest = json.loads(manifest_path.read_text())
+    manifest["artifacts"] = {"store": {"path": "store", "kind": "directory", "sha256": digest}}
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    bundle_root = tmp_path / "bundles"
+    bundle_analysis_generations(source_root, bundle_root=bundle_root)
+    destination_root = tmp_path / "destination"
+
+    results = unbundle_analysis_generations(bundle_root, run_root=destination_root)
+
+    assert results[0]["status"] == "unbundled"
+    assert results[0]["checksums_verified"] is True
+
+
 def test_unbundle_analysis_generations_reports_no_checksums_for_stages_without_them(
     tmp_path: Path,
 ) -> None:
