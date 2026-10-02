@@ -66,6 +66,7 @@ A plan with no implementation branch yet.
 | document | scope |
 |---|---|
 | `agent_files_plan.md` | restructuring the repo's `AGENTS.md`/`CLAUDE.md` files; explicitly not deployed |
+| `generation_prune_scope_implementation_plan.md` | `EGL-03c` -- fan the existing read-only, dry-run-only prune planner (`EGL-03a`) out to a project and to an arbitrary directory of run roots; does not touch `EGL-03b` (deletion), still blocked |
 
 ## `logs/` — not tracked
 
