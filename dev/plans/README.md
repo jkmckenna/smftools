@@ -66,7 +66,7 @@ A plan with no implementation branch yet.
 | document | scope |
 |---|---|
 | `agent_files_plan.md` | restructuring the repo's `AGENTS.md`/`CLAUDE.md` files; explicitly not deployed |
-| `pipeline_throughput_implementation_plan.md` | `THR-01`–`THR-05` -- single-threaded and pool-collapse bottlenecks found running `experiment batch full` (`F53`–`F57`): alignment rescue, duplicate-detection group sizing, latent |
+| `pipeline_throughput_implementation_plan.md` | `THR-01`–`THR-06` -- single-threaded, pool-collapse and redundant-scan bottlenecks found running `experiment batch full` (`F53`–`F57`, `F59`): alignment rescue, duplicate-detection group sizing, latent, raw extraction |
 
 ## `logs/` — not tracked
 
