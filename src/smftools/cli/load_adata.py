@@ -1261,12 +1261,14 @@ def load_adata_core(
             )
             # Swap the corrected BAM (+ its freshly-built index) into place so
             # every downstream consumer sees it at the original path with no
-            # further plumbing.
-            rescued_tmp_bai = Path(str(rescued_tmp) + ".bai")
-            final_bai = Path(str(aligned_sorted_output) + ".bai")
-            rescued_tmp.replace(aligned_sorted_output)
-            if rescued_tmp_bai.exists():
-                rescued_tmp_bai.replace(final_bai)
+            # further plumbing. When nothing was rescued no corrected BAM was
+            # written, and the original is already correct.
+            if summary.output_written:
+                rescued_tmp_bai = Path(str(rescued_tmp) + ".bai")
+                final_bai = Path(str(aligned_sorted_output) + ".bai")
+                rescued_tmp.replace(aligned_sorted_output)
+                if rescued_tmp_bai.exists():
+                    rescued_tmp_bai.replace(final_bai)
             summary.to_dataframe().to_csv(rescue_summary_path, index=False)
 
     if alignment_was_generated:
