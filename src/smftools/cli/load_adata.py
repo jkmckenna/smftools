@@ -237,6 +237,7 @@ def _publish_canonical_barcode_identity(
     sidecar_manifest: str | Path,
     force_redo: bool,
     sidecar_key_suffix: str = "",
+    barcode_kit: str | None = None,
 ) -> tuple[Path, Path]:
     """Publish or reuse the canonical barcode/sample identity intermediate."""
     from ..informatics.barcode_sidecar import (
@@ -269,6 +270,9 @@ def _publish_canonical_barcode_identity(
             # Decides which authority wins, so a change to it must not reuse a
             # sidecar resolved under the other precedence (`F35`).
             "directory_authoritative": bool(directory_authoritative),
+            # Demotes BAM tags naming a different kit (`F58`), so it also
+            # decides which authority wins.
+            "barcode_kit": str(barcode_kit or ""),
             "schema_version": BARCODE_IDENTITY_SCHEMA_VERSION,
             # The schema version tracks the output's shape and stays put when
             # only the resolution changes, so a behavioural fix would otherwise
@@ -295,6 +299,7 @@ def _publish_canonical_barcode_identity(
             classifier_sidecar=route_sidecar,
             classifier_source=classifier_source,
             directory_authoritative=directory_authoritative,
+            expected_barcode_kit=barcode_kit,
         )
         commit_intermediate(workspace, {"barcode": barcode_sidecar, "report": report})
     key_suffix = f":{sidecar_key_suffix}" if sidecar_key_suffix else ""
@@ -1928,6 +1933,7 @@ def load_adata_core(
             directory_authoritative=directory_authoritative,
             sidecar_manifest=sidecar_manifest,
             force_redo=force_redo_intermediates,
+            barcode_kit=getattr(cfg, "barcode_kit", None),
         )
         partition_barcode_sidecars[Path(aligned_sorted_output)] = barcode_sidecar
     else:
@@ -1947,6 +1953,7 @@ def load_adata_core(
                 sidecar_manifest=sidecar_manifest,
                 force_redo=force_redo_intermediates,
                 sidecar_key_suffix=str(source_row.source_id),
+                barcode_kit=getattr(cfg, "barcode_kit", None),
             )
             partition_barcode_sidecars[Path(partition_bam)] = partition_sidecar
         barcode_sidecar = partition_barcode_sidecars[Path(aligned_sorted_output)]

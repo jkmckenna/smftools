@@ -612,3 +612,112 @@ def test_resolver_version_is_part_of_the_identity_reuse_key(tmp_path, monkeypatc
         sidecar_module.BARCODE_IDENTITY_RESOLVER_VERSION + 1,
     )
     assert publish()[0] != first[0], "a resolver bump must not reuse the old sidecar"
+
+
+# --- F58: BAM tags that carry no barcode, or name the wrong kit, must not
+# outrank a fresh sequence classification. -----------------------------------
+
+_BARE_RG = "7e466713_dna_r10.4.1_e8.2_400bps_hac@v5.0.0"
+_BARCODED_RG = "7e466713_dna_r10.4.1_e8.2_400bps_hac@v5.0.0_SQK-NBD114-24_barcode03"
+
+
+def _classifier(path, rows):
+    pd.DataFrame(rows, columns=["read_name", "BC"]).to_parquet(path, index=False)
+    return path
+
+
+def _resolve(tmp_path, records, classifier_rows, *, expected_kit="SQK-NBD114-24"):
+    bam = _bam(
+        tmp_path / "reads.bam",
+        records,
+        read_groups=[{"ID": _BARE_RG}, {"ID": _BARCODED_RG}],
+    )
+    classifier = (
+        _classifier(tmp_path / "classifier.parquet", classifier_rows)
+        if classifier_rows is not None
+        else None
+    )
+    sidecar, _ = publish_barcode_identity_sidecar(
+        bam,
+        tmp_path / "identity.parquet",
+        classifier_sidecar=classifier,
+        classifier_source="sequence:dorado",
+        expected_barcode_kit=expected_kit,
+    )
+    return pd.read_parquet(sidecar).set_index("read_name")
+
+
+def test_bare_read_group_does_not_outrank_sequence_classifier(tmp_path):
+    rows = _resolve(
+        tmp_path,
+        [("read-1", {"RG": _BARE_RG})],
+        [("read-1", "SQK-NBD114-24_barcode05")],
+    )
+    assert rows.loc["read-1", "barcode"] == "SQK-NBD114-24_barcode05"
+    assert rows.loc["read-1", "barcode_source"] == "sequence:dorado"
+
+
+def test_bare_read_group_read_the_classifier_rejected_is_unclassified(tmp_path):
+    # The classifier sidecar only lists classified reads; a read missing from it
+    # is unclassified, not "whatever its read group is called".
+    rows = _resolve(
+        tmp_path,
+        [("read-1", {"RG": _BARE_RG}), ("read-2", {"RG": _BARE_RG})],
+        [("read-2", "SQK-NBD114-24_barcode01")],
+    )
+    assert rows.loc["read-1", "barcode"] == "unclassified"
+    assert rows.loc["read-2", "barcode"] == "SQK-NBD114-24_barcode01"
+
+
+def test_foreign_kit_bc_tag_yields_to_configured_kit_classifier(tmp_path):
+    rows = _resolve(
+        tmp_path,
+        [("read-1", {"BC": "SQK-RBK114-96_barcode62", "RG": _BARE_RG})],
+        [("read-1", "SQK-NBD114-24_barcode07")],
+    )
+    assert rows.loc["read-1", "barcode"] == "SQK-NBD114-24_barcode07"
+    assert rows.loc["read-1", "barcode_source"] == "sequence:dorado"
+    # The disagreement is still recorded rather than silently dropped.
+    assert "SQK-RBK114-96_barcode62" in rows.loc["read-1", "identity_conflicts"]
+
+
+def test_bc_tag_wins_when_no_kit_is_configured(tmp_path):
+    rows = _resolve(
+        tmp_path,
+        [("read-1", {"BC": "SQK-RBK114-96_barcode62", "RG": _BARE_RG})],
+        [("read-1", "SQK-NBD114-24_barcode07")],
+        expected_kit=None,
+    )
+    assert rows.loc["read-1", "barcode"] == "SQK-RBK114-96_barcode62"
+    assert rows.loc["read-1", "barcode_source"] == "bam:BC"
+
+
+def test_read_group_naming_a_barcode_in_the_configured_kit_still_wins(tmp_path):
+    rows = _resolve(
+        tmp_path,
+        [("read-1", {"RG": _BARCODED_RG})],
+        [("read-1", "SQK-NBD114-24_barcode09")],
+    )
+    assert rows.loc["read-1", "barcode"] == _BARCODED_RG
+    assert rows.loc["read-1", "barcode_source"] == "bam:RG"
+
+
+def test_bare_read_group_is_still_the_last_resort(tmp_path):
+    # An unbarcoded run has no classifier and no BC: its read group must still
+    # identify it, exactly as before.
+    rows = _resolve(tmp_path, [("read-1", {"RG": _BARE_RG})], None)
+    assert rows.loc["read-1", "barcode"] == _BARE_RG
+    assert rows.loc["read-1", "barcode_source"] == "bam:RG"
+
+
+def test_same_kit_family_bc_tag_is_not_foreign(tmp_path):
+    # NBD114-24 and NBD114-96 share native barcode sequences: a 24-kit tag is
+    # valid evidence on a run configured with the 96 kit.
+    rows = _resolve(
+        tmp_path,
+        [("read-1", {"BC": "SQK-NBD114-24_barcode02", "RG": _BARE_RG})],
+        [],
+        expected_kit="SQK-NBD114-96",
+    )
+    assert rows.loc["read-1", "barcode"] == "SQK-NBD114-24_barcode02"
+    assert rows.loc["read-1", "barcode_source"] == "bam:BC"
