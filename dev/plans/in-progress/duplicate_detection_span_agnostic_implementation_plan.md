@@ -74,6 +74,7 @@ survivor reshuffle. Fixing candidate generation fixes both.
 | `DSA-03` config surface and semantic fingerprint entries | drafted | `duplicate_detection_span_agnostic_banding` and three siblings in `semantic_upgrade.py` |
 | `DSA-04` route the hierarchical-skip notice to the logger | drafted | `test_hierarchical_topup_skipped_above_representative_cap` |
 | `DSA-05` qualify on a real fragmented run; revisit the hierarchical cap | measured | see Real-data qualification below; cap revisit still open |
+| `DSA-06` skip anchored banding for groups whose reads already share one span | implemented, not merged | `cd30c34` on `fix/dsa-skip-banding-uniform-spans`; `test_uniform_span_group_skips_anchored_passes_and_still_clusters`; `F60` |
 
 ### `DSA-01` — anchored banding
 
@@ -134,6 +135,33 @@ evidence says it nearly can -- with banding on, capping the top-up at 50 instead
 of 5000 changes the result by 0.01 points and one cluster -- but that is one run,
 and lowering it would remove the only exact pass. Leave it until a second
 library agrees.
+
+### `DSA-06` — skip anchored banding when spans are already uniform
+
+Motivated by `F60`, the second-library measurement `DSA-05` was waiting for --
+and the opposite library shape to the first. On a ligation-kit **amplicon**
+deaminase run, where nearly every read spans the full locus, anchored banding
+cost **2.6-2.7x** wall time and **+12 GiB** peak per group to recover 6-7 more
+duplicates out of ~30,000 (0.02%), none of them differing in span. The +15% cost
+measured on the rapid-kit library below was the favourable case: on amplicons
+every read covers every window, so each anchor re-sorts the whole group.
+
+**As implemented.** `_process_group` measures the share of reads whose
+measured extent matches the group's median read, both ends within 2% of the
+column window (`_uniform_span_share`), from the per-read extents it already
+keeps. At or above `duplicate_detection_banding_uniform_span_skip_fraction`
+(default 0.9) the anchored passes are skipped for that group; above 1.0 they
+always run. The key joins the preprocess semantic fingerprint, since it changes
+dedup results.
+
+**Why 0.9.** Measured share: 0.93-0.99 on every amplicon group with >=200
+reads across three runs (deaminase and conversion); 0.03-0.20 on a rapid-kit
+run. A two-span-class group scores at most 0.5 by construction (the median falls
+between the classes), so the synthetic fixtures below still band.
+
+**What it trades.** On amplicon groups, the ~0.02% of duplicates only banding
+found. That is the measured cost of the skip, not zero, and the reason the
+threshold is a config key rather than a constant.
 
 ## Measurements
 
