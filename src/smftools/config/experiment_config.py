@@ -989,6 +989,7 @@ class ExperimentConfig:
     # Nanopore specific for basecalling and demultiplexing
     model_dir: Optional[str] = None
     barcode_kit: Optional[str] = None
+    barcodes_to_include: Optional[List[str]] = None
     emit_moves: Optional[bool] = True
     model: str = "hac"
     barcode_both_ends: bool = BARCODE_BOTH_ENDS
@@ -2447,6 +2448,9 @@ class ExperimentConfig:
             sequencer=merged.get("sequencer"),
             model_dir=merged.get("model_dir"),
             barcode_kit=merged.get("barcode_kit"),
+            barcodes_to_include=(
+                [str(value) for value in _parse_list(merged.get("barcodes_to_include"))] or None
+            ),
             fastq_barcode_map=merged.get("fastq_barcode_map"),
             fastq_auto_pairing=merged.get("fastq_auto_pairing"),
             bam_suffix=merged.get("bam_suffix", BAM_SUFFIX),

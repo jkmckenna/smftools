@@ -158,6 +158,20 @@ def _downstream_config_prefixes(stage: str) -> tuple[str, ...]:
     return tuple(f"{name}_" for name in _STAGE_ORDER[_STAGE_ORDER.index(stage) + 1 :])
 
 
+#: Keys added after outputs already existed, whose unset value means "behave as
+#: before". They join a stage's semantic config only when set, so adding the key
+#: does not invalidate every stored generation that predates it.
+_OMIT_WHEN_UNSET_CONFIG_KEYS = {"barcodes_to_include"}
+
+
+def _is_unset(value) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, (list, tuple, set, dict)):
+        return len(value) == 0
+    return str(value).strip().lower() in ("", "none", "null", "[]")
+
+
 _STAGE_NON_SEMANTIC_CONFIG_KEYS = {
     stage: {"plot_regions_bed", "plot_allow_unanalyzed_gaps", "plot_subsample_seed"}
     for stage in ("preprocess", "spatial", "hmm", "latent", "full")
@@ -324,6 +338,7 @@ def resolved_stage_config(cfg, stage: str | None = None) -> dict[str, Any]:
         and not key.endswith("_max_workers")
         and not (downstream and key.startswith(downstream))
         and not _is_downstream_owned(key, str(stage))
+        and not (key in _OMIT_WHEN_UNSET_CONFIG_KEYS and _is_unset(value))
     }
     selected = _STAGE_SEMANTIC_CONFIG_KEYS.get(str(stage))
     if selected is not None:

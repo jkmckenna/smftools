@@ -53,6 +53,7 @@ clean_nan_layers:
 smf_modality: 'conversion' # conversion, deaminase, direct
 sequencer: 'ont' # ont, pacbio, illumina
 barcode_kit: 'SQK-RBK114-96' # SQK-RBK114-96, SQK-NBD114-24, etc
+barcodes_to_include: null # Restrict the experiment to these barcodes (numbers or labels: 4, NB04, barcode04 all match). Reads with any other resolved barcode, including unclassified, are never extracted. For runs carrying more than one experiment, e.g. two modalities on one flow cell. null keeps every barcode.
 mod_target_bases:
   - "GpC"
   - "CpG"

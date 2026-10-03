@@ -104,3 +104,30 @@ def test_segment_batch_size_is_scheduling_not_semantics(cfg):
     other = replace(cfg, deaminase_segment_batch_reads=cfg.deaminase_segment_batch_reads * 2)
 
     assert stage_config_hash(cfg, "preprocess") == stage_config_hash(other, "preprocess")
+
+
+def test_unset_barcode_allowlist_leaves_raw_fingerprint_unchanged(cfg):
+    """`barcodes_to_include` arrived after every existing raw store.
+
+    Unset means "keep every barcode" -- the behaviour those stores were built
+    with -- so it must not enter the fingerprint, or adding the key would mark
+    every raw generation stale. Set, it must, since it changes the store.
+    """
+    assert cfg.barcodes_to_include is None
+    assert "barcodes_to_include" not in resolved_stage_config(cfg, "raw")
+    for unset in ([], None):
+        assert stage_config_hash(replace(cfg, barcodes_to_include=unset), "raw") == (
+            stage_config_hash(cfg, "raw")
+        )
+    restricted = replace(cfg, barcodes_to_include=["1", "2"])
+    assert resolved_stage_config(restricted, "raw")["barcodes_to_include"] == ["1", "2"]
+    assert stage_config_hash(restricted, "raw") != stage_config_hash(cfg, "raw")
+
+
+def test_barcode_allowlist_parses_from_csv(tmp_path):
+    config = tmp_path / "experiment_config.csv"
+    config.write_text(
+        "variable,value,help,options,type\nexperiment_name,x,,,str\n"
+        'barcodes_to_include,"[1,2,3,19]",,,list\n'
+    )
+    assert load_experiment_config(str(config)).barcodes_to_include == ["1", "2", "3", "19"]

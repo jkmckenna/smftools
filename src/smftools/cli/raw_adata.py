@@ -1119,6 +1119,47 @@ def _read_ids_and_offsets_for_reference(
     return read_ids, offsets
 
 
+def _allowed_read_ids(cfg, barcode_sidecar) -> set[str] | None:
+    """Read names whose resolved barcode is in ``cfg.barcodes_to_include``.
+
+    ``None`` when no allowlist is configured. Barcodes compare by number, so
+    ``4``, ``NB04``, ``barcode04`` and ``SQK-NBD114-24_barcode04`` all match;
+    anything without a barcode token (``unclassified``, a read-group ID) only
+    matches if listed literally. Used to keep one experiment's barcodes when a
+    run carries several (e.g. two modalities on one flow cell).
+    """
+    allowlist = getattr(cfg, "barcodes_to_include", None)
+    if not allowlist:
+        return None
+    if barcode_sidecar is None or not Path(barcode_sidecar).is_file():
+        raise RuntimeError(
+            "barcodes_to_include is set, but no barcode identity sidecar is available to "
+            "resolve each read's barcode; cannot restrict the experiment to its barcodes."
+        )
+    from ..informatics.barcode_sidecar import barcode_number_key, read_barcode_identity_sidecar
+
+    wanted = {barcode_number_key(str(value)) for value in allowlist}
+    frame = read_barcode_identity_sidecar(barcode_sidecar)
+    keys = frame["barcode"].astype(str).map(barcode_number_key)
+    allowed = set(frame.loc[keys.isin(wanted), "read_name"].astype(str))
+    logger.info(
+        "barcodes_to_include=%s: keeping %d of %d reads",
+        list(allowlist),
+        len(allowed),
+        len(frame),
+    )
+    return allowed
+
+
+def _keep_allowed(
+    read_ids: list[str], offsets: list[int], allowed: set[str] | None
+) -> tuple[list[str], list[int]]:
+    if allowed is None:
+        return read_ids, offsets
+    keep = [index for index, read_id in enumerate(read_ids) if read_id in allowed]
+    return [read_ids[index] for index in keep], [offsets[index] for index in keep]
+
+
 def _contiguous_buckets(
     read_ids: list[str], offsets: list[int], n_buckets: int
 ) -> list[tuple[set[str], tuple[int, int | None]]]:
@@ -1518,6 +1559,7 @@ def _build_ragged_records_streaming_convertible(
         _log_planning_progress(
             f"read features for {len(metrics):,} read(s)", started_at=planning_started
         )
+        allowed_read_ids = _allowed_read_ids(cfg, barcode_sidecar)
         # Split per reference into several read-count-balanced buckets, not
         # just one item per reference -- parallelizing per-reference alone
         # caps concurrency at the reference count and load-balances poorly
@@ -1538,8 +1580,9 @@ def _build_ragged_records_streaming_convertible(
         for planned, (record, (_length, sequence)) in enumerate(reference_map.items(), start=1):
             info = record_info[record]
             record_chromosome[record] = info.chromosome
-            read_ids, offsets = _read_ids_and_offsets_for_reference(
-                aligned_bam, record, threads=max_workers
+            read_ids, offsets = _keep_allowed(
+                *_read_ids_and_offsets_for_reference(aligned_bam, record, threads=max_workers),
+                allowed_read_ids,
             )
             n_buckets = _n_buckets_for_reference(
                 len(read_ids),
@@ -1706,6 +1749,7 @@ def _build_ragged_records_streaming_direct(
         _log_planning_progress(
             f"read features for {len(metrics):,} read(s)", started_at=planning_started
         )
+        allowed_read_ids = _allowed_read_ids(cfg, barcode_sidecar)
         buckets_remaining: dict[str, int] = {}
         items = []
         read_id_to_bucket_id: dict[str, int] = {}
@@ -1713,8 +1757,9 @@ def _build_ragged_records_streaming_direct(
         for planned, (record, (_record_length, sequence)) in enumerate(
             reference_map.items(), start=1
         ):
-            read_ids, offsets = _read_ids_and_offsets_for_reference(
-                aligned_bam, record, threads=max_workers
+            read_ids, offsets = _keep_allowed(
+                *_read_ids_and_offsets_for_reference(aligned_bam, record, threads=max_workers),
+                allowed_read_ids,
             )
             n_buckets = _n_buckets_for_reference(
                 len(read_ids),
