@@ -300,6 +300,7 @@ duplicate_detection_span_agnostic_banding: True # Add anchor-window banding pass
 duplicate_detection_anchor_window_sites: 0 # Width, in comparison columns, of each span-agnostic anchor window. 0 derives it from duplicate_detection_min_overlapping_positions so that every pair the comparison would accept can reach a window; set explicitly only to trade recall on short overlaps for speed.
 duplicate_detection_anchor_window_stride_sites: 0 # Distance between anchor window starts; 0 derives it alongside the width. Width + stride - 1 must not exceed the minimum overlap, or short-overlap pairs can never share a window.
 duplicate_detection_max_anchor_windows: 512 # Ceiling on anchor windows per group. The stride widens to fit rather than leaving one end of the reference uncovered, and a widening that breaks the reach guarantee above is logged.
+duplicate_detection_banding_uniform_span_skip_fraction: 0.9 # Skip the anchored banding passes for a group when at least this fraction of its reads share the median read's span (both ends within 2% of the window). Amplicon groups sit at 0.93-0.99 and gain ~0.02% recall from banding at 2.6x cost (F60); fragmented libraries sit far below. Set above 1.0 to always band.
 duplicate_detection_hierarchical_max_representatives: 5000 # Skip the hierarchical top-up pass (logged) above this many representatives -- exact pdist+linkage is O(n^2), unsafe above a few thousand points.
 
 # Position QC params

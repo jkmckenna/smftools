@@ -45,7 +45,13 @@ def _group_with_span_offset(n_molecules: int, span_offset: int, seed: int = 0) -
     return np.asarray(rows, dtype=np.float32)
 
 
-def _run(x_sub: np.ndarray, *, span_agnostic_banding: bool, anchor_window_sites: int = 0):
+def _run(
+    x_sub: np.ndarray,
+    *,
+    span_agnostic_banding: bool,
+    anchor_window_sites: int = 0,
+    banding_uniform_span_skip_fraction: float = 0.9,
+):
     """Run one group with the hierarchical top-up capped out, as at scale."""
     n_reads = x_sub.shape[0]
     obs_index = [f"read{i}" for i in range(n_reads)]
@@ -83,6 +89,7 @@ def _run(x_sub: np.ndarray, *, span_agnostic_banding: bool, anchor_window_sites:
             "anchor_window_sites": anchor_window_sites,
             "anchor_window_stride_sites": 0,
             "max_anchor_windows": 512,
+            "banding_uniform_span_skip_fraction": banding_uniform_span_skip_fraction,
         }
     )
     return np.asarray(result["sequence__merged_cluster_id"])
@@ -330,3 +337,74 @@ def test_window_ceiling_that_breaks_reach_is_logged(caplog):
             min_overlap_positions=20,
         )
     assert any("widened the anchor stride" in record.message for record in caplog.records)
+
+
+# --- DSA-06: skip anchored banding when a group's reads already share a span --
+
+
+def _spy_on_anchor_planning(monkeypatch):
+    """Record the ``enabled`` flag each anchor-planning call receives."""
+    import smftools.preprocessing.flag_duplicate_reads as fdr
+
+    seen: list[bool] = []
+    real = fdr._plan_anchor_windows
+
+    def spy(*args, **kwargs):
+        seen.append(bool(kwargs.get("enabled", True)))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(fdr, "_plan_anchor_windows", spy)
+    return seen
+
+
+def test_uniform_span_share_separates_amplicon_from_fragmented():
+    from smftools.preprocessing.flag_duplicate_reads import _uniform_span_share
+
+    n = 1000
+    full_start, full_end = np.zeros(n, dtype=np.int64), np.full(n, 400, dtype=np.int64)
+    assert _uniform_span_share(full_start, full_end, 400) == 1.0
+    # A few sites of jitter at the ends is still "the same span".
+    jitter = np.random.default_rng(0).integers(0, 5, n)
+    assert _uniform_span_share(jitter, full_end - jitter, 400) == 1.0
+    # Half truncated at both ends: the two-size-class fixture's shape. The
+    # median falls between the classes, so the share is at most a half --
+    # comfortably "not uniform", which is all the skip decision needs.
+    half = np.arange(n) % 2 == 0
+    assert _uniform_span_share(np.where(half, 0, 120), np.where(half, 400, 340), 400) <= 0.5
+    # Once most reads share one span the median *is* that span, so the share is
+    # exact: 95% full-span reads score 0.95.
+    most = np.arange(n) % 20 != 0
+    assert _uniform_span_share(np.where(most, 0, 120), np.where(most, 400, 340), 400) == 0.95
+    # Random fragments share almost nothing.
+    rng = np.random.default_rng(1)
+    starts = rng.integers(0, 300, n)
+    assert _uniform_span_share(starts, starts + rng.integers(20, 100, n), 400) < 0.2
+
+
+def test_uniform_span_group_skips_anchored_passes_and_still_clusters(monkeypatch):
+    seen = _spy_on_anchor_planning(monkeypatch)
+    x_sub = _group_with_span_offset(300, span_offset=0)  # every read full-span
+
+    cluster_ids = _run(x_sub, span_agnostic_banding=True)
+
+    assert seen == [False]
+    assert _pair_recall(cluster_ids, 300) == 1.0
+
+
+def test_skip_threshold_above_one_always_bands(monkeypatch):
+    seen = _spy_on_anchor_planning(monkeypatch)
+    x_sub = _group_with_span_offset(300, span_offset=0)
+
+    _run(x_sub, span_agnostic_banding=True, banding_uniform_span_skip_fraction=1.01)
+
+    assert seen == [True]
+
+
+def test_differing_span_group_still_bands_with_full_recall(monkeypatch):
+    seen = _spy_on_anchor_planning(monkeypatch)
+    x_sub = _group_with_span_offset(300, span_offset=120)  # half the reads truncated
+
+    cluster_ids = _run(x_sub, span_agnostic_banding=True)
+
+    assert seen == [True]
+    assert _pair_recall(cluster_ids, 300) == 1.0

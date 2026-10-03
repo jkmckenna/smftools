@@ -198,6 +198,9 @@ def execute_duplicate_detection_chunk_task(
                 getattr(cfg, "duplicate_detection_anchor_window_stride_sites", 0)
             ),
             "max_anchor_windows": int(getattr(cfg, "duplicate_detection_max_anchor_windows", 512)),
+            "banding_uniform_span_skip_fraction": float(
+                getattr(cfg, "duplicate_detection_banding_uniform_span_skip_fraction", 0.9)
+            ),
         }
     )
 

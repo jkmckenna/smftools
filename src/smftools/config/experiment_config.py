@@ -1236,6 +1236,7 @@ class ExperimentConfig:
     duplicate_detection_anchor_window_sites: int = 0
     duplicate_detection_anchor_window_stride_sites: int = 0
     duplicate_detection_max_anchor_windows: int = 512
+    duplicate_detection_banding_uniform_span_skip_fraction: float = 0.9
 
     # Preprocessing - Position QC
     position_max_nan_threshold: float = 0.1
@@ -2873,6 +2874,11 @@ class ExperimentConfig:
             ),
             duplicate_detection_max_anchor_windows=int(
                 _parse_numeric(merged.get("duplicate_detection_max_anchor_windows", 512), 512)
+            ),
+            duplicate_detection_banding_uniform_span_skip_fraction=float(
+                _parse_numeric(
+                    merged.get("duplicate_detection_banding_uniform_span_skip_fraction", 0.9), 0.9
+                )
             ),
             position_max_nan_threshold=merged.get("position_max_nan_threshold", 0.1),
             correlation_matrix_types=merged.get(
