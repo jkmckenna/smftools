@@ -192,6 +192,32 @@ def _choose_keeper_with_demux_preference(
     return candidates[0]
 
 
+#: Reads within this fraction of the group's column window of the median read's
+#: start and end count as sharing its span (`DSA-06`).
+UNIFORM_SPAN_TOLERANCE_FRACTION = 0.02
+
+
+def _uniform_span_share(
+    coverage_start: np.ndarray, coverage_end: np.ndarray, n_sites: int
+) -> float:
+    """Fraction of reads whose measured extent matches the group's median read.
+
+    "Matches" is both ends within ``UNIFORM_SPAN_TOLERANCE_FRACTION`` of the
+    column window. Anchored banding exists for pairs whose spans differ (`F51`);
+    in a group where nearly every read shares one extent -- an amplicon, where
+    reads span the locus -- such pairs barely exist, and the anchored passes
+    re-sort the whole group once per window for almost nothing (`F60`).
+    Measured: 0.93-0.99 on every ligation-amplicon group, 0.03-0.20 on a
+    rapid-kit (fragmented) run.
+    """
+    if len(coverage_start) == 0:
+        return 0.0
+    tolerance = max(1, int(round(UNIFORM_SPAN_TOLERANCE_FRACTION * max(1, int(n_sites)))))
+    start_ok = np.abs(coverage_start - np.median(coverage_start)) <= tolerance
+    end_ok = np.abs(coverage_end - np.median(coverage_end)) <= tolerance
+    return float(np.mean(start_ok & end_ok))
+
+
 def _plan_anchor_windows(
     coverage_start: np.ndarray,
     coverage_end: np.ndarray,
@@ -369,6 +395,7 @@ def _process_group(args: dict) -> Optional[dict]:
     n_permutation_passes = int(args.get("n_permutation_passes", 0))
     permutation_seed = int(args.get("permutation_seed", 0))
     span_agnostic_banding = bool(args.get("span_agnostic_banding", True))
+    banding_uniform_span_skip_fraction = float(args.get("banding_uniform_span_skip_fraction", 0.9))
     anchor_window_sites = int(args.get("anchor_window_sites", 0))
     anchor_window_stride_sites = int(args.get("anchor_window_stride_sites", 0))
     max_anchor_windows = int(args.get("max_anchor_windows", 512))
@@ -393,6 +420,23 @@ def _process_group(args: dict) -> Optional[dict]:
     coverage_start = np.where(any_valid, valid.argmax(axis=1), 0).astype(np.int64)
     coverage_end = np.where(any_valid, n_sites - valid[:, ::-1].argmax(axis=1), 0).astype(np.int64)
     del X_sub, valid
+    # DSA-06: skip the anchored passes when the group's reads already share one
+    # span. Measured on amplicon groups they cost 2.6-2.7x wall time and +12 GiB
+    # peak to recover ~0.02% more duplicates, none of them differing in span
+    # (`F60`). A threshold above 1.0 never skips.
+    uniform_span_share = _uniform_span_share(coverage_start, coverage_end, n_sites)
+    banding_skipped_uniform = (
+        span_agnostic_banding and uniform_span_share >= banding_uniform_span_skip_fraction
+    )
+    if banding_skipped_uniform:
+        logger.debug(
+            "duplicate detection: skipping anchored banding for sample=%s ref=%s -- "
+            "%.1f%% of reads share the median span (threshold %.1f%%)",
+            sample,
+            ref,
+            100.0 * uniform_span_share,
+            100.0 * banding_uniform_span_skip_fraction,
+        )
 
     # per-read nearest distances
     fwd_hamming_to_next = np.full((N,), np.nan, dtype=float)
@@ -515,7 +559,7 @@ def _process_group(args: dict) -> Optional[dict]:
         anchor_window_stride_sites=anchor_window_stride_sites,
         max_anchor_windows=max_anchor_windows,
         min_overlap_positions=min_overlap_positions,
-        enabled=span_agnostic_banding,
+        enabled=span_agnostic_banding and not banding_skipped_uniform,
     ):
         anchor_columns = np.arange(anchor_start, anchor_end)
         all_pairs.extend(cluster_pass(anchor_columns, reverse=False, rows=anchor_rows))
@@ -606,10 +650,14 @@ def _process_group(args: dict) -> Optional[dict]:
                 ref,
                 len(rep_global_indices),
                 hierarchical_max_representatives,
-                "enabled"
-                if span_agnostic_banding
-                else "DISABLED, so reads with "
-                "matching overlap but differing spans may be reported as distinct",
+                (
+                    "skipped for this group (uniform spans)"
+                    if banding_skipped_uniform
+                    else "enabled"
+                    if span_agnostic_banding
+                    else "DISABLED, so reads with "
+                    "matching overlap but differing spans may be reported as distinct"
+                ),
             )
         elif not SKLEARN_AVAILABLE:
             warnings.warn("sklearn not available; skipping PCA/hierarchical pass.")

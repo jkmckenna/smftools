@@ -85,6 +85,7 @@ _REDUCER_CONFIG_KEYS = {
     "deaminase_chimera_min_segment_purity",
     "duplicate_detection_anchor_window_sites",
     "duplicate_detection_anchor_window_stride_sites",
+    "duplicate_detection_banding_uniform_span_skip_fraction",
     "duplicate_detection_chunk_presort_metric",
     "duplicate_detection_demux_types_to_use",
     "duplicate_detection_distance_threshold",
