@@ -175,6 +175,16 @@ def barcode_key(value: str) -> str:
     return f"{int(text):04d}" if text.isdigit() else text
 
 
+def barcode_number_key(value: str) -> str:
+    """`barcode_key` of a value's barcode token, so kit-qualified labels compare too.
+
+    ``SQK-NBD114-24_barcode04`` -> ``0004``, same as ``4``, ``NB04`` and
+    ``barcode04``. A value without a barcode token is keyed as-is.
+    """
+    match = _BARCODE_TOKEN_RE.search(str(value))
+    return barcode_key(match.group(1) if match else str(value))
+
+
 def _confidence(value: Any, default: float) -> float:
     try:
         result = float(value)

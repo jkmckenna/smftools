@@ -10,6 +10,7 @@ import pytest
 from click.testing import CliRunner
 
 from smftools.cli.raw_adata import (
+    _allowed_read_ids,
     _attach_direct_signals,
     _attach_direct_signals_from_bam,
     _attach_pod5_metadata,
@@ -17,6 +18,7 @@ from smftools.cli.raw_adata import (
     _ChromosomeGroupAccumulator,
     _contiguous_buckets,
     _conversion_signal,
+    _keep_allowed,
     _map_references_parallel,
     _n_buckets_for_reference,
     _read_ids_and_offsets_for_reference,
@@ -1392,3 +1394,64 @@ def test_preprocess_wrapper_reruns_when_partitioned_spine_missing_qc_dedup(tmp_p
 
     assert captured.get("source_path") == raw_spine
     assert result == (incomplete_spine, None)
+
+
+def _identity_sidecar(tmp_path, barcodes):
+    """Publish a real canonical barcode identity sidecar for reads r0..rN."""
+    pysam = pytest.importorskip("pysam")
+    from smftools.informatics.barcode_sidecar import publish_barcode_identity_sidecar
+
+    bam = tmp_path / "reads.bam"
+    header = {"HD": {"VN": "1.6", "SO": "unknown"}, "SQ": []}
+    with pysam.AlignmentFile(str(bam), "wb", header=header) as handle:
+        for index, barcode in enumerate(barcodes):
+            read = pysam.AlignedSegment()
+            read.query_name = f"r{index}"
+            read.query_sequence = "ACGT"
+            read.query_qualities = pysam.qualitystring_to_array("IIII")
+            read.is_unmapped = True
+            if barcode is not None:
+                read.set_tag("BC", barcode)
+            handle.write(read)
+    sidecar, _ = publish_barcode_identity_sidecar(bam, tmp_path / "identity.parquet")
+    return sidecar
+
+
+def test_barcode_number_key_matches_every_spelling():
+    from smftools.informatics.barcode_sidecar import barcode_number_key
+
+    spellings = ["4", "04", "NB04", "barcode04", "SQK-NBD114-24_barcode04"]
+    assert {barcode_number_key(value) for value in spellings} == {"0004"}
+    assert barcode_number_key("unclassified") == "unclassified"
+    assert barcode_number_key("SQK-NBD114-24_barcode14") != barcode_number_key("4")
+
+
+def test_allowed_read_ids_keeps_only_listed_barcodes(tmp_path):
+    sidecar = _identity_sidecar(
+        tmp_path,
+        [
+            "SQK-NBD114-24_barcode01",
+            "SQK-NBD114-24_barcode06",
+            "SQK-NBD114-24_barcode19",
+            "SQK-NBD114-24_barcode14",  # must not match 4 or 1
+            None,  # unclassified
+        ],
+    )
+    cfg = SimpleNamespace(barcodes_to_include=["1", "4", "19"])
+    assert _allowed_read_ids(cfg, sidecar) == {"r0", "r2"}
+
+
+def test_allowed_read_ids_is_none_without_an_allowlist(tmp_path):
+    assert _allowed_read_ids(SimpleNamespace(barcodes_to_include=None), None) is None
+    assert _allowed_read_ids(SimpleNamespace(), None) is None
+
+
+def test_allowlist_without_a_sidecar_fails_loudly():
+    with pytest.raises(RuntimeError, match="barcodes_to_include"):
+        _allowed_read_ids(SimpleNamespace(barcodes_to_include=["1"]), None)
+
+
+def test_keep_allowed_filters_ids_and_offsets_together():
+    ids, offsets = _keep_allowed(["a", "b", "c", "d"], [10, 20, 30, 40], {"b", "d"})
+    assert (ids, offsets) == (["b", "d"], [20, 40])
+    assert _keep_allowed(["a"], [1], None) == (["a"], [1])
