@@ -8,6 +8,14 @@ from .actions import (
     explain_partition_model,
     train_partition_model,
 )
+from .binding import (
+    BoundFold,
+    BoundJob,
+    FoldRun,
+    bind_ml_job,
+    run_bound_train_job,
+    snapshot_from_selection,
+)
 from .contracts import (
     JobArtifact,
     JobCancellationToken,
@@ -24,7 +32,12 @@ from .contracts import (
     ResolvedJob,
     ResolvedModelSelection,
 )
-from .planning import MLWorkflowDryRun, MLWorkflowPlanningError, plan_ml_workflow
+from .planning import (
+    MLWorkflowDryRun,
+    MLWorkflowPlanningError,
+    plan_ml_workflow,
+    resolve_plan_model,
+)
 from .resolution import resolve_model_selection
 from .service import (
     dry_run_job,
@@ -36,6 +49,9 @@ from .service import (
 )
 
 __all__ = [
+    "BoundFold",
+    "BoundJob",
+    "FoldRun",
     "JobArtifact",
     "JobCancellationToken",
     "JobDryRun",
@@ -55,15 +71,19 @@ __all__ = [
     "SklearnTrainOptions",
     "TorchTrainOptions",
     "apply_partition_model",
+    "bind_ml_job",
     "dry_run_job",
     "evaluate_prediction_result",
     "explain_partition_model",
     "resolve_model_selection",
     "plan_ml_workflow",
+    "resolve_plan_model",
     "run_apply_job",
+    "run_bound_train_job",
     "run_evaluate_job",
     "run_explain_job",
     "run_plot_job",
     "run_train_job",
+    "snapshot_from_selection",
     "train_partition_model",
 ]

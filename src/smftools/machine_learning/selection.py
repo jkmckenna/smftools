@@ -7,7 +7,7 @@ import json
 import math
 from collections import Counter
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -154,6 +154,11 @@ class SelectedExperimentSource:
     membership_artifact_sha256: str
     membership_fingerprint: str
     feature_fingerprint: str
+    # Execution-time bindings (`MLX-06`), never part of identity: where the
+    # experiment lives, and each read stage's spine and generation.
+    run_root: Path | None = None
+    stage_spines: Mapping[str, Path] = field(default_factory=dict)
+    stage_generations: Mapping[str, str] = field(default_factory=dict)
 
     def to_dict(self, *, include_paths: bool = False) -> dict[str, Any]:
         """Return path-neutral provenance, optionally including diagnostic paths."""
@@ -461,6 +466,14 @@ def _stage_task_catalog(metadata: _ExperimentMetadata, stage: str) -> Path | Non
             if (directory / name).is_file():
                 return directory / name
     return None
+
+
+def _stage_generation_id(metadata: _ExperimentMetadata, stage: str) -> str:
+    """The generation a stage's reads come from, or ``current`` when unversioned."""
+    read_index = _stage_read_index(metadata, stage)
+    if read_index is not None and read_index.parent.parent.name == "generations":
+        return read_index.parent.name
+    return "current"
 
 
 def _stage_obs_sidecar(metadata: _ExperimentMetadata, stage: str) -> Path | None:
@@ -1073,6 +1086,15 @@ def plan_ml_dataset(
                 membership_artifact_sha256=_artifact_sha256(membership_artifact),
                 membership_fingerprint=membership_fingerprint,
                 feature_fingerprint=feature_fingerprint,
+                run_root=item.run_root,
+                stage_spines={
+                    channel.stage: item.spines[channel.stage]
+                    for channel in channels
+                    if channel.stage in item.spines
+                },
+                stage_generations={
+                    channel.stage: _stage_generation_id(item, channel.stage) for channel in channels
+                },
             )
         )
         tables.append(table)
