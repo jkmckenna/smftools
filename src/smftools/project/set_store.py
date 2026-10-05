@@ -28,6 +28,10 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from smftools.logging_utils import get_logger
+
+logger = get_logger(__name__)
+
 SETS_OUTPUT_DIRNAME = "sets"
 
 
@@ -165,23 +169,41 @@ def iter_set_parts(
         )
 
     def _gen():
-        from ..informatics.partition_read import materialize
+        from ..informatics.partition_read import EmptySelectionError, materialize
 
+        yielded = 0
         for member in members:
-            sub = materialize(
-                member["spine_path"],
-                references=member["reference_strands"],
-                start=start,
-                end=end,
-                layers=layers,
-                read_metrics=read_metrics,
-                lazy=lazy,
-            )
+            try:
+                sub = materialize(
+                    member["spine_path"],
+                    references=member["reference_strands"],
+                    start=start,
+                    end=end,
+                    layers=layers,
+                    read_metrics=read_metrics,
+                    lazy=lazy,
+                )
+            except EmptySelectionError:
+                # Membership comes from registered references, and a contig is
+                # registered whenever it is in the BAM header -- even with no
+                # reads on it. One such experiment used to abort the whole pool
+                # (`F61`); it simply has nothing to contribute.
+                logger.info(
+                    "Skipping %s: no molecules on %s in the selection",
+                    member["experiment"],
+                    canonical_reference,
+                )
+                continue
+            yielded += 1
             yield normalize_part(
                 sub,
                 member["experiment"],
                 member["stage"],
                 member["experiment_uid"],
+            )
+        if not yielded:
+            raise EmptySelectionError(
+                f"no selected experiment has molecules on {canonical_reference!r}"
             )
 
     return _gen()

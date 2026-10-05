@@ -41,6 +41,17 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
+
+class EmptySelectionError(ValueError):
+    """A materialize selection matched no molecules.
+
+    A ``ValueError`` subclass, so callers that already catch ``ValueError`` (or
+    match its message) are unaffected. Raised rather than returning an empty
+    AnnData because a zero-row result usually means a wrong selection; callers
+    that pool several experiments catch it to skip one with nothing to give.
+    """
+
+
 PARTITION_COL = "partition"
 RAGGED_STORE_KEY = "ragged_store"
 REFERENCE_LENGTHS_KEY = "reference_lengths"
@@ -950,7 +961,7 @@ def _materialize_legacy(
         end,
     )
     if sel.shape[0] == 0:
-        raise ValueError("materialize: selection matched no molecules")
+        raise EmptySelectionError("materialize: selection matched no molecules")
     result = spine[list(sel.index)].copy()
     if start is not None:
         positions = np.asarray(result.var_names, dtype=np.int64)
@@ -1054,7 +1065,7 @@ def materialize(
                 candidate_read_ids = indexed["read_id"].astype(str).tolist()
                 selection_filtered_by_index = True
                 if not candidate_read_ids:
-                    raise ValueError("materialize: selection matched no molecules")
+                    raise EmptySelectionError("materialize: selection matched no molecules")
 
     spine_path = Path(spine) if isinstance(spine, (str, Path)) else None
     spine_obj, base = _resolve_spine(spine, base_dir)
@@ -1109,7 +1120,7 @@ def materialize(
         candidate_read_ids,
     )
     if sel.shape[0] == 0:
-        raise ValueError("materialize: selection matched no molecules")
+        raise EmptySelectionError("materialize: selection matched no molecules")
     if start is None:
         genome_references = [
             reference
