@@ -71,7 +71,11 @@ _STAGE_ALGORITHM_VERSIONS = {
     #    of their read-group ID, and tags naming another kit family no longer
     #    outrank it. Changes Barcode/Sample in raw obs for every BAM input;
     #    generations already exist at "3".
-    "raw": "4",
+    # 5: `F64` -- rescued reads keep their SEQ (carried from the demoted
+    #    record, or restored on already-committed alignments) instead of
+    #    being dropped at extraction. Recovers ~0.1-1.8% of reads per run,
+    #    concentrated on enh-del and B6/BALB-reassigned molecules.
+    "raw": "5",
     # 2: mismatch integer-encoding clustermaps added to the stage output
     #    (EGL-26).
     "preprocess": "2",

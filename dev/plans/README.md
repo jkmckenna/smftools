@@ -55,6 +55,7 @@ An active branch, some items merged and others open.
 
 | document | scope |
 |---|---|
+| `alignment_rescue_sequence_implementation_plan.md` | `ARS` rescued reads keep their SEQ (minimap2 omits it on secondaries, so every rescued read was dropped at extraction, `F64`), repair of committed alignments, raw re-extraction |
 | `barcode_allowlist_implementation_plan.md` | `BAL` -- `barcodes_to_include`, so a run carrying several experiments (e.g. two modalities on one flow cell) keeps each to its own barcodes |
 | `selective_pod5_rebasecalling_implementation_plan.md` | `SRB` |
 | `duplicate_detection_span_agnostic_implementation_plan.md` | `DSA` span-agnostic duplicate detection; drafted, `DSA-05` real-data qualification open |

@@ -226,6 +226,64 @@ def load_dense_cache(config_path: str):
     return spine, cache_paths["spine"], cfg
 
 
+#: Bumps when `restore_primary_sequences` changes what it writes (`F64`).
+SEQUENCE_RESTORE_VERSION = 1
+
+
+def _restore_primary_sequences_intermediate(
+    output_directory: str | Path,
+    aligned_bam: Path,
+    *,
+    threads: int | None,
+    force_redo: bool,
+) -> tuple[Path, Path] | None:
+    """Repair sequence-less primary records in a (possibly reused) aligned BAM.
+
+    Alignments rescued before `F64` was fixed carry promoted records without
+    SEQ; they are committed intermediates, so they are repaired into a separate
+    intermediate rather than edited. Returns the repaired ``(bam, bai)``, or
+    ``None`` when the input needed nothing. Keyed on the aligned BAM's checksum,
+    so an already-correct alignment pays one read pass, once.
+    """
+    import json
+
+    from ..informatics.alignment_rescue import restore_primary_sequences
+    from ..informatics.raw_intermediate_manifest import (
+        IntermediateSpec,
+        artifact_checksum,
+        commit_intermediate,
+        committed_output,
+        prepare_intermediate,
+    )
+
+    spec = IntermediateSpec(
+        operation="restore-primary-sequences",
+        input_artifacts=(("aligned-bam", artifact_checksum(aligned_bam)),),
+        operation_config={"sequence_restore_version": SEQUENCE_RESTORE_VERSION},
+    )
+    workspace = prepare_intermediate(output_directory, spec, force_redo=force_redo)
+    if workspace.reusable:
+        bam = committed_output(workspace, "restored-bam")
+        bai = committed_output(workspace, "restored-bai")
+        return (bam, bai) if bam is not None and bai is not None else None
+    restored = workspace.root / "restored.bam"
+    summary = restore_primary_sequences(aligned_bam, restored, threads=threads)
+    summary_path = workspace.root / "restore_summary.json"
+    summary_path.write_text(json.dumps(summary.__dict__, indent=2, sort_keys=True))
+    outputs = {"summary": summary_path}
+    if summary.output_written:
+        outputs.update({"restored-bam": restored, "restored-bai": Path(str(restored) + ".bai")})
+    commit_intermediate(workspace, outputs)
+    if summary.n_unrestorable:
+        logger.warning(
+            "%d primary record(s) have no SEQ and no same-read donor; extraction skips them.",
+            summary.n_unrestorable,
+        )
+    if not summary.output_written:
+        return None
+    return restored, Path(str(restored) + ".bai")
+
+
 def _publish_canonical_barcode_identity(
     *,
     output_directory: str | Path,
@@ -1315,6 +1373,26 @@ def load_adata_core(
                 "schema_version": 1,
             },
         )
+
+    # `F64`: repair alignments whose rescued reads lost SEQ (minimap2 omits it
+    # on secondary records). New alignments come out right from the fixed
+    # rescue; this restores the ones already committed. Everything downstream
+    # -- demux classification, identity, extraction -- then reads the repair.
+    restored = _restore_primary_sequences_intermediate(
+        output_directory,
+        Path(aligned_sorted_output),
+        threads=cfg.threads,
+        force_redo=force_redo_intermediates,
+    )
+    if restored is not None:
+        previous = Path(aligned_sorted_output)
+        aligned_sorted_output, alignment_bai = restored
+        aligned_sorted_BAM = aligned_sorted_output.with_suffix("")
+        if alignment_partitions is not None:
+            alignment_partitions = [
+                (aligned_sorted_output if Path(bam_path) == previous else bam_path, row)
+                for bam_path, row in alignment_partitions
+            ]
 
     if cfg.make_beds:
         # Make beds and provide basic histograms
