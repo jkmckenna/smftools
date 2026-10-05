@@ -102,6 +102,31 @@ modality — that is what makes a mixed-modality dataset coherent rather than a 
 and `positive_class` is optional but recommended for binary tasks so downstream metrics know which
 class is positive.
 
+With `source: obs` the label column is read from each experiment's stored molecule metadata. With
+`source: table` it comes from a table in the project, joined to each molecule on the fields named
+in `keys` -- for labels that live in a sample sheet rather than in any stored stage:
+
+```python
+"labels": {
+    "source": "table",
+    "table": "ml/labels/b6_vs_nk.parquet",     # project-relative .parquet or .csv
+    "keys": ["experiment_id", "barcode", "reference"],
+    "column": "label",
+    "classes": {"inactive": 0, "active": 1},
+    "positive_class": "active",
+}
+```
+
+- `keys` may name `experiment_id`, `experiment_uid`, `barcode`, `sample`, `reference` (canonical,
+  through the project's reference registry) and `physical_reference` (strand-level).
+- Barcodes compare by number, so a sheet's `4` matches a stored `barcode04` or `NB04`.
+- A key may appear in only one table row. Molecules with no row follow `missing`.
+- The table's other columns are available to `filters` and to a split's `group_by`, so task
+  fields can live beside the label. A table column may not reuse the name of a stored metadata
+  column.
+- The table's checksum is part of the dataset selection identity: editing a label changes it.
+- Project scope only, since the path is resolved against the project directory.
+
 ## `splits`
 
 | Key | Required | Notes |

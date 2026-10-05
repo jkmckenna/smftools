@@ -384,3 +384,217 @@ def test_experiment_scope_resolves_current_preprocess_generation(tmp_path: Path)
     assert result.scope_kind == "experiment"
     assert result.scope_id == "deam"
     assert result.sources[0].channels[0].layer == "C_site_binary"
+
+
+# --- MLX-01: labels from a project table -----------------------------------
+
+
+def _table_plan(
+    *,
+    keys: list[str],
+    scope: str = "project",
+    filters: dict | None = None,
+    group_by: list[str] | None = None,
+    missing: str = "drop",
+    table: str = "ml/labels.parquet",
+):
+    return parse_ml_plan(
+        {
+            "schema_version": 1,
+            "scope": {"kind": scope},
+            "datasets": {
+                "reads": {
+                    "modalities": ["deaminase"],
+                    "references": ["locus"],
+                    "filters": filters or {},
+                    "labels": {
+                        "source": "table",
+                        "table": table,
+                        "keys": keys,
+                        "column": "label",
+                        "classes": {"inactive": 0, "active": 1},
+                        "positive_class": "active",
+                        "missing": missing,
+                    },
+                }
+            },
+            "splits": {
+                "by_experiment": {
+                    "strategy": "leave_one_group_out",
+                    "group_by": group_by or ["experiment_uid"],
+                }
+            },
+            "models": {"nb": {"backend": "sklearn", "family": "bernoulli_nb"}},
+            "jobs": {
+                "train": {
+                    "action": "train",
+                    "dataset": "reads",
+                    "split": "by_experiment",
+                    "models": ["nb"],
+                }
+            },
+        }
+    )
+
+
+def _barcoded_project(tmp_path: Path) -> Path:
+    entries = {
+        "deam": _write_experiment(
+            tmp_path,
+            experiment_id="deam",
+            modality="deaminase",
+            layers=["C_site_binary"],
+            samples=("barcode01", "barcode02"),
+        )
+    }
+    return _project(tmp_path, entries)
+
+
+def _write_labels(project: Path, rows: list[dict], name: str = "ml/labels.parquet") -> None:
+    path = project / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    frame = pd.DataFrame(rows)
+    if path.suffix == ".csv":
+        frame.to_csv(path, index=False)
+    else:
+        frame.to_parquet(path, index=False)
+
+
+def test_table_labels_join_on_experiment_and_barcode_across_spellings(tmp_path: Path) -> None:
+    project = _barcoded_project(tmp_path)
+    # The sheet says 1 and 2; the store says barcode01 and barcode02.
+    _write_labels(
+        project,
+        [
+            {"experiment_id": "deam", "barcode": 1, "label": "active"},
+            {"experiment_id": "deam", "barcode": 2, "label": "inactive"},
+        ],
+    )
+
+    result = plan_ml_dataset(
+        _table_plan(keys=["experiment_id", "barcode"]), "reads", project_dir=project
+    )
+
+    by_sample = dict(zip(result.identity_table["sample_id"], result.identity_table["class_id"]))
+    assert by_sample == {"barcode01": 1, "barcode02": 0}
+    assert result.to_dry_run_dict()["label_table_sha256"] == result.label_table_sha256
+
+
+def test_table_rows_without_a_label_follow_missing(tmp_path: Path) -> None:
+    project = _barcoded_project(tmp_path)
+    _write_labels(project, [{"experiment_id": "deam", "barcode": "NB01", "label": "active"}])
+
+    dropped = plan_ml_dataset(
+        _table_plan(keys=["experiment_id", "barcode"]), "reads", project_dir=project
+    )
+    assert dropped.n_observations == 1
+    with pytest.raises(MLSelectionError, match="missing values"):
+        plan_ml_dataset(
+            _table_plan(keys=["experiment_id", "barcode"], missing="error"),
+            "reads",
+            project_dir=project,
+        )
+
+
+def test_table_keys_must_be_unique_after_normalisation(tmp_path: Path) -> None:
+    project = _barcoded_project(tmp_path)
+    _write_labels(
+        project,
+        [
+            {"experiment_id": "deam", "barcode": 1, "label": "active"},
+            {"experiment_id": "deam", "barcode": "barcode01", "label": "inactive"},
+        ],
+        name="ml/labels.csv",
+    )
+    with pytest.raises(MLSelectionError, match="sharing a key"):
+        plan_ml_dataset(
+            _table_plan(keys=["experiment_id", "barcode"], table="ml/labels.csv"),
+            "reads",
+            project_dir=project,
+        )
+
+
+def test_table_keys_on_reference_and_sample(tmp_path: Path) -> None:
+    project = _barcoded_project(tmp_path)
+    _write_labels(
+        project,
+        [
+            {
+                "reference": "locus",
+                "physical_reference": "chr1+",
+                "sample": "barcode01",
+                "label": "active",
+            },
+            {
+                "reference": "locus",
+                "physical_reference": "chr1+",
+                "sample": "barcode02",
+                "label": "inactive",
+            },
+        ],
+        name="ml/labels.csv",
+    )
+    result = plan_ml_dataset(
+        _table_plan(keys=["reference", "physical_reference", "sample"], table="ml/labels.csv"),
+        "reads",
+        project_dir=project,
+    )
+    assert result.class_counts == {"0": 1, "1": 1}
+
+
+def test_filters_and_groups_may_name_table_columns(tmp_path: Path) -> None:
+    project = _barcoded_project(tmp_path)
+    _write_labels(
+        project,
+        [
+            {"experiment_id": "deam", "barcode": 1, "label": "active", "harvest": "fresh"},
+            {"experiment_id": "deam", "barcode": 2, "label": "inactive", "harvest": "cycling"},
+        ],
+    )
+    result = plan_ml_dataset(
+        _table_plan(
+            keys=["experiment_id", "barcode"],
+            filters={"harvest": "fresh"},
+            group_by=["experiment_uid", "harvest"],
+        ),
+        "reads",
+        project_dir=project,
+    )
+    assert result.n_observations == 1
+    assert list(result.identity_table["harvest"]) == ["fresh"]
+
+
+def test_table_columns_may_not_shadow_stored_metadata(tmp_path: Path) -> None:
+    project = _barcoded_project(tmp_path)
+    _write_labels(
+        project,
+        [{"experiment_id": "deam", "barcode": 1, "label": "active", "activity": "inactive"}],
+    )
+    with pytest.raises(MLSelectionError, match="collide with molecule metadata"):
+        plan_ml_dataset(
+            _table_plan(keys=["experiment_id", "barcode"]), "reads", project_dir=project
+        )
+
+
+def test_selection_identity_changes_with_table_content(tmp_path: Path) -> None:
+    project = _barcoded_project(tmp_path)
+    plan = _table_plan(keys=["experiment_id", "barcode"])
+    rows = [
+        {"experiment_id": "deam", "barcode": 1, "label": "active"},
+        {"experiment_id": "deam", "barcode": 2, "label": "inactive"},
+    ]
+    _write_labels(project, rows)
+    first = plan_ml_dataset(plan, "reads", project_dir=project)
+    _write_labels(project, [{**row, "label": "active"} for row in rows])
+    second = plan_ml_dataset(plan, "reads", project_dir=project)
+
+    assert first.membership_fingerprint == second.membership_fingerprint
+    assert first.selection_id != second.selection_id
+
+
+def test_missing_label_table_is_reported(tmp_path: Path) -> None:
+    project = _barcoded_project(tmp_path)
+    with pytest.raises(MLSelectionError, match="label table not found"):
+        plan_ml_dataset(
+            _table_plan(keys=["experiment_id", "barcode"]), "reads", project_dir=project
+        )

@@ -406,3 +406,94 @@ def test_parse_does_not_mutate_user_mapping() -> None:
     parse_ml_plan(raw)
 
     assert raw == before
+
+
+# --- MLX-01: label tables --------------------------------------------------
+
+
+def _label_table_document(labels: dict, scope: str = "project") -> dict:
+    return {
+        "schema_version": 1,
+        "scope": {"kind": scope},
+        "datasets": {
+            "reads": {
+                "modalities": ["deaminase"],
+                "labels": {"column": "label", "classes": {"inactive": 0, "active": 1}, **labels},
+            }
+        },
+        "splits": {"s": {"strategy": "leave_one_group_out", "group_by": ["experiment_uid"]}},
+        "models": {"nb": {"backend": "sklearn", "family": "bernoulli_nb"}},
+        "jobs": {"t": {"action": "train", "dataset": "reads", "split": "s", "models": ["nb"]}},
+    }
+
+
+def test_table_labels_parse_and_round_trip():
+    from smftools.machine_learning.plan import parse_ml_plan
+
+    plan = parse_ml_plan(
+        _label_table_document(
+            {"source": "table", "table": "ml/labels.parquet", "keys": ["experiment_id", "barcode"]}
+        )
+    )
+    labels = plan.datasets["reads"].labels
+    assert (labels.source, labels.table, labels.keys) == (
+        "table",
+        "ml/labels.parquet",
+        ("experiment_id", "barcode"),
+    )
+    assert parse_ml_plan(plan.to_dict()).plan_hash == plan.plan_hash
+
+
+def test_obs_labels_serialise_without_table_fields():
+    from smftools.machine_learning.plan import parse_ml_plan
+
+    plan = parse_ml_plan(_label_table_document({}))
+    # Plans written before MLX-01 keep their hash.
+    assert set(plan.to_dict()["datasets"]["reads"]["labels"]) == {
+        "column",
+        "classes",
+        "source",
+        "missing",
+        "positive_class",
+    }
+
+
+@pytest.mark.parametrize(
+    "labels, scope, message",
+    [
+        (
+            {"source": "table", "table": "ml/l.parquet", "keys": ["barcode"]},
+            "experiment",
+            "project scope",
+        ),
+        (
+            {"source": "table", "table": "/abs/l.parquet", "keys": ["barcode"]},
+            "project",
+            "inside the project",
+        ),
+        (
+            {"source": "table", "table": "../l.parquet", "keys": ["barcode"]},
+            "project",
+            "inside the project",
+        ),
+        (
+            {"source": "table", "table": "ml/l.tsv", "keys": ["barcode"]},
+            "project",
+            ".parquet or .csv",
+        ),
+        ({"source": "table", "table": "ml/l.parquet", "keys": ["well"]}, "project", "unknown keys"),
+        ({"source": "table", "table": "ml/l.parquet"}, "project", "keys"),
+        (
+            {"source": "table", "table": "ml/l.parquet", "keys": ["label"]},
+            "project",
+            "unknown keys",
+        ),
+        ({"table": "ml/l.parquet"}, "project", "only to source 'table'"),
+        ({"source": "sheet"}, "project", "'obs' or 'table'"),
+    ],
+)
+def test_table_label_declarations_are_validated(labels, scope, message):
+    from smftools.machine_learning.plan import MLPlanValidationError, parse_ml_plan
+
+    with pytest.raises(MLPlanValidationError, match=message):
+        parse_ml_plan(_label_table_document(labels, scope=scope))
