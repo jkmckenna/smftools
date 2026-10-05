@@ -113,3 +113,38 @@ def test_iter_set_parts_reflects_new_registration_without_any_cache(tmp_path):
     assert {p.obs["experiment"].iloc[0] for p in parts} == {"expA", "expB", "expC"}
     # And the set store writes nothing to disk.
     assert not (proj / "project_outputs" / "sets").exists()
+
+
+def _empty_for(experiment_name, monkeypatch):
+    """Make materialize report an empty selection for one experiment (`F61`)."""
+    import smftools.informatics.partition_read as partition_read
+
+    real = partition_read.materialize
+
+    def materialize(spine_path, *args, **kwargs):
+        if experiment_name in str(spine_path):
+            raise partition_read.EmptySelectionError("materialize: selection matched no molecules")
+        return real(spine_path, *args, **kwargs)
+
+    monkeypatch.setattr(partition_read, "materialize", materialize)
+
+
+def test_iter_set_parts_skips_a_member_with_no_molecules(tmp_path, monkeypatch):
+    proj, uid = _make_project(tmp_path)
+    _empty_for("expB", monkeypatch)
+
+    parts = list(iter_set_parts(proj, uid))
+
+    assert [part.obs["experiment"].iloc[0] for part in parts] == ["expA"]
+
+
+def test_iter_set_parts_still_raises_when_every_member_is_empty(tmp_path, monkeypatch):
+    from smftools.informatics.partition_read import EmptySelectionError
+
+    proj, uid = _make_project(tmp_path)
+    _empty_for("exp", monkeypatch)
+
+    with pytest.raises(EmptySelectionError):
+        list(iter_set_parts(proj, uid))
+    # Still a ValueError, so existing callers that catch ValueError are unaffected.
+    assert issubclass(EmptySelectionError, ValueError)
