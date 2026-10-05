@@ -201,3 +201,38 @@ def test_full_materialization_refuses_before_opening_partitions(tmp_path: Path) 
 
     with pytest.raises(MLMemoryBudgetError, match="use iter_batches"):
         PartitionDataset(plan).materialize("train")
+
+
+def test_read_order_is_canonical_without_read_keys() -> None:
+    from dataclasses import replace
+
+    from smftools.machine_learning.data.partition_dataset import (
+        MLPartitionDataPlan,
+        PartitionReadEntry,
+    )
+
+    entries = tuple(
+        PartitionReadEntry(
+            order_index=index,
+            molecule_uid=f"m{index}",
+            experiment_uid="e",
+            read_id=f"r{index}",
+            reference="locus",
+            modality="deaminase",
+            class_id=0,
+            split="train",
+        )
+        for index in range(4)
+    )
+    plan = object.__new__(MLPartitionDataPlan)
+    object.__setattr__(plan, "entries", entries)
+    assert MLPartitionDataPlan.read_order(plan, "train") == entries
+
+    keyed = tuple(replace(entry, read_key=("p", 3 - entry.order_index)) for entry in entries)
+    object.__setattr__(plan, "entries", keyed)
+    assert [entry.order_index for entry in MLPartitionDataPlan.read_order(plan, "train")] == [
+        3,
+        2,
+        1,
+        0,
+    ]

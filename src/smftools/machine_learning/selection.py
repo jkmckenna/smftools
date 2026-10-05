@@ -159,6 +159,7 @@ class SelectedExperimentSource:
     run_root: Path | None = None
     stage_spines: Mapping[str, Path] = field(default_factory=dict)
     stage_generations: Mapping[str, str] = field(default_factory=dict)
+    stage_read_indexes: Mapping[str, Path] = field(default_factory=dict)
 
     def to_dict(self, *, include_paths: bool = False) -> dict[str, Any]:
         """Return path-neutral provenance, optionally including diagnostic paths."""
@@ -1094,6 +1095,11 @@ def plan_ml_dataset(
                 },
                 stage_generations={
                     channel.stage: _stage_generation_id(item, channel.stage) for channel in channels
+                },
+                stage_read_indexes={
+                    channel.stage: index
+                    for channel in channels
+                    if (index := _stage_read_index(item, channel.stage)) is not None
                 },
             )
         )

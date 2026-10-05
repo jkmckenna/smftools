@@ -15,6 +15,15 @@ Two ways to get rows out of a partition store, with different guarantees.
 allocator arena settles and then plateaus; over a 300-batch read, growth per batch fell from
 739,937 bytes in the first quarter to 17,270 in the last.
 
+Reading from a store has a large fixed cost per call: loading the experiment's spine and opening
+each store section touched costs seconds on a real store, whatever the row count. So
+`iter_batches()` decodes a **block** of whole batches per call (`max_block_bytes`, 512 MiB by
+default) and cuts it into batches, and when the job is bound with read indexes (as `bind_ml_job`
+does) it reads rows **partition by partition** rather than in manifest order. On one real fold
+(16,827 rows × 4,690 positions) a full pass fell from about five hours to 205 seconds. Batch
+contents follow read order; `materialize()` returns rows in manifest order. Lowering
+`max_block_bytes` trades speed for memory: one block's decoded rows are in memory at once.
+
 `materialize()` runs a preflight and **refuses** rather than risking an out-of-memory kill. The
 refusal is a closed form:
 

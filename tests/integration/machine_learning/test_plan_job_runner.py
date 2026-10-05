@@ -12,6 +12,7 @@ import pytest
 
 from smftools.informatics.molecule_identity import molecule_uid
 from smftools.informatics.partition_store import write_experiment_store
+from smftools.machine_learning.data.partition_dataset import PartitionReadPolicy
 from smftools.machine_learning.orchestration import bind_ml_job, run_bound_train_job
 from smftools.machine_learning.plan import parse_ml_plan
 from smftools.project.reference_registry import ReferenceRegistry
@@ -79,7 +80,14 @@ def _write_experiment(root: Path, experiment_id: str, rng: np.random.Generator) 
             "reference_end": N_POSITIONS,
         }
     ).to_parquet(molecule_index / "part.parquet", index=False)
-    pd.DataFrame({"molecule_uid": uids}).to_parquet(read_index / "part.parquet", index=False)
+    # As the pipeline's read index: which store partition holds each read.
+    pd.DataFrame(
+        {
+            "molecule_uid": uids,
+            "group_path": [f"store/chr1/{barcode}" for barcode in barcodes],
+            "group_row": list(range(READS_PER_BARCODE)) * 2,
+        }
+    ).to_parquet(read_index / "part.parquet", index=False)
     # The written-store catalog as partitioned preprocess writes it (F66).
     pd.DataFrame(
         {"task_id": ["t0"], "reference": ["chr1+"], "layers": [[]], "has_x": [True]}
@@ -212,3 +220,89 @@ def test_snapshot_identity_is_stable_across_binds(project: Path) -> None:
     assert [fold.split.split_id for fold in first.folds] == [
         fold.split.split_id for fold in second.folds
     ]
+
+
+# --- MLX-09: partition-major reads (F67) -----------------------------------
+
+
+def test_batches_read_one_partition_at_a_time(project: Path) -> None:
+    bound = bind_ml_job(
+        _plan(), "train", project_dir=project, policy=PartitionReadPolicy(batch_size=8)
+    )
+    fold = bound.folds[0]
+    partition_of = {entry.read_id: entry.read_key[0] for entry in fold.dataset.plan.entries}
+    batches = list(fold.dataset.iter_batches("train"))
+
+    assert all(entry.read_key for entry in fold.dataset.plan.entries)
+    # Each batch comes from one store partition (8 divides the 24 reads per barcode).
+    assert all(len({partition_of[read_id] for read_id in batch.read_ids}) == 1 for batch in batches)
+    read = [read_id for batch in batches for read_id in batch.read_ids]
+    expected = [entry.read_id for entry in fold.dataset.plan.entries_for("train")]
+    assert sorted(read) == sorted(expected) and len(read) == len(set(read))
+
+
+def test_materialized_split_keeps_manifest_order(project: Path) -> None:
+    bound = bind_ml_job(
+        _plan(), "train", project_dir=project, policy=PartitionReadPolicy(batch_size=8)
+    )
+    dataset = bound.folds[0].dataset
+    canonical = dataset.plan.entries_for("train")
+    assert [entry.read_id for entry in dataset.plan.read_order("train")] != [
+        entry.read_id for entry in canonical
+    ]
+
+    data = dataset.materialize("train")
+
+    assert list(data.molecule_uids) == [entry.molecule_uid for entry in canonical]
+    assert list(data.labels) == [entry.class_id for entry in canonical]
+
+
+def test_block_reads_match_batch_reads_with_fewer_store_reads(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import smftools.machine_learning.data.partition_dataset as reader
+
+    calls = []
+    original = reader.materialize
+
+    def counting(*args, **kwargs):
+        calls.append(1)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(reader, "materialize", counting)
+
+    def read(max_block_bytes: int):
+        policy = PartitionReadPolicy(batch_size=8, max_block_bytes=max_block_bytes)
+        dataset = bind_ml_job(_plan(), "train", project_dir=project, policy=policy).folds[0].dataset
+        calls.clear()
+        batches = list(dataset.iter_batches("train"))
+        return batches, len(calls)
+
+    per_batch, batch_reads = read(1)  # a block of one batch
+    blocked, block_reads = read(1024**3)
+
+    assert block_reads < batch_reads
+    assert [batch.read_ids for batch in blocked] == [batch.read_ids for batch in per_batch]
+    for left, right in zip(blocked, per_batch, strict=True):
+        np.testing.assert_array_equal(left.values, right.values)
+        np.testing.assert_array_equal(left.labels, right.labels)
+        np.testing.assert_array_equal(left.padding_mask, right.padding_mask)
+
+
+def test_test_role_is_predicted_in_batches_not_materialized(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import smftools.machine_learning.data.partition_dataset as reader
+
+    def refuse(self, split):
+        raise AssertionError("the runner must not materialize a split")
+
+    monkeypatch.setattr(reader.PartitionDataset, "materialize", refuse)
+    bound = bind_ml_job(
+        _plan(), "train", project_dir=project, policy=PartitionReadPolicy(batch_size=8)
+    )
+    runs = run_bound_train_job(bound)
+
+    for run, fold in zip(runs, bound.folds, strict=True):
+        expected = [entry.molecule_uid for entry in fold.dataset.plan.read_order("test")]
+        assert list(run.predictions.molecule_uids) == expected
