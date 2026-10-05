@@ -598,3 +598,79 @@ def test_missing_label_table_is_reported(tmp_path: Path) -> None:
         plan_ml_dataset(
             _table_plan(keys=["experiment_id", "barcode"]), "reads", project_dir=project
         )
+
+
+# --- MLX-05: stores as the pipeline writes them (F66) ----------------------
+
+
+def _x_channel(site_context: str = "C") -> list[dict]:
+    return [
+        {
+            "name": "accessibility",
+            "biological_role": "accessibility",
+            "sources": [
+                {
+                    "modality": "deaminase",
+                    "stage": "preprocess",
+                    "layer": "X",
+                    "site_context": site_context,
+                }
+            ],
+        }
+    ]
+
+
+def _pipeline_shaped_project(tmp_path: Path, *, stage_obs: dict | None = None) -> Path:
+    """Planner catalog without layers, written-store catalog beside the read index."""
+    entry = _write_experiment(
+        tmp_path, experiment_id="deam", modality="deaminase", layers=["nan0_0minus1"]
+    )
+    entry["catalogs"].pop("preprocess_task_catalog")
+    preprocess = Path(entry["path"]) / "preprocess_adata_outputs"
+    planner = pd.read_parquet(preprocess / "task_catalog.parquet").drop(columns=["layers"])
+    planner.to_parquet(preprocess / "task_catalog.parquet", index=False)
+    written = planner.assign(layers=[["nan0_0minus1", "nan_half"]], has_x=[True])
+    written.to_parquet(preprocess / "catalog.parquet", index=False)
+    if stage_obs is not None:
+        pd.DataFrame(stage_obs).to_parquet(preprocess / "stage_obs.parquet", index=False)
+    return _project(tmp_path, {"deam": entry})
+
+
+def test_selection_reads_the_written_store_catalog_and_x(tmp_path: Path) -> None:
+    project = _pipeline_shaped_project(tmp_path)
+    result = plan_ml_dataset(_plan(channels=_x_channel()), "reads", project_dir=project)
+    assert result.sources[0].channels[0].layer == "X"
+
+
+def test_missing_layer_error_names_what_the_stage_wrote(tmp_path: Path) -> None:
+    project = _pipeline_shaped_project(tmp_path)
+    with pytest.raises(MLSelectionError, match=r"wrote \['X', 'nan0_0minus1', 'nan_half'\]"):
+        plan_ml_dataset(_plan(), "reads", project_dir=project)
+
+
+def test_deaminase_gpc_subset_is_accessibility(tmp_path: Path) -> None:
+    project = _pipeline_shaped_project(tmp_path)
+    result = plan_ml_dataset(_plan(channels=_x_channel("GpC")), "reads", project_dir=project)
+    assert result.sources[0].channels[0].site_context == "GpC"
+    with pytest.raises(MLSelectionError, match="C or GpC sites"):
+        plan_ml_dataset(_plan(channels=_x_channel("CpG")), "reads", project_dir=project)
+
+
+def test_filters_reach_stage_obs_qc_flags(tmp_path: Path) -> None:
+    project = _pipeline_shaped_project(
+        tmp_path,
+        stage_obs={"read_id": ["deam_read_0", "deam_read_1"], "passes_dedup": [False, True]},
+    )
+    plan = parse_ml_plan(
+        {
+            **_plan(channels=_x_channel()).to_dict(),
+            "datasets": {
+                "reads": {
+                    **_plan(channels=_x_channel()).to_dict()["datasets"]["reads"],
+                    "filters": {"passes_dedup": True},
+                }
+            },
+        }
+    )
+    result = plan_ml_dataset(plan, "reads", project_dir=project)
+    assert list(result.identity_table["read_id"]) == ["deam_read_1"]

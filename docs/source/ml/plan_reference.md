@@ -79,7 +79,7 @@ Every required key, nothing optional:
 | `channels` | yes | Ordered biological channels; see below. |
 | `experiments`, `samples` | no | `{"include": [...], "exclude": [...]}`. |
 | `references` | no | Reference names to restrict to. |
-| `filters` | no | Free-form additional selection. |
+| `filters` | no | Free-form additional selection on per-read metadata: the molecule index, the raw obs, then the obs of each stage the dataset reads (e.g. preprocess `passes_qc`, `passes_dedup`). |
 | `labels` | no | Required for any dataset a `train` job uses. |
 
 Each **channel** separates the biological meaning from the physical layer it comes from:
@@ -97,6 +97,13 @@ Each **channel** separates the biological meaning from the physical layer it com
 
 Multiple sources let one biological channel be populated from different physical layers per
 modality — that is what makes a mixed-modality dataset coherent rather than a concatenation.
+
+Which layer to name depends on how the store was written. Stores from the partitioned preprocess
+stage hold binary site calls (0/1, NaN where unobserved) in `X` and write no `*_site_binary`
+layers, so declare `"layer": "X"` with the site context to select — `C` or `GpC` for a deaminase,
+`GpC` or `CpG` for conversion. The default channels name the `*_site_binary` layers of the older
+single-file preprocess output. If a declared layer is absent, selection lists the layers the stage
+did write.
 
 **Labels**: `column` and `classes` are required; `source` defaults to `obs`, `missing` to `drop`,
 and `positive_class` is optional but recommended for binary tasks so downstream metrics know which
