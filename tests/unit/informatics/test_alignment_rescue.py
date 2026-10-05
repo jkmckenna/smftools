@@ -34,13 +34,21 @@ def _write_bam(bam_path, contigs, records):
             a = _pysam.AlignedSegment()
             a.query_name = info["name"]
             query_length = sum(length for op, length in info["cigar"] if op in (0, 1, 4))
-            a.query_sequence = "A" * query_length
-            a.query_qualities = _pysam.qualitystring_to_array("I" * query_length)
+            # minimap2 omits SEQ/QUAL on secondary records; "no_seq" mimics it.
+            if not info.get("no_seq"):
+                a.query_sequence = info.get("sequence") or "A" * query_length
+                a.query_qualities = _pysam.qualitystring_to_array(
+                    info.get("qualities") or "I" * query_length
+                )
             flag = 0
             if info.get("secondary"):
                 flag |= 0x100
             if info.get("supplementary"):
                 flag |= 0x800
+            if info.get("reverse"):
+                flag |= 0x10
+            if info.get("mate"):
+                flag |= 0x1 | (0x40 if info["mate"] == 1 else 0x80)
             a.flag = flag
             a.reference_id = info["contig"]
             a.reference_start = info["start"]
@@ -374,3 +382,248 @@ def test_build_record_chromosome_map_deaminase_and_direct_use_identity(tmp_path)
     for modality in ("deaminase", "direct"):
         record_chromosome = build_record_chromosome_map(fasta_path, modality)
         assert record_chromosome == {"6B6_top": "6B6_top", "6B6_enh_del_top": "6B6_enh_del_top"}
+
+
+# --- F64: rescued reads must keep their sequence ----------------------------
+
+_READ = "ACGTTGCAACGG" * 25  # 300 bp, asymmetric so reverse-complement is visible
+_QUALS = "".join(chr(33 + 10 + (i % 30)) for i in range(300))
+_TWO_REFS = [("6B6_top", 5000), ("6B6_enh_del_top", 4500)]
+_CHROMS = {"6B6_top": "6B6", "6B6_enh_del_top": "6B6_enh_del"}
+
+
+def _primary(path):
+    with _pysam.AlignmentFile(str(path), "rb") as fh:
+        return next(r for r in fh.fetch(until_eof=True) if not r.is_secondary)
+
+
+@requires_pysam
+@pytest.mark.parametrize("opposite_strand", [False, True])
+def test_rescued_read_keeps_its_sequence(tmp_path, opposite_strand):
+    bam_path = tmp_path / "in.bam"
+    _write_bam(
+        bam_path,
+        contigs=_TWO_REFS,
+        records=[
+            {  # worse primary, holds the read's SEQ
+                "name": "readA",
+                "contig": 0,
+                "start": 100,
+                "cigar": [(CIGAR_M, 250), (CIGAR_S, 50)],
+                "sequence": _READ,
+                "qualities": _QUALS,
+                "mapping_quality": 7,
+            },
+            {  # better secondary, written without SEQ as minimap2 does
+                "name": "readA",
+                "contig": 1,
+                "start": 100,
+                "cigar": [(CIGAR_M, 300)],
+                "secondary": True,
+                "no_seq": True,
+                "reverse": opposite_strand,
+                "mapping_quality": 0,
+            },
+        ],
+    )
+    out = tmp_path / "out.bam"
+
+    summary = rescue_secondary_alignments(bam_path, out, _CHROMS)
+
+    assert summary.n_reads_rescued == 1
+    assert summary.n_sequences_restored == 1
+    promoted = _primary(out)
+    assert promoted.reference_name == "6B6_enh_del_top"
+    expected = _READ.translate(str.maketrans("ACGT", "TGCA"))[::-1] if opposite_strand else _READ
+    assert promoted.query_sequence == expected
+    quals = [ord(c) - 33 for c in _QUALS]
+    assert list(promoted.query_qualities) == (quals[::-1] if opposite_strand else quals)
+
+
+@requires_pysam
+def test_restore_primary_sequences_repairs_an_already_rescued_bam(tmp_path):
+    from smftools.informatics.alignment_rescue import restore_primary_sequences
+
+    # The pre-fix state: flags already swapped, promoted record still SEQ-less.
+    broken = tmp_path / "broken.bam"
+    _write_bam(
+        broken,
+        contigs=_TWO_REFS,
+        records=[
+            {
+                "name": "readA",
+                "contig": 0,
+                "start": 100,
+                "cigar": [(CIGAR_M, 250), (CIGAR_S, 50)],
+                "secondary": True,
+                "sequence": _READ,
+                "qualities": _QUALS,
+            },
+            {
+                "name": "readA",
+                "contig": 1,
+                "start": 100,
+                "cigar": [(CIGAR_M, 300)],
+                "no_seq": True,
+                "mapping_quality": 7,
+            },
+        ],
+    )
+    out = tmp_path / "restored.bam"
+
+    summary = restore_primary_sequences(broken, out)
+
+    assert (summary.n_sequenceless_primary, summary.n_restored, summary.output_written) == (
+        1,
+        1,
+        True,
+    )
+    assert _primary(out).query_sequence == _READ
+    # Idempotent: the repaired BAM needs nothing and is not rewritten.
+    again = restore_primary_sequences(out, tmp_path / "again.bam")
+    assert (again.n_sequenceless_primary, again.output_written) == (0, False)
+    assert not (tmp_path / "again.bam").exists()
+
+
+@requires_pysam
+def test_restore_refuses_a_donor_that_does_not_fit_the_cigar(tmp_path):
+    from smftools.informatics.alignment_rescue import restore_primary_sequences
+
+    broken = tmp_path / "broken.bam"
+    _write_bam(
+        broken,
+        contigs=[("6B6_top", 5000)],
+        records=[
+            {
+                "name": "readA",
+                "contig": 0,
+                "start": 100,
+                "cigar": [(CIGAR_M, 200)],
+                "secondary": True,
+                "sequence": _READ[:200],
+                "qualities": _QUALS[:200],
+            },
+            {
+                "name": "readA",
+                "contig": 0,
+                "start": 900,
+                "cigar": [(CIGAR_M, 300)],
+                "no_seq": True,
+            },
+        ],
+    )
+
+    summary = restore_primary_sequences(broken, tmp_path / "out.bam")
+
+    assert summary.n_restored == 0
+    assert summary.n_unrestorable == 1
+
+
+def _primaries(path):
+    with _pysam.AlignmentFile(str(path), "rb") as fh:
+        return [r for r in fh.fetch(until_eof=True) if not r.is_secondary]
+
+
+@requires_pysam
+def test_rescue_promotes_one_record_when_a_chimeric_read_shares_a_start(tmp_path):
+    # Two alignments of one chimeric read at the same start, different extents:
+    # rescue must promote only the one it chose (the longer), not both.
+    bam_path = tmp_path / "in.bam"
+    _write_bam(
+        bam_path,
+        contigs=_TWO_REFS,
+        records=[
+            {
+                "name": "readA",
+                "contig": 0,
+                "start": 100,
+                "cigar": [(CIGAR_M, 250), (CIGAR_S, 50)],
+                "sequence": _READ,
+                "qualities": _QUALS,
+                "mapping_quality": 7,
+            },
+            {
+                "name": "readA",
+                "contig": 1,
+                "start": 100,
+                "cigar": [(CIGAR_M, 300)],
+                "secondary": True,
+                "no_seq": True,
+            },
+            {
+                "name": "readA",
+                "contig": 1,
+                "start": 100,
+                "cigar": [(CIGAR_S, 200), (CIGAR_M, 100)],
+                "secondary": True,
+                "no_seq": True,
+            },
+        ],
+    )
+    out = tmp_path / "out.bam"
+
+    rescue_secondary_alignments(bam_path, out, _CHROMS)
+
+    primaries = _primaries(out)
+    assert len(primaries) == 1
+    assert primaries[0].query_alignment_length == 300
+    assert primaries[0].query_sequence == _READ
+
+
+@requires_pysam
+def test_restore_demotes_extra_primaries_left_by_old_rescue(tmp_path):
+    from smftools.informatics.alignment_rescue import restore_primary_sequences
+
+    broken = tmp_path / "broken.bam"
+    _write_bam(
+        broken,
+        contigs=_TWO_REFS,
+        records=[
+            {
+                "name": "readA",
+                "contig": 0,
+                "start": 100,
+                "cigar": [(CIGAR_M, 250), (CIGAR_S, 50)],
+                "secondary": True,
+                "sequence": _READ,
+                "qualities": _QUALS,
+            },
+            {"name": "readA", "contig": 1, "start": 100, "cigar": [(CIGAR_M, 300)], "no_seq": True},
+            {
+                "name": "readA",
+                "contig": 1,
+                "start": 100,
+                "cigar": [(CIGAR_S, 200), (CIGAR_M, 100)],
+                "no_seq": True,
+            },
+        ],
+    )
+    out = tmp_path / "restored.bam"
+
+    summary = restore_primary_sequences(broken, out)
+
+    assert (summary.n_restored, summary.n_extra_primaries_demoted) == (1, 1)
+    primaries = _primaries(out)
+    assert len(primaries) == 1
+    assert primaries[0].query_alignment_length == 300
+    assert primaries[0].query_sequence == _READ
+
+
+@requires_pysam
+def test_restore_leaves_paired_mates_as_two_primaries(tmp_path):
+    from smftools.informatics.alignment_rescue import restore_primary_sequences
+
+    # Mates share a name but are separate reads, each correctly primary.
+    bam_path = tmp_path / "pair.bam"
+    _write_bam(
+        bam_path,
+        contigs=[("6B6_top", 5000)],
+        records=[
+            {"name": "pair", "contig": 0, "start": 100, "cigar": [(CIGAR_M, 150)], "mate": 1},
+            {"name": "pair", "contig": 0, "start": 400, "cigar": [(CIGAR_M, 150)], "mate": 2},
+        ],
+    )
+
+    summary = restore_primary_sequences(bam_path, tmp_path / "out.bam")
+
+    assert (summary.n_extra_primaries_demoted, summary.output_written) == (0, False)
