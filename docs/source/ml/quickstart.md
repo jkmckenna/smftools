@@ -91,9 +91,20 @@ result.n_training_observations
 result.balance.result_counts
 ```
 
-`dataset` here is the partition dataset the workflow resolves for a job. Constructing one directly
-means binding a dataset snapshot, a split manifest, and local stage spines by hand — an advanced
-path, not the normal one.
+`dataset` here is the partition dataset the workflow resolves for a job. `bind_ml_job` builds it
+from a plan: the dataset snapshot, one split manifest per fold, and the experiments' stage spines.
+`run_bound_train_job` then trains every model the job declares on each fold and evaluates it on
+that fold's test role:
+
+```python
+from smftools.machine_learning.orchestration import bind_ml_job, run_bound_train_job
+
+bound = bind_ml_job(plan, "train_nb", project_dir="path/to/project")
+for run in run_bound_train_job(bound):
+    print(run.fold_name, run.model_name, run.evaluation.metrics)
+```
+
+Results come back in memory; they are not yet published as run artifacts.
 
 ### sklearn streams by default
 

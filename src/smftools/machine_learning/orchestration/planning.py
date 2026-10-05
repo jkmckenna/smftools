@@ -11,7 +11,7 @@ from types import MappingProxyType
 from typing import Any
 
 from ..contracts import InputSchema, LabelSchema
-from ..models.registry import BUILTIN_MODEL_REGISTRY, ModelRegistry
+from ..models.registry import BUILTIN_MODEL_REGISTRY, ModelRegistry, ResolvedModelDefinition
 from ..plan import DatasetSpec, MLPlan, ModelSpec, SplitSpec
 from ..selection import MLDataSelectionPlan, plan_ml_dataset
 from ..splitting import MLSplitResolution, plan_ml_splits
@@ -193,14 +193,14 @@ def _split_report(
     return report
 
 
-def _resolved_model(
+def resolve_plan_model(
     name: str,
     spec: ModelSpec,
     *,
-    dataset_name: str,
     input_schema: InputSchema,
-    registry: ModelRegistry,
-) -> dict[str, Any]:
+    registry: ModelRegistry = BUILTIN_MODEL_REGISTRY,
+) -> ResolvedModelDefinition:
+    """Resolve one plan model declaration against a dataset's input schema."""
     try:
         if spec.backend == "sklearn":
             assert spec.family is not None
@@ -229,6 +229,18 @@ def _resolved_model(
             f"models.{name}.backend: declared {spec.backend!r} but registry resolved "
             f"{resolved.backend!r}"
         )
+    return resolved
+
+
+def _resolved_model(
+    name: str,
+    spec: ModelSpec,
+    *,
+    dataset_name: str,
+    input_schema: InputSchema,
+    registry: ModelRegistry,
+) -> dict[str, Any]:
+    resolved = resolve_plan_model(name, spec, input_schema=input_schema, registry=registry)
     return {
         "model_name": name,
         "dataset_name": dataset_name,

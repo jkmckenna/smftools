@@ -1,8 +1,8 @@
 # ML project labels, position masks and coordinate maps (`MLX`)
 
-**Status:** in progress. `MLX-01` merged; `MLX-05` implemented on
-`feature/mlx-05-real-store-selection`, not merged; `MLX-02`–`MLX-04`, `MLX-06`,
-`MLX-07` proposed. `MLX-06` blocks any training from a plan.
+**Status:** in progress. `MLX-01`, `MLX-05` merged; `MLX-06` implemented on
+`feature/mlx-06-plan-job-runner`, not merged; `MLX-02`–`MLX-04`, `MLX-07`–`MLX-09`
+proposed. `MLX-09` blocks training on real stores at useful speed.
 
 ## Problem
 
@@ -36,9 +36,11 @@ an ML plan today, for three independent reasons found while designing it:
 | `MLX-02` position masks | proposed | include/exclude windows within a dataset's span |
 | `MLX-03` cross-reference coordinate maps | proposed | place several references' molecules in one coordinate frame |
 | `MLX-04` qualification | proposed | one real project study end to end |
-| `MLX-05` real-store compatibility | implemented, not merged | resolve channels and QC filters against real pipeline stores (`F66`) |
-| `MLX-06` plan job runner | proposed | bind a resolved plan to a dataset snapshot, split and partition dataset, and run its jobs |
+| `MLX-05` real-store compatibility | merged | resolve channels and QC filters against real pipeline stores (`F66`) |
+| `MLX-06` plan job runner | implemented, not merged | bind a resolved plan to a dataset snapshot, split and partition dataset per fold; train and test-evaluate each fold |
 | `MLX-07` training-only groups | proposed | let single-class groups train without being held-out folds |
+| `MLX-08` published fold runs | proposed | run `MLX-06` folds through the job service as immutable run artifacts |
+| `MLX-09` partition-major reads | proposed | open each store partition once per pass instead of once per batch (`F67`) |
 
 Order: `MLX-01`, `MLX-05`, `MLX-06` (together they unblock a single-reference,
 full-span pilot), then `MLX-02`, then `MLX-03`, which builds on `MLX-02`'s
@@ -205,6 +207,29 @@ job through the existing job service. Tests: a project fixture trains a
 `bernoulli_nb` end to end; the bound snapshot id equals the dry run's
 selection-derived identity.
 
+**As implemented** (`orchestration/binding.py`). `bind_ml_job(plan, job,
+project_dir=...)` resolves the job's selection, builds the snapshot
+(`snapshot_from_selection`: one `ExperimentSource` per experiment, keyed on its
+molecule-index sha256; observations from the selection identity table; one
+interval over the selected span), turns each resolved fold into a
+`SplitManifest` through `MLSplitResolution.to_manifest`, and binds each to the
+experiments' stage spines with `build_partition_data_plan`. Selection now
+carries those spine paths, run roots and generation ids on each selected
+source (execution bindings, outside every identity hash).
+`run_bound_train_job` fits each declared model per fold (the plan's balancing
+profile applies), predicts the fold's test role and evaluates it, returning
+results in memory. Model resolution is shared with the dry run
+(`resolve_plan_model`). Not done: publishing through the job service
+(`MLX-08`), and test-role prediction is materialized, so bounded by
+`max_materialization_bytes`. Tests: `test_plan_job_runner.py` (stores written
+by `write_experiment_store`): one fold per held-out experiment, train and
+evaluate every fold, stable snapshot and split ids across binds.
+
+**Real-data check.** The pilot binds on the real project in 83 s (5 folds,
+16,827 train rows in the first). Training is correct but impractically slow:
+~70 s per 64-row batch, because the reader reopens ~48 scattered partitions
+per batch (`F67`, `MLX-09`). Stopped after 91 min; no real metrics yet.
+
 ### `MLX-07` — training-only groups
 
 Leave-one-group-out refuses a fold whose held-out group lacks a class. A
@@ -212,4 +237,31 @@ study may still want such a group's rows in training (an experiment with only
 active samples). Add a split option naming groups that only ever train, so
 folds are the remaining groups and every fold's train set includes them.
 Tests: the named groups appear in no test role and in every train role.
+
+### `MLX-08` — published fold runs
+
+Wrap `MLX-06`'s per-fold training in the job service (`run_train_job`), so each
+fold run publishes its model bundle, predictions and evaluation as immutable
+artifacts with the dataset snapshot and split ids, instead of returning them
+in memory. Tests: a fold run's published manifest names the bound snapshot and
+split ids; a failed fold leaves a failed run record, not partial artifacts.
+
+### `MLX-09` — partition-major reads (`F67`)
+
+`PartitionDataset` reads each batch with one `materialize` per experiment,
+over rows in snapshot (molecule_uid hash) order, so a batch touches dozens of
+partitions and each is opened from scratch through anndata. On a real store a
+64-row batch costs ~70 s.
+
+Read partition-major instead: per split, group the wanted reads by store
+partition, open each partition once per pass (only the wanted rows, only the
+requested matrix and design columns), and cut batches from the rows read.
+Batch contents become partition-ordered; streamed sklearn fits are
+order-independent, and Torch already shuffles within its buffer. Bound peak
+memory by partition, not by split.
+
+Tests: a fixture with many partitions per experiment opens each partition
+once per pass (count opens); batches cover every split row exactly once;
+streamed NB fit equals the materialized fit; on the real pilot, a fold's train
+pass takes minutes, not hours.
 
