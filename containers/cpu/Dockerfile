@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-ARG PYTHON_IMAGE=python:3.12.13-slim-bookworm@sha256:d50fb7611f86d04a3b0471b46d7557818d88983fc3136726336b2a4c657aa30b
+ARG PYTHON_IMAGE=python:3.12.13-slim-bookworm@sha256:4766d8b510c428e595d74b9cc5bbb2fae8e26316fffb4adc89908d79aacd58a2
 
 FROM ${PYTHON_IMAGE} AS wheel-builder
 
@@ -28,11 +28,14 @@ LABEL org.opencontainers.image.title="smftools CPU" \
       org.opencontainers.image.licenses="MIT" \
       io.smftools.profile="cpu-bam" \
       io.smftools.base.name="python:3.12.13-slim-bookworm" \
-      io.smftools.base.digest="sha256:d50fb7611f86d04a3b0471b46d7557818d88983fc3136726336b2a4c657aa30b"
+      io.smftools.base.digest="sha256:4766d8b510c428e595d74b9cc5bbb2fae8e26316fffb4adc89908d79aacd58a2"
 
+# Base-image packages get security fixes long before the image is rebuilt
+# (bookworm-security); upgrade so the CVE scan gates on what we ship.
 RUN test -n "${SMFTOOLS_REVISION}" \
     && test -n "${SMFTOOLS_CONTAINER_TAG}" \
     && apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
     && apt-get install -y --no-install-recommends \
         bash \
         ca-certificates \
