@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -22,6 +23,7 @@ from smftools.constants import (
     SPATIAL_DIR,
     VARIANT_DIR,
 )
+from smftools.informatics.barcode_sidecar import barcode_number_key
 from smftools.informatics.experiment_manifest import read_experiment_manifest
 from smftools.informatics.molecule_identity import (
     EXPERIMENT_UID_COLUMN,
@@ -35,7 +37,7 @@ from smftools.project.reference_registry import (
 )
 from smftools.project.registry import list_experiments, resolve_set_membership
 
-from .plan import DatasetSpec, MLPlan, PhysicalChannelSource
+from .plan import DatasetSpec, LabelSpec, MLPlan, PhysicalChannelSource
 
 ML_SELECTION_PLAN_VERSION = 1
 _STAGE_DIRS = {
@@ -195,6 +197,7 @@ class MLDataSelectionPlan:
     class_counts: Mapping[str, int]
     modality_counts: Mapping[str, int]
     sample_counts: Mapping[str, int]
+    label_table_sha256: str | None = None
 
     def __post_init__(self) -> None:
         table = self.identity_table.copy(deep=True).reset_index(drop=True)
@@ -225,6 +228,11 @@ class MLDataSelectionPlan:
             "class_counts": dict(self.class_counts),
             "modality_counts": dict(self.modality_counts),
             "sample_counts": dict(self.sample_counts),
+            **(
+                {"label_table_sha256": self.label_table_sha256}
+                if self.label_table_sha256 is not None
+                else {}
+            ),
         }
 
 
@@ -521,6 +529,104 @@ def _filter_definition(key: str) -> tuple[str, str]:
     return key, "eq"
 
 
+@dataclass(frozen=True)
+class _LabelTable:
+    """A project label table (`MLX-01`), keyed on normalized identity fields."""
+
+    keys: tuple[str, ...]
+    frame: pd.DataFrame  # indexed by the normalized key tuple
+    columns: frozenset[str]  # every non-key column
+    sha256: str
+
+
+def _barcode_token(value: Any) -> Any:
+    """Barcode spellings compare by number: ``4``, ``4.0``, ``NB04``, ``barcode04``."""
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        return None
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    return barcode_number_key(str(value))
+
+
+def _normalized_key(name: str, values: pd.Series) -> pd.Series:
+    if name == "barcode":
+        return values.map(_barcode_token)
+    return values.astype(str)
+
+
+def _load_label_table(project_path: Path, labels: LabelSpec) -> _LabelTable:
+    assert labels.table is not None
+    path = project_path / labels.table
+    if not path.is_file():
+        raise MLSelectionError(f"label table not found: {path}")
+    if path.suffix.lower() == ".parquet":
+        frame = pd.read_parquet(path)
+    else:
+        frame = pd.read_csv(path)
+    absent = [column for column in (*labels.keys, labels.column) if column not in frame]
+    if absent:
+        raise MLSelectionError(f"label table {labels.table!r} lacks columns {absent}")
+    keys = list(labels.keys)
+    for key in keys:
+        frame[key] = _normalized_key(key, frame[key])
+    duplicated = frame.duplicated(keys, keep=False)
+    if duplicated.any():
+        examples = frame.loc[duplicated, keys].drop_duplicates().head(3).to_dict("records")
+        raise MLSelectionError(
+            f"label table {labels.table!r} has {int(duplicated.sum())} rows sharing a key, "
+            f"e.g. {examples}"
+        )
+    indexed = frame.set_index(pd.MultiIndex.from_frame(frame[keys])).drop(columns=keys)
+    return _LabelTable(
+        keys=tuple(keys),
+        frame=indexed,
+        columns=frozenset(indexed.columns),
+        sha256=_file_sha256(path),
+    )
+
+
+def _join_label_table(
+    frame: pd.DataFrame,
+    table: _LabelTable,
+    *,
+    metadata: _ExperimentMetadata,
+    reference_map: Mapping[str, str],
+    sample_column: str,
+    stored_columns: set[str],
+) -> pd.DataFrame:
+    """Add the label table's columns to each row whose identity it lists."""
+    # Against everything stored, not just the columns loaded for this plan: a
+    # table column must never stand in for a stored one of the same name.
+    collisions = sorted(table.columns.intersection(stored_columns | set(frame.columns)))
+    if collisions:
+        raise MLSelectionError(
+            f"label table columns {collisions} collide with molecule metadata of "
+            f"experiment {metadata.experiment_id!r}; rename them in the table"
+        )
+    if "barcode" in table.keys and "Barcode" not in frame:
+        raise MLSelectionError(
+            f"label table is keyed on barcode but experiment {metadata.experiment_id!r} "
+            "has no Barcode identity"
+        )
+    physical = frame["Reference_strand"].astype(str)
+    sources = {
+        "experiment_id": pd.Series(metadata.experiment_id, index=frame.index),
+        "experiment_uid": frame[EXPERIMENT_UID_COLUMN],
+        "barcode": frame["Barcode"] if "Barcode" in frame else None,
+        "sample": frame[sample_column],
+        "reference": physical.map(reference_map),
+        "physical_reference": physical,
+    }
+    index = pd.MultiIndex.from_arrays(
+        [_normalized_key(key, sources[key]) for key in table.keys], names=list(table.keys)
+    )
+    joined = table.frame.reindex(index)
+    frame = frame.copy()
+    for column in sorted(table.columns):
+        frame[column] = joined[column].to_numpy()
+    return frame
+
+
 def _required_metadata_columns(
     dataset: DatasetSpec,
     group_by: tuple[str, ...],
@@ -665,8 +771,11 @@ def _identity_for_experiment(
     group_by: tuple[str, ...],
     reference_map: Mapping[str, str],
     channels: tuple[ResolvedChannelSource, ...],
+    label_table: _LabelTable | None = None,
 ) -> tuple[pd.DataFrame, Path]:
     required = _required_metadata_columns(dataset, group_by)
+    if label_table is not None:
+        required -= label_table.columns
     core_groups = {
         "experiment_uid",
         "experiment_id",
@@ -699,6 +808,18 @@ def _identity_for_experiment(
     stage_members = _stage_membership(metadata, stages)
     if stage_members is not None:
         frame = frame.loc[frame[MOLECULE_UID_COLUMN].astype(str).isin(stage_members)]
+    if label_table is not None:
+        # Before `filters`, so filters and group_by may name table columns.
+        frame = _join_label_table(
+            frame,
+            label_table,
+            metadata=metadata,
+            reference_map=reference_map,
+            sample_column=sample_column,
+            stored_columns=set(
+                ds.dataset(artifact, format="parquet", partitioning="hive").schema.names
+            ),
+        )
     frame = _apply_filters(frame, dataset.filters)
     if frame.empty:
         return pd.DataFrame(columns=_CORE_IDENTITY_COLUMNS), artifact
@@ -835,6 +956,7 @@ def plan_ml_dataset(
             )
         )
     )
+    label_table = None
     if plan.scope.kind == "experiment":
         if experiment_dir is None:
             raise MLSelectionError("experiment-scoped plan requires experiment_dir")
@@ -857,6 +979,8 @@ def plan_ml_dataset(
             set_name=plan.scope.set_name,
         )
         scope_id = project_path.name
+        if dataset.labels is not None and dataset.labels.source == "table":
+            label_table = _load_label_table(project_path, dataset.labels)
     if not metadata:
         raise MLSelectionError("dataset selection matched no active experiments")
     unknown = sorted({item.modality for item in metadata}.difference(dataset.modalities))
@@ -879,6 +1003,7 @@ def plan_ml_dataset(
             resolved_groups,
             reference_map,
             channels,
+            label_table,
         )
         if table.empty:
             continue
@@ -935,6 +1060,12 @@ def plan_ml_dataset(
             for source in sorted(source_records, key=lambda item: item.experiment_id)
         ],
     }
+    if label_table is not None:
+        # Labels changed in the table are a different dataset.
+        identity_payload["label_table"] = {
+            "sha256": label_table.sha256,
+            "keys": list(label_table.keys),
+        }
     class_values = identity["class_id"].dropna().map(lambda value: str(int(value)))
     estimated_bytes = (
         len(identity)
@@ -963,4 +1094,5 @@ def plan_ml_dataset(
         class_counts=dict(sorted(Counter(class_values).items())),
         modality_counts=dict(sorted(Counter(identity["modality"].astype(str)).items())),
         sample_counts=dict(sorted(Counter(identity["sample_id"].astype(str)).items())),
+        label_table_sha256=label_table.sha256 if label_table is not None else None,
     )

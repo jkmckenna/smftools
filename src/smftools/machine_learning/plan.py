@@ -158,6 +158,16 @@ class LabelSpec:
     source: str = "obs"
     missing: str = "drop"
     positive_class: str | None = None
+    # `source: table` only (`MLX-01`): a project-relative label table and the
+    # molecule-identity fields it is keyed on.
+    table: str | None = None
+    keys: tuple[str, ...] = ()
+
+
+#: Molecule-identity fields a label table may be keyed on (`MLX-01`).
+LABEL_TABLE_KEYS = frozenset(
+    {"experiment_id", "experiment_uid", "barcode", "sample", "reference", "physical_reference"}
+)
 
 
 @dataclass(frozen=True)
@@ -260,6 +270,13 @@ class MLPlan:
         """Return a JSON/YAML-serializable resolved representation."""
         payload = _thaw(self)
         payload["scope"]["set"] = payload["scope"].pop("set_name")
+        for dataset in payload["datasets"].values():
+            labels = dataset.get("labels")
+            if labels is not None and labels.get("table") is None:
+                # Unset for obs labels: emitting them would change the hash of
+                # every plan written before `MLX-01`.
+                labels.pop("table", None)
+                labels.pop("keys", None)
         if payload["tracking"] is None:
             payload.pop("tracking")
         return payload
@@ -406,15 +423,35 @@ def _parse_label(raw: Any, path: str) -> LabelSpec:
     _check_keys(
         value,
         path=path,
-        allowed={"source", "column", "classes", "missing", "positive_class"},
+        allowed={"source", "column", "classes", "missing", "positive_class", "table", "keys"},
         required={"column", "classes"},
     )
     source = value.get("source", "obs")
     if not isinstance(source, str):
         _fail(f"{path}.source", "must be a string")
     source = source.strip()
-    if source != "obs":
-        _fail(f"{path}.source", "only 'obs' is currently supported")
+    if source not in {"obs", "table"}:
+        _fail(f"{path}.source", "must be 'obs' or 'table'")
+    table = None
+    keys: tuple[str, ...] = ()
+    if source == "table":
+        table = _required_string(value, "table", path)
+        if Path(table).is_absolute() or ".." in Path(table).parts:
+            _fail(f"{path}.table", "must be a path inside the project directory")
+        if Path(table).suffix.lower() not in {".parquet", ".csv"}:
+            _fail(f"{path}.table", "must be a .parquet or .csv file")
+        keys = _string_tuple(value.get("keys"), f"{path}.keys", required=True)
+        unknown_keys = sorted(set(keys).difference(LABEL_TABLE_KEYS))
+        if unknown_keys:
+            _fail(
+                f"{path}.keys", f"unknown keys {unknown_keys}; allowed {sorted(LABEL_TABLE_KEYS)}"
+            )
+        if len(set(keys)) != len(keys):
+            _fail(f"{path}.keys", "must not repeat a key")
+        if value["column"] in keys:
+            _fail(f"{path}.column", "must not be one of the table keys")
+    elif "table" in value or "keys" in value:
+        _fail(path, "'table' and 'keys' apply only to source 'table'")
     classes_raw = _as_mapping(value["classes"], f"{path}.classes")
     if len(classes_raw) < 2:
         _fail(f"{path}.classes", "must define at least two classes")
@@ -442,6 +479,8 @@ def _parse_label(raw: Any, path: str) -> LabelSpec:
         source=source,
         missing=missing,
         positive_class=positive_class,
+        table=table,
+        keys=keys,
     )
 
 
@@ -935,6 +974,13 @@ def parse_ml_plan(
         ),
     )
     _validate_job_references(plan)
+    if plan.scope.kind != "project":
+        for name, dataset in plan.datasets.items():
+            if dataset.labels is not None and dataset.labels.source == "table":
+                _fail(
+                    f"datasets.{name}.labels.source",
+                    "'table' requires project scope: the table path is project-relative",
+                )
     return plan
 
 

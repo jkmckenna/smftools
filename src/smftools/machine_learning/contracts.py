@@ -797,8 +797,8 @@ class LabelSchema:
 
 def _validate_label_schema(schema: LabelSchema) -> None:
     _version(schema.schema_version, ML_LABEL_SCHEMA_VERSION, "label_schema.schema_version")
-    if schema.source != "obs":
-        _fail("label_schema.source", "only 'obs' is currently supported")
+    if schema.source not in {"obs", "table"}:
+        _fail("label_schema.source", "must be 'obs' or 'table'")
     _string(schema.field, "label_schema.field")
     expected_task = (
         "binary_classification" if len(schema.class_order) == 2 else "multiclass_classification"

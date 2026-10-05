@@ -1,6 +1,7 @@
 # ML project labels, position masks and coordinate maps (`MLX`)
 
-**Status:** proposed. Nothing implemented.
+**Status:** in progress. `MLX-01` implemented on `feature/mlx-01-label-table`, not merged;
+`MLX-02`–`MLX-05` proposed; `MLX-05` blocks any real-data training.
 
 ## Problem
 
@@ -30,13 +31,15 @@ an ML plan today, for three independent reasons found while designing it:
 
 | item | status | scope |
 |---|---|---|
-| `MLX-01` external label table | proposed | `labels.source: table` joined on declared keys |
+| `MLX-01` external label table | implemented, not merged | `labels.source: table` joined on declared keys |
 | `MLX-02` position masks | proposed | include/exclude windows within a dataset's span |
 | `MLX-03` cross-reference coordinate maps | proposed | place several references' molecules in one coordinate frame |
 | `MLX-04` qualification | proposed | one real project study end to end |
+| `MLX-05` real-store compatibility | proposed | resolve channels and QC filters against real pipeline stores (`F66`) |
 
-Order: `MLX-01` first (it alone unblocks a single-reference, full-span pilot),
-then `MLX-02`, then `MLX-03`, which builds on `MLX-02`'s guard.
+Order: `MLX-01`, then `MLX-05` (together they unblock a single-reference,
+full-span pilot), then `MLX-02`, then `MLX-03`, which builds on `MLX-02`'s
+guard.
 
 ### `MLX-01` — external label table
 
@@ -71,6 +74,17 @@ then `MLX-02`, then `MLX-03`, which builds on `MLX-02`'s guard.
 - Tests: join by each key kind, barcode spelling equivalence, duplicate keys
   refused, `missing: error`, snapshot id changes with table content, `group_by`
   on a table column.
+
+**As implemented.** `LabelSpec.table`/`keys`; `MLPlan.to_dict` omits them for
+obs labels, so plans written before this keep their `plan_hash`. Selection
+loads the table once (`_load_label_table`: normalized keys, duplicates
+refused, file sha256), and joins it per experiment before `filters`
+(`_join_label_table`). A table column sharing a name with any column of the
+stored molecule index is refused, including columns the plan does not load.
+The table sha256 joins the selection identity payload and the dry-run report.
+Tests: `test_table_*`, `test_filters_and_groups_may_name_table_columns`,
+`test_selection_identity_changes_with_table_content` (selection), and
+`test_table_label*`, `test_obs_labels_serialise_without_table_fields` (plan).
 
 ### `MLX-02` — position masks
 
@@ -129,3 +143,27 @@ task (`MLX-01` only), one region-masked task (`MLX-02`), one intact-vs-deletion
 task over shared sequence (`MLX-03`), each trained with leave-one-experiment-out
 splits. Check per-fold row counts against the label table and that attributions
 are zero outside the selected positions.
+
+**`MLX-01` real-data check.** A project label table (one task, keyed on
+experiment, barcode and strand-level reference) resolved 756,816 reads over
+six experiments with zero label disagreements against the table; stored
+kit-qualified barcodes matched the sheet's plain numbers. It needed `MLX-05`'s
+first two fixes shimmed in the check script.
+
+### `MLX-05` — real-store compatibility (`F66`)
+
+Selection was only ever exercised on fabricated fixtures. Against stores the
+pipeline actually writes:
+
+- **Catalog.** Resolve a stage's written-store `catalog.parquet` (which lists
+  `layers`, `has_x`), not the planner's `task_catalog.parquet`; register it in
+  the project registry at `project add`, and keep the read-index fallback.
+- **`X`.** Treat `has_x` as making layer `X` available.
+- **Defaults.** Default channels name layers real stores write (`X` with the
+  modality's site context), or fail at plan time naming the available layers.
+- **QC filters.** Let `filters` reach the stage's `stage_obs.parquet` columns
+  (`passes_qc`, `passes_dedup`, ...) for the stages a dataset reads, joined on
+  `read_id` like the raw obs sidecar; the sidecar's sha256 joins the identity.
+- Tests: fixtures written by the real stage writers (or copied from their
+  schema), not hand-built catalogs; each failure above as a regression test.
+
