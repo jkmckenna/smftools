@@ -1,7 +1,8 @@
 # ML project labels, position masks and coordinate maps (`MLX`)
 
-**Status:** in progress. `MLX-01` implemented on `feature/mlx-01-label-table`, not merged;
-`MLX-02`–`MLX-05` proposed; `MLX-05` blocks any real-data training.
+**Status:** in progress. `MLX-01` merged; `MLX-05` implemented on
+`feature/mlx-05-real-store-selection`, not merged; `MLX-02`–`MLX-04`, `MLX-06`,
+`MLX-07` proposed. `MLX-06` blocks any training from a plan.
 
 ## Problem
 
@@ -31,15 +32,17 @@ an ML plan today, for three independent reasons found while designing it:
 
 | item | status | scope |
 |---|---|---|
-| `MLX-01` external label table | implemented, not merged | `labels.source: table` joined on declared keys |
+| `MLX-01` external label table | merged | `labels.source: table` joined on declared keys |
 | `MLX-02` position masks | proposed | include/exclude windows within a dataset's span |
 | `MLX-03` cross-reference coordinate maps | proposed | place several references' molecules in one coordinate frame |
 | `MLX-04` qualification | proposed | one real project study end to end |
-| `MLX-05` real-store compatibility | proposed | resolve channels and QC filters against real pipeline stores (`F66`) |
+| `MLX-05` real-store compatibility | implemented, not merged | resolve channels and QC filters against real pipeline stores (`F66`) |
+| `MLX-06` plan job runner | proposed | bind a resolved plan to a dataset snapshot, split and partition dataset, and run its jobs |
+| `MLX-07` training-only groups | proposed | let single-class groups train without being held-out folds |
 
-Order: `MLX-01`, then `MLX-05` (together they unblock a single-reference,
+Order: `MLX-01`, `MLX-05`, `MLX-06` (together they unblock a single-reference,
 full-span pilot), then `MLX-02`, then `MLX-03`, which builds on `MLX-02`'s
-guard.
+guard. `MLX-07` whenever a task has single-class experiments worth training on.
 
 ### `MLX-01` — external label table
 
@@ -166,4 +169,47 @@ pipeline actually writes:
   `read_id` like the raw obs sidecar; the sidecar's sha256 joins the identity.
 - Tests: fixtures written by the real stage writers (or copied from their
   schema), not hand-built catalogs; each failure above as a regression test.
+
+**As implemented.** `_stage_task_catalog` prefers the written store's
+`catalog.parquet` over the planner's `task_catalog.parquet` wherever both
+exist; `has_x` makes `X` available; a missing layer's error lists what the
+stage wrote and points to `X`; deaminase accepts `GpC` (a subset of its C
+sites) as accessibility; `_read_identity_metadata` joins missing filter or
+group columns from each read stage's `stage_obs.parquet` on `read_id`, after
+the raw obs sidecar. Not done: the default channels still name the
+`*_site_binary` layers of single-file preprocess output -- changing them
+would change the hash of every plan relying on defaults, and it is not
+established that single-file stores hold the same calls in `X`. Not done
+either: registering the store catalog at `project add`; the read-index
+fallback finds it. Tests: `test_selection_reads_the_written_store_catalog_and_x`,
+`test_missing_layer_error_names_what_the_stage_wrote`,
+`test_deaminase_gpc_subset_is_accessibility`,
+`test_filters_reach_stage_obs_qc_flags`.
+
+**Real-data check, no shims.** The `MLX-01` pilot selection (one task, six
+experiments) resolves directly; with `passes_qc` and `passes_dedup` filters it
+drops from 756,816 reads to 17,322. `plan_ml_workflow` (dry run: selection,
+leave-one-experiment-out folds, model schema, job outputs) completes once the
+one single-class experiment is excluded (`MLX-07`).
+
+### `MLX-06` — plan job runner
+
+Nothing outside the benchmark fixtures builds a `DatasetSnapshotManifest`,
+`SplitManifest` and partition data plan from a resolved selection, so a plan
+can be dry-run but not trained: the documented path binds them by hand. Add
+one function that takes a parsed plan, a scope and a job name and returns the
+bound partition dataset per fold (selection -> snapshot observations and
+sources -> split manifest from the resolved split -> partition sources from
+the registry's stage spines -> `build_partition_data_plan`), then runs the
+job through the existing job service. Tests: a project fixture trains a
+`bernoulli_nb` end to end; the bound snapshot id equals the dry run's
+selection-derived identity.
+
+### `MLX-07` — training-only groups
+
+Leave-one-group-out refuses a fold whose held-out group lacks a class. A
+study may still want such a group's rows in training (an experiment with only
+active samples). Add a split option naming groups that only ever train, so
+folds are the remaining groups and every fold's train set includes them.
+Tests: the named groups appear in no test role and in every train role.
 

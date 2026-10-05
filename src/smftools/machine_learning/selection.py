@@ -415,10 +415,9 @@ def _validate_channel_semantics(
 ) -> None:
     context = site_context.lower()
     role = biological_role.lower()
-    if modality == "deaminase" and (context != "c" or role != "accessibility"):
-        raise MLSelectionError(
-            "deaminase C-site input must be explicitly declared as accessibility"
-        )
+    # GpC is a subset of a deaminase's C sites -- still accessibility.
+    if modality == "deaminase" and (context not in {"c", "gpc"} or role != "accessibility"):
+        raise MLSelectionError("deaminase input must be C or GpC sites, declared as accessibility")
     if modality == "conversion" and context == "gpc" and role != "accessibility":
         raise MLSelectionError("conversion GpC input must be declared as accessibility")
     if context == "cpg" and role not in {"accessibility", "endogenous_methylation"}:
@@ -441,15 +440,38 @@ def _stage_read_index(metadata: _ExperimentMetadata, stage: str) -> Path | None:
 
 
 def _stage_task_catalog(metadata: _ExperimentMetadata, stage: str) -> Path | None:
+    """The catalog that says which layers a stage *wrote*.
+
+    A generation holds two: ``catalog.parquet`` (the written store: ``layers``,
+    ``has_x``) and ``task_catalog.parquet`` (the planner's tasks, which list no
+    layers). The written one is preferred wherever both exist (`F66`).
+    """
     registered = metadata.catalogs.get(f"{stage}_task_catalog")
     if registered is not None:
         return registered
+    directories = []
     read_index = _stage_read_index(metadata, stage)
-    if read_index is not None and (read_index.parent / "task_catalog.parquet").is_file():
-        return read_index.parent / "task_catalog.parquet"
+    if read_index is not None:
+        directories.append(read_index.parent)
     spine = metadata.spines.get(stage)
-    if spine is not None and (spine.parent / "task_catalog.parquet").is_file():
-        return spine.parent / "task_catalog.parquet"
+    if spine is not None:
+        directories.append(spine.parent)
+    for directory in directories:
+        for name in ("catalog.parquet", "task_catalog.parquet"):
+            if (directory / name).is_file():
+                return directory / name
+    return None
+
+
+def _stage_obs_sidecar(metadata: _ExperimentMetadata, stage: str) -> Path | None:
+    """A stage's per-read obs (QC and dedup flags live only here)."""
+    read_index = _stage_read_index(metadata, stage)
+    for directory in (
+        read_index.parent if read_index is not None else None,
+        metadata.spines[stage].parent if stage in metadata.spines else None,
+    ):
+        if directory is not None and (directory / "stage_obs.parquet").is_file():
+            return directory / "stage_obs.parquet"
     return None
 
 
@@ -497,15 +519,19 @@ def _resolve_channels(
                 f"stage {source.stage!r} has no tasks for selected references in "
                 f"experiment {metadata.experiment_id!r}"
             )
-        missing = [
-            index
+        has_x = frame["has_x"] if "has_x" in frame else pd.Series(False, index=frame.index)
+        available = {
+            index: _layer_values(value) | ({"X"} if bool(has_x.loc[index]) else set())
             for index, value in frame["layers"].items()
-            if source.layer not in _layer_values(value)
-        ]
+        }
+        missing = [index for index, layers in available.items() if source.layer not in layers]
         if missing:
+            written = sorted(set().union(*available.values()))
             raise MLSelectionError(
                 f"layer {source.layer!r} is unavailable in {len(missing)} selected "
-                f"{source.stage!r} task(s) for experiment {metadata.experiment_id!r}"
+                f"{source.stage!r} task(s) for experiment {metadata.experiment_id!r}; "
+                f"the stage wrote {written}. Stores from partitioned preprocess hold "
+                "site calls in 'X': declare layer 'X' with the channel's site_context."
             )
         channels.append(
             ResolvedChannelSource(
@@ -644,6 +670,7 @@ def _read_identity_metadata(
     metadata: _ExperimentMetadata,
     *,
     required_columns: set[str],
+    stages: Sequence[str] = (),
 ) -> tuple[pd.DataFrame, Path]:
     index_path = metadata.catalogs.get("molecule_index")
     if index_path is None:
@@ -679,6 +706,24 @@ def _read_identity_metadata(
                 if obs["read_id"].astype(str).duplicated().any():
                     raise MLSelectionError(f"raw obs sidecar has duplicate read IDs: {obs_path}")
                 frame = frame.merge(obs, on="read_id", how="left", validate="one_to_one")
+    # Then the obs of each stage the dataset reads: preprocess QC and dedup
+    # flags (`passes_qc`, `passes_dedup`, ...) exist nowhere else (`F66`).
+    for stage in sorted(set(stages).difference({"raw"})):
+        missing = required_columns.difference(frame.columns)
+        if not missing:
+            break
+        sidecar = _stage_obs_sidecar(metadata, stage)
+        if sidecar is None:
+            continue
+        stage_dataset = ds.dataset(sidecar, format="parquet")
+        join_columns = sorted(missing.intersection(stage_dataset.schema.names))
+        if not join_columns or "read_id" not in stage_dataset.schema.names:
+            continue
+        stage_obs = stage_dataset.to_table(columns=["read_id", *join_columns]).to_pandas()
+        stage_obs["read_id"] = stage_obs["read_id"].astype(str)
+        if stage_obs["read_id"].duplicated().any():
+            raise MLSelectionError(f"{stage} stage obs has duplicate read IDs: {sidecar}")
+        frame = frame.merge(stage_obs, on="read_id", how="left", validate="one_to_one")
     still_missing = sorted(required_columns.difference(frame.columns))
     if still_missing:
         raise MLSelectionError(
@@ -789,6 +834,7 @@ def _identity_for_experiment(
     frame, artifact = _read_identity_metadata(
         metadata,
         required_columns=required.difference(core_groups),
+        stages=sorted({channel.stage for channel in channels}),
     )
     if "Reference_strand" not in frame:
         raise MLSelectionError("molecule index lacks 'Reference_strand'")
