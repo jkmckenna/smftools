@@ -1,8 +1,7 @@
 # Pipeline throughput (`THR`)
 
-**Status:** proposed; `THR-01` and `THR-02` implemented on their own
-`fix/<description>` branches from `968383c`, not yet merged. Plan drafted on
-`docs/pipeline-throughput-plan`.
+**Status:** proposed overall. Merged: `THR-01` (#632), `THR-02` (#633), `THR-06` (#637).
+Parked: `THR-03` (`F60`). Shelved: `THR-04` (`F62`). Proposed: `THR-05`.
 
 Motivated by `F53`-`F57` in `logs/pipeline_findings.md`, measured on a
 14-experiment `experiment batch full` regeneration (conversion and deaminase,
@@ -13,12 +12,12 @@ measurements.
 
 | item | status | evidence |
 |---|---|---|
-| `THR-01` alignment rescue: threaded BGZF, skip the rewrite when nothing is rescued | implemented, not merged | `dc1f45c` on `fix/alignment-rescue-bam-threads`; `test_rescue_threaded_output_matches_unthreaded`; `F53` follow-up |
-| `THR-02` latent: skip UMAP (not the unit) below UMAP's own minimum; no crash on tiny units | implemented, not merged | `5c890ba` on `fix/latent-unit-read-floor`; `test_latent_unit_too_small_for_umap_keeps_pca_and_nmf` |
-| `THR-03` duplicate detection: size-derived group memory estimate, largest-first dispatch | proposed | -- |
-| `THR-04` latent: fit units in a worker pool | proposed | -- |
+| `THR-01` alignment rescue: threaded BGZF, skip the rewrite when nothing is rescued | merged (#632) | `dc1f45c` on `fix/alignment-rescue-bam-threads`; `test_rescue_threaded_output_matches_unthreaded`; `F53` follow-up |
+| `THR-02` latent: skip UMAP (not the unit) below UMAP's own minimum; no crash on tiny units | merged (#633) | `5c890ba` on `fix/latent-unit-read-floor`; `test_latent_unit_too_small_for_umap_keeps_pca_and_nmf` |
+| `THR-03` duplicate detection: size-derived group memory estimate, largest-first dispatch | parked | since `DSA-06` (`F60`): 0 watchdog kills, 0 retries, dedup pools <1 min on four post-merge runs; estimate still 2-3x low -- revisit only if a large batch shows kills |
+| `THR-04` latent: fit units in a worker pool | shelved | `F62`: CP must stay on the GPU (pool workers crash on MPS; CPU CP differs by up to 35%), and post-dedup units are few and mostly CP-eligible |
 | `THR-05` `experiment batch`: run experiments concurrently under the memory envelope | proposed | -- |
-| `THR-06` raw extraction: contiguous buckets read by virtual-offset range, not a full-contig scan per bucket | implemented, not merged | `7f33fbb` on `fix/raw-contiguous-shards`; `test_scan_ranges_extract_exactly_the_full_reference`; `F59` |
+| `THR-06` raw extraction: contiguous buckets read by virtual-offset range, not a full-contig scan per bucket | merged (#637) | `7f33fbb` on `fix/raw-contiguous-shards`; `test_scan_ranges_extract_exactly_the_full_reference`; `F59` |
 
 Ordered by value per unit of risk. `THR-01` and `THR-02` are small and
 independent; `THR-03` should land before `THR-05`, because concurrent
