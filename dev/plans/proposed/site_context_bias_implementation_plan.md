@@ -1,6 +1,6 @@
 # Modification-site sequence-context bias (`SCB`)
 
-**Status:** proposed. Nothing implemented. One PR per item, in order.
+**Status:** in progress. `SCB-01` implemented. One PR per item, in order.
 
 ## Question
 
@@ -59,22 +59,34 @@ Windows running off a reference end are padded with `N` and counted as such.
 
 | item | status | scope |
 |---|---|---|
-| `SCB-01` counting + statistics | proposed | library: stream a bound dataset into per-site counts; per-offset, per-k-mer and between-group tables |
+| `SCB-01` counting + statistics | implemented, not merged | library: stream a bound dataset into per-site counts; per-offset, per-k-mer and between-group tables |
 | `SCB-02` figures | proposed | offset x base enrichment heatmaps and logos, k-mer rate plots, group-difference heatmaps |
 | `SCB-03` CLI | proposed | `smftools project context-bias` over a plan dataset |
 | `SCB-04` qualification | proposed | a real enzyme panel |
 
 ### `SCB-01` — counting and statistics
 
-`smftools.analysis.compute.site_context_bias`:
+Reading lives in `smftools.tools.site_context_bias`, statistics in
+`smftools.analysis.compute.site_context_bias` (pure, no I/O):
 
-- `count_site_calls(bound, *, group_by=None, workers=1) -> SiteCounts` --
-  streams `bound.iter_batches(...)` (split across worker processes as
-  `MLX-11` allows), accumulates observed and modified calls per (group,
-  physical reference, frame position) on the channel's design sites.
-- `site_contexts(counts, references, *, flank) -> pd.DataFrame` -- adds each
-  site's strand-oriented context.
-- `offset_enrichment(...)`, `kmer_rates(..., k)`, `group_differences(...,
+- `count_site_calls(plan, dataset, *, project_dir | experiment_dir,
+  group_by=None, channel=None, workers=1) -> SiteCounts` -- binds the plan
+  dataset, streams `iter_batches(...)` (split across worker processes by whole
+  blocks, `MLX-11`; workers receive the plan document, not a parsed plan),
+  accumulates observed and modified calls per (group, physical reference,
+  frame position) on the channel's design sites.
+- `reference_sequences(spine_paths)` -- forward sequences from spines'
+  `References`, cut back to each reference's recorded length: stored
+  sequences are `N`-padded to the longest reference, and padding must not
+  read as bases.
+- `site_contexts(sites, sequences, *, flank, sequence_for)` -- adds each
+  site's strand-oriented context. Positions are in the dataset's frame
+  reference's coordinates, so contexts are read from the frame reference's
+  sequence (`SiteCounts.sequence_for`); for molecules mapped into a frame
+  (`MLX-03`), a window near a deletion junction reflects the frame sequence,
+  not the deleted allele's.
+- `offset_enrichment(...)` (NaN where a base has no observed calls at an
+  offset, rather than a pseudocount-made enrichment), `kmer_rates(..., k)`, `group_differences(...,
   reference_group)` -- the tables above, pure functions of the site table, so
   re-running with another `flank` or `k` needs no re-read when the site
   counts are kept.
