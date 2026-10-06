@@ -167,7 +167,11 @@ def snapshot_from_selection(
             dataset_name=selection.dataset_name,
             plan_hash=selection.plan_hash,
             samples=tuple(sorted(set(selection.identity_table["sample_id"].astype(str)))),
-            references=(input_schema.reference,),
+            # Every reference molecules come from; a coordinate frame maps the
+            # others onto the schema reference (`MLX-03`).
+            references=tuple(
+                sorted({input_schema.reference, *selection.identity_table["reference"].astype(str)})
+            ),
             intervals=tuple(
                 GenomicInterval(input_schema.reference, window_start, window_end)
                 for window_start, window_end in windows
@@ -264,6 +268,7 @@ def bind_ml_job(
             split,
             partition_sources,
             policy=policy,
+            coordinate_maps=selection.coordinate_maps,
         )
         folds.append(
             BoundFold(

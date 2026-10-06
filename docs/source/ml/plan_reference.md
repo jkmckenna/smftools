@@ -82,6 +82,7 @@ Every required key, nothing optional:
 | `filters` | no | Free-form additional selection on per-read metadata: the molecule index, the raw obs, then the obs of each stage the dataset reads (e.g. preprocess `passes_qc`, `passes_dedup`). |
 | `labels` | no | Required for any dataset a `train` job uses. |
 | `positions` | no | `{"include": [[start, end), ...], "exclude": [...]}`: the reference positions used as features. See below. |
+| `coordinate_frame` | no | `{"reference": <name>, "maps": {<reference>: <table>}}`: put several references' molecules in one reference's coordinates. See below. |
 
 Each **channel** separates the biological meaning from the physical layer it comes from:
 
@@ -147,6 +148,24 @@ Only kept positions become features: a masked position contributes no signal and
 indicator, rather than an imputed constant. Kept windows are placed side by side, so a
 convolutional model sees them joined; a single window keeps true distances. `positions` cannot be
 combined with `filters.start`/`end`.
+
+**Coordinate frame**: molecules of a structural variant (e.g. an enhancer deletion) sit at
+different positions than the same bases on the intact allele. `coordinate_frame` places them in
+the frame reference's coordinates through a project-relative map per other reference — a table of
+`source_position`, `frame_position` pairs, one-to-one and in order; a source position it omits has
+no frame counterpart:
+
+```python
+"references": ["6B6", "6B6_enh_del"],
+"coordinate_frame": {"reference": "6B6", "maps": {"6B6_enh_del": "ml/maps/del_to_b6.parquet"}},
+"positions": {"include": [[0, 3151]]},
+```
+
+Which positions a molecule *has* would identify its reference — in an intact-vs-deletion task, its
+class. So every selected frame position must exist on every selected reference, and selection
+refuses otherwise, naming the frame positions some reference lacks; select shared sequence with
+`positions`. There is no override. Each map's checksum is part of the dataset identity. Project
+scope only.
 
 ## `splits`
 

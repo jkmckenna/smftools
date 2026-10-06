@@ -98,6 +98,10 @@ def _input_schema(
     references = sorted(
         {reference for source in selection.sources for reference in source.canonical_references}
     )
+    frame = plan.datasets[dataset_name].coordinate_frame
+    if frame is not None:
+        # Mapped references share the frame's coordinates (`MLX-03`).
+        references = [frame.reference]
     if len(references) != 1:
         raise MLWorkflowPlanningError(
             f"datasets.{dataset_name}.references: dry-run model tensors currently require "
