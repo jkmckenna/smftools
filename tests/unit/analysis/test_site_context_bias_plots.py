@@ -1,0 +1,89 @@
+"""SCB-02: site-context bias figures (smoke)."""
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from smftools.analysis.compute.site_context_bias import (
+    group_differences,
+    kmer_rates,
+    offset_enrichment,
+)
+from smftools.analysis.plot.site_context_bias import (
+    plot_enrichment_logo,
+    plot_group_differences,
+    plot_kmer_rates,
+    plot_offset_enrichment_heatmap,
+)
+
+
+@pytest.fixture
+def sites():
+    rng = np.random.default_rng(0)
+    rows = []
+    for group in ("enzyme_a", "enzyme_b", "enzyme_c"):
+        for position in range(60):
+            context = (
+                "".join(rng.choice(list("ACGT"), 3)) + "C" + "".join(rng.choice(list("ACGT"), 3))
+            )
+            if position == 0:
+                context = "NN" + context[2:]  # reference-end padding
+            observed = int(rng.integers(20, 100))
+            rate = 0.8 if context[4] == "T" and group == "enzyme_a" else 0.3
+            rows.append(
+                {
+                    "group": group,
+                    "physical_reference": "ref_top",
+                    "position": position,
+                    "observed": observed,
+                    "modified": int(rng.binomial(observed, rate)),
+                    "context": context,
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def _written(path):
+    assert path.exists() and path.stat().st_size > 0
+
+
+def test_enrichment_figures(sites, tmp_path):
+    table = offset_enrichment(sites, flank=3)
+    plot_offset_enrichment_heatmap(table, tmp_path / "heatmap.png", title="t")
+    plot_enrichment_logo(table, tmp_path / "logo.png", groups=["enzyme_b", "enzyme_a"])
+    plot_group_differences(
+        group_differences(table, reference_group="enzyme_b"), tmp_path / "differences.png"
+    )
+    for name in ("heatmap", "logo", "differences"):
+        _written(tmp_path / f"{name}.png")
+
+
+def test_kmer_figure_limits_rows(sites, tmp_path):
+    rates = kmer_rates(sites, flank=3, k=5)
+    plot_kmer_rates(rates, tmp_path / "kmers.png", max_kmers=10)
+    _written(tmp_path / "kmers.png")
+
+
+def test_unknown_group_is_an_error(sites, tmp_path):
+    with pytest.raises(KeyError, match="groups not in table"):
+        plot_offset_enrichment_heatmap(
+            offset_enrichment(sites, flank=3), tmp_path / "x.png", groups=["missing"]
+        )
+
+
+def test_a_single_group_with_no_signal(tmp_path):
+    flat = pd.DataFrame(
+        {
+            "group": "g",
+            "physical_reference": "ref_top",
+            "position": [0, 1],
+            "observed": [10, 10],
+            "modified": [5, 5],
+            "context": ["ACA", "ACA"],
+        }
+    )
+    table = offset_enrichment(flat, flank=1)
+    plot_offset_enrichment_heatmap(table, tmp_path / "h.png")
+    plot_enrichment_logo(table, tmp_path / "l.png")
+    _written(tmp_path / "h.png")
+    _written(tmp_path / "l.png")

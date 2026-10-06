@@ -125,13 +125,28 @@ def site_contexts(
     return out
 
 
-def offset_enrichment(sites: pd.DataFrame, *, flank: int, pseudocount: float = 0.5) -> pd.DataFrame:
+def unambiguous(sites: pd.DataFrame, column: str = "context") -> pd.DataFrame:
+    """Sites whose ``column`` is all A/C/G/T.
+
+    Drops windows touching reference ``N`` (masked bases or reference-end
+    padding) from modified and background calls alike: few sites carry them,
+    so their enrichments are large and noisy and swamp the rest.
+    """
+    return sites.loc[sites[column].str.fullmatch("[ACGT]*")]
+
+
+def offset_enrichment(
+    sites: pd.DataFrame, *, flank: int, pseudocount: float = 0.5, drop_ambiguous: bool = True
+) -> pd.DataFrame:
     """Per group, offset and base: modified- vs observed-weighted frequency.
 
     ``log2_enrichment = log2((m_b + c) / (M + 5c)) - log2((o_b + c) / (O + 5c))``
     with ``c`` the pseudocount over the five bases (``N`` included); NaN where
-    a base has no observed calls at that offset.
+    a base has no observed calls at that offset. ``drop_ambiguous`` removes
+    sites whose context contains a non-ACGT base first (`unambiguous`).
     """
+    if drop_ambiguous:
+        sites = unambiguous(sites)
     rows = []
     for group, frame in sites.groupby("group", sort=True):
         letters = np.array([list(context) for context in frame["context"]])
@@ -176,12 +191,19 @@ def wilson_interval(successes, trials, *, z: float = 1.96) -> tuple[np.ndarray, 
     return centre - half, centre + half
 
 
-def kmer_rates(sites: pd.DataFrame, *, flank: int, k: int) -> pd.DataFrame:
-    """Per group and centred ``k``-mer: calls, rate, Wilson interval, distinct sites."""
+def kmer_rates(
+    sites: pd.DataFrame, *, flank: int, k: int, drop_ambiguous: bool = True
+) -> pd.DataFrame:
+    """Per group and centred ``k``-mer: calls, rate, Wilson interval, distinct sites.
+
+    ``drop_ambiguous`` drops k-mers containing a non-ACGT base.
+    """
     if k < 1 or k % 2 == 0 or k > 2 * flank + 1:
         raise ValueError(f"k must be odd and between 1 and {2 * flank + 1}")
     half = k // 2
     frame = sites.assign(kmer=sites["context"].str[flank - half : flank + half + 1])
+    if drop_ambiguous:
+        frame = unambiguous(frame, "kmer")
     table = (
         frame.groupby(["group", "kmer"], sort=True)
         .agg(
