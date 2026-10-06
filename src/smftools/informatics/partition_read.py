@@ -349,6 +349,29 @@ def _reference_lengths(spine: "ad.AnnData", references: Iterable[str]) -> dict[s
     return result
 
 
+def _rows_and_positions(
+    spine: "ad.AnnData", selection: pd.DataFrame, start: int | None, end: int | None
+) -> "ad.AnnData":
+    """An X-less AnnData: the selection's rows over the window's positions."""
+    import anndata as ad
+
+    references = selection["Reference_strand"].astype(str).unique()
+    lengths = _reference_lengths(spine, references)
+    missing = sorted(set(references).difference(lengths))
+    if missing:
+        raise ValueError(f"materialize: no reference length for {missing}")
+    longest = max(lengths[reference] for reference in references)
+    low = 0 if start is None else max(0, int(start))
+    high = longest if end is None else min(int(end), longest)
+    var = pd.DataFrame(index=pd.Index([str(position) for position in range(low, high)]))
+    for reference in references:
+        # As the X path marks it: which positions this reference has.
+        var[f"position_in_{reference}"] = np.arange(low, high) < lengths[reference]
+    obs = selection.copy()
+    obs.index = obs.index.astype(str)
+    return ad.AnnData(obs=obs, var=var)
+
+
 def _load_ragged_selection(
     spine: "ad.AnnData",
     selection: pd.DataFrame,
@@ -1040,6 +1063,7 @@ def materialize(
     start: int | None = None,
     end: int | None = None,
     query_memory_mb: int = DEFAULT_QUERY_MEMORY_MB,
+    x: bool = True,
 ) -> "ad.AnnData":
     """Assemble a concrete AnnData for a molecule selection from the partitions.
 
@@ -1070,6 +1094,11 @@ def materialize(
         start: Optional zero-based inclusive genomic start.
         end: Optional zero-based exclusive genomic end. Must accompany ``start``.
         query_memory_mb: Approximate memory budget for each projected Zarr batch.
+        x: ``False`` skips ``X`` when every requested layer is derived (overlaid
+            from a stage's own store, e.g. HMM layers): the result has the
+            selection's rows, the window's positions and the requested layers,
+            with ``X`` empty. Saves reading preprocess ``X`` only to discard it.
+            Requires an explicit, all-derived ``layers``.
 
     Returns:
         anndata.AnnData: The materialized selection, ordered as in the spine, with
@@ -1169,6 +1198,24 @@ def materialize(
     )
     if sel.shape[0] == 0:
         raise EmptySelectionError("materialize: selection matched no molecules")
+    if not x:
+        # `MRC-04`: the requested layers come from derived stores, so build only
+        # what they are stitched onto -- rows and positions -- not X.
+        if requested_layer_set is None or source_layers or not requested_derived:
+            raise ValueError(
+                "materialize: x=False needs an explicit layers list of derived layers only; "
+                f"not derived here: {sorted(source_layers or ())}"
+            )
+        result = _rows_and_positions(spine_obj, sel, start, end)
+        _overlay_preprocess_layers(
+            spine_obj, result, requested_derived, run_root, lazy, query_memory_mb
+        )
+        _overlay_preprocess_var(spine_obj, result, run_root)
+        _overlay_spatial_read_metrics(
+            spine_obj, result, requested_read_metrics, run_root, lazy, query_memory_mb
+        )
+        logger.debug("materialized %d molecules, derived layers only", result.n_obs)
+        return result
     if start is None:
         genome_references = [
             reference

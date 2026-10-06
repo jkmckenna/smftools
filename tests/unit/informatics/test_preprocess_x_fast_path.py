@@ -266,3 +266,38 @@ def test_fast_path_still_scans_without_a_read_index(tmp_path, monkeypatch):
 
     assert part is not None and list(part.obs_names) == ["read3"]
     assert len(calls) >= 1
+
+
+# --- MRC-04: skip X when only derived layers are requested -----------------
+
+
+def test_derived_only_read_matches_full_read_without_reading_x(tmp_path, monkeypatch):
+    from smftools.informatics import partition_read
+
+    _, preprocess = _build(tmp_path, barcodes=("bc1", "bc2"))
+    full = materialize(
+        preprocess["spine"], read_ids=["read2"], start=0, end=12, layers=["nan_half"]
+    )
+
+    def no_x(*args, **kwargs):
+        raise AssertionError("x=False must not read X")
+
+    monkeypatch.setattr(partition_read, "_load_preprocess_x_selection", no_x)
+    monkeypatch.setattr(partition_read, "_load_ragged_selection", no_x)
+    lean = materialize(
+        preprocess["spine"], read_ids=["read2"], start=0, end=12, layers=["nan_half"], x=False
+    )
+
+    assert list(lean.obs_names) == list(full.obs_names)
+    assert list(lean.var_names) == list(full.var_names)
+    np.testing.assert_array_equal(lean.layers["nan_half"], full.layers["nan_half"])
+    assert lean.X is None
+
+
+@pytest.mark.parametrize("layers", [None, ["not_a_derived_layer"]])
+def test_derived_only_read_refuses_other_requests(tmp_path, layers):
+    _, preprocess = _build(tmp_path)
+    with pytest.raises(ValueError, match="x=False needs"):
+        materialize(
+            preprocess["spine"], read_ids=["read1"], start=0, end=12, layers=layers, x=False
+        )

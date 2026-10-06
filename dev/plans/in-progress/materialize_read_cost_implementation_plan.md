@@ -1,7 +1,8 @@
 # Materialize read cost (`MRC`)
 
-**Status:** in progress. `MRC-01` merged; `MRC-02` implemented on `fix/mrc-02-spine-cache`, not
-merged; `MRC-03`–`MRC-05` proposed. One PR per item, in order.
+**Status:** in progress. `MRC-01`, `MRC-02` merged; `MRC-04` implemented on
+`fix/mrc-04-skip-x-for-derived-layers`, not merged; `MRC-03`, `MRC-05` proposed. One PR per
+item; `MRC-04` was done before `MRC-03` as the larger remaining gain.
 
 ## Problem (`F70`)
 
@@ -26,9 +27,9 @@ whole-dataset read: ~30 molecules/s per process before `MLX-11`.
 | item | status | change | expected effect |
 |---|---|---|---|
 | `MRC-01` index-directed partition reads | merged | open only the partitions the read index names | ~16 s -> under 1 s + spine load, per call |
-| `MRC-02` spine cache | implemented, not merged | reuse a loaded spine within a process | -2.6 s per call after the first |
+| `MRC-02` spine cache | merged | reuse a loaded spine within a process | -2.6 s per call after the first |
 | `MRC-03` column-projected partition opens | proposed | read only the obs/var columns a subset needs | lower cost per open |
-| `MRC-04` skip `X` for derived-only requests | proposed | do not load preprocess `X` when only derived layers are asked for | roughly halves HMM-stage calls |
+| `MRC-04` skip `X` for derived-only requests | implemented, not merged | do not load preprocess `X` when only derived layers are asked for | roughly halves HMM-stage calls |
 | `MRC-05` qualification | proposed | before/after on real stores, end to end | -- |
 
 Each item is behaviour-preserving: the same molecules, values, layers and
@@ -106,6 +107,20 @@ reader passes it for channels that read only derived layers.
 
 Tests: derived-only results equal the derived layers of a full read; no `X`
 read happens (patched loader count).
+
+**As implemented.** `materialize(..., x=False)`: with an explicit layers list
+that is entirely derived, the result is built from the selection's rows and
+the window's positions (`_rows_and_positions`, with `position_in_<reference>`
+marked as the `X` path marks it) and the same overlays run; `X` is `None`.
+Anything else with `x=False` raises. The ML reader passes `x=False` for a
+stage whose channels read no `X` layer, and falls back to reading `X` if the
+stage's layers are not all derived. On a real HMM stage the two paths give the
+same rows, positions, layer values and shared var columns; the `X` path also
+carries per-partition preprocess summary columns (`*_partial`) that
+derived-only readers do not use. Warm call, 800 reads: 1.21 s -> 0.91 s
+(~25%, not the ~50% estimated -- the overlay dominates). Tests:
+`test_derived_only_read_matches_full_read_without_reading_x`,
+`test_derived_only_read_refuses_other_requests`.
 
 ### `MRC-05` — qualification
 

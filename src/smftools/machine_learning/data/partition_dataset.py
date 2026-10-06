@@ -827,20 +827,31 @@ class PartitionDataset:
     ) -> None:
         read_ids = [entries[row].read_id for row in batch_rows]
         layers = sorted({source.layer for _, source in stage_channels if source.layer != "X"})
-        try:
-            projected = materialize(
-                spine,
-                read_ids=read_ids,
-                layers=layers,
-                start=span[0],
-                end=span[1],
-                lazy=self.plan.policy.lazy,
-                query_memory_mb=self.plan.policy.query_memory_mb,
-            )
-        except ValueError as exc:
-            if "selection matched no molecules" in str(exc):
-                return
-            raise MLPartitionDataError(f"partition projection failed for {spine}: {exc}") from exc
+        # A stage whose channels read only derived layers (e.g. HMM) does not
+        # need X (`MRC-04`); if its layers are not all derived, read X after all.
+        needs_x = any(source.layer == "X" for _, source in stage_channels)
+        attempts = (False, True) if not needs_x else (True,)
+        for index, x in enumerate(attempts):
+            try:
+                projected = materialize(
+                    spine,
+                    read_ids=read_ids,
+                    layers=layers,
+                    start=span[0],
+                    end=span[1],
+                    lazy=self.plan.policy.lazy,
+                    query_memory_mb=self.plan.policy.query_memory_mb,
+                    x=x,
+                )
+                break
+            except ValueError as exc:
+                if "selection matched no molecules" in str(exc):
+                    return
+                if not x and "x=False needs" in str(exc) and index + 1 < len(attempts):
+                    continue
+                raise MLPartitionDataError(
+                    f"partition projection failed for {spine}: {exc}"
+                ) from exc
 
         expected_rows = {entries[row].read_id: row for row in batch_rows}
         actual_ids = tuple(map(str, projected.obs_names))
