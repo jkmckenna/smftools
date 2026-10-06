@@ -69,6 +69,7 @@ A plan with no implementation branch yet.
 | document | scope |
 |---|---|
 | `agent_files_plan.md` | restructuring the repo's `AGENTS.md`/`CLAUDE.md` files; explicitly not deployed |
+| `materialize_read_cost_implementation_plan.md` | `MRC` `materialize` read cost: index-directed partition reads, spine cache, column-projected opens, skip `X` for derived-only requests (`F70`) |
 | `pipeline_throughput_implementation_plan.md` | `THR-01`–`THR-06` -- single-threaded, pool-collapse and redundant-scan bottlenecks found running `experiment batch full` (`F53`–`F57`, `F59`): alignment rescue, duplicate-detection group sizing, latent, raw extraction |
 
 ## `logs/` — not tracked
