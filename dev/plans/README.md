@@ -38,6 +38,7 @@ Every tracked item merged to `main` and verified against the code.
 | `duplicate_detection_scaling.md` | bitpacking, chunked union-find, permutation banding (`e18d593`) |
 | `experiment_project_partitioned_pipeline_implementation_plan.md` | `PR-00`–`PR-14` |
 | `materialize_read_cost_implementation_plan.md` | `MRC-01`–`MRC-05` `materialize` read cost (`F70`, `F71`): index-directed partition reads, spine cache, overlay of owning stores only, skip `X` for derived-only requests; one call ~16 s -> under 1 s |
+| `site_context_bias_implementation_plan.md` | `SCB-01`–`SCB-04` modification-site sequence-context bias: strand-oriented contexts, per-offset enrichment, k-mer rates, group differences, figures; `smftools project/experiment context-bias` |
 | `project_and_latent_partitioned_pipeline_implementation_plan.md` | `PL-15`–`PL-23` (PR #414) |
 | `semantic_dag_variant_preprocessing_implementation_plan.md` | `SDV-01`–`SDV-14` |
 | `input_ingestion_alignment_implementation_plan.md` | `IAR-01`–`IAR-15` (PRs #468–#488), `PCLI-01`–`PCLI-04` (PRs #489–#493); coverage in `tests/acceptance/*.json` |
@@ -70,7 +71,6 @@ A plan with no implementation branch yet.
 | document | scope |
 |---|---|
 | `agent_files_plan.md` | restructuring the repo's `AGENTS.md`/`CLAUDE.md` files; explicitly not deployed |
-| `site_context_bias_implementation_plan.md` | `SCB` modification-site sequence-context bias: strand-oriented `2*flank+1` contexts of modified vs observed calls, per-offset enrichment, k-mer rates, between-group differences; `smftools project context-bias` |
 | `pipeline_throughput_implementation_plan.md` | `THR-01`–`THR-06` -- single-threaded, pool-collapse and redundant-scan bottlenecks found running `experiment batch full` (`F53`–`F57`, `F59`): alignment rescue, duplicate-detection group sizing, latent, raw extraction |
 
 ## `logs/` — not tracked
