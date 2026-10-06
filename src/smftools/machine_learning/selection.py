@@ -943,7 +943,18 @@ def _feature_count(
     metadata: Sequence[_ExperimentMetadata],
     reference_maps: Mapping[str, Mapping[str, str]],
     filters: Mapping[str, Any],
+    windows: Sequence[tuple[int, int]] = (),
 ) -> int:
+    if windows:
+        # `MLX-02`: only kept positions are features; they must exist.
+        length = _reference_lengths(metadata, reference_maps)
+        shortest = min(length.values())
+        if windows[-1][1] > shortest:
+            raise MLSelectionError(
+                f"positions window ends at {windows[-1][1]}, beyond the selected "
+                f"reference length {shortest}"
+            )
+        return sum(end - start for start, end in windows)
     start = filters.get("start")
     end = filters.get("end")
     if (start is None) != (end is None):
@@ -952,6 +963,14 @@ def _feature_count(
         if not isinstance(start, int) or not isinstance(end, int) or end <= start:
             raise MLSelectionError("filters.start/end must define a valid half-open interval")
         return end - start
+    return sum(_reference_lengths(metadata, reference_maps).values())
+
+
+def _reference_lengths(
+    metadata: Sequence[_ExperimentMetadata],
+    reference_maps: Mapping[str, Mapping[str, str]],
+) -> dict[str, int]:
+    """Canonical reference -> its covered length, from the raw interval catalogs."""
     lengths: dict[str, int] = {}
     for item in metadata:
         catalog = _interval_catalog(item)
@@ -966,7 +985,7 @@ def _feature_count(
             lengths[canonical] = max(lengths.get(canonical, 0), int(maximum))
     if not lengths:
         raise MLSelectionError("selected references have no feature coordinates")
-    return sum(lengths.values())
+    return lengths
 
 
 def _interval_catalog(metadata: _ExperimentMetadata) -> Path:
@@ -1110,7 +1129,12 @@ def plan_ml_dataset(
     identity = pd.concat(tables, ignore_index=True).sort_values(MOLECULE_UID_COLUMN, kind="stable")
     if identity[MOLECULE_UID_COLUMN].duplicated().any():
         raise MLSelectionError("selected experiments contain duplicate molecule identities")
-    n_features = _feature_count(selected_metadata, reference_maps, dataset.filters)
+    n_features = _feature_count(
+        selected_metadata,
+        reference_maps,
+        dataset.filters,
+        dataset.positions.windows() if dataset.positions is not None else (),
+    )
     membership_fingerprint = _sha256(identity[MOLECULE_UID_COLUMN].astype(str).tolist())
     feature_fingerprint = _sha256(
         [

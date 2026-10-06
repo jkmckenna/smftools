@@ -497,3 +497,50 @@ def test_table_label_declarations_are_validated(labels, scope, message):
 
     with pytest.raises(MLPlanValidationError, match=message):
         parse_ml_plan(_label_table_document(labels, scope=scope))
+
+
+# --- MLX-02: position masks ------------------------------------------------
+
+
+def _positions_document(positions=None, filters=None) -> dict:
+    document = _label_table_document({})
+    dataset = document["datasets"]["reads"]
+    if positions is not None:
+        dataset["positions"] = positions
+    if filters is not None:
+        dataset["filters"] = filters
+    return document
+
+
+def test_positions_resolve_to_kept_windows_and_round_trip():
+    from smftools.machine_learning.plan import parse_ml_plan
+
+    plan = parse_ml_plan(
+        _positions_document({"include": [[995, 3718]], "exclude": [[3127, 3528], [1462, 1763]]})
+    )
+    assert plan.datasets["reads"].positions.windows() == ((995, 1462), (1763, 3127), (3528, 3718))
+    assert parse_ml_plan(plan.to_dict()).plan_hash == plan.plan_hash
+
+
+def test_plans_without_positions_serialise_without_them():
+    from smftools.machine_learning.plan import parse_ml_plan
+
+    assert "positions" not in parse_ml_plan(_positions_document()).to_dict()["datasets"]["reads"]
+
+
+@pytest.mark.parametrize(
+    "positions, filters, message",
+    [
+        ({"include": []}, None, "at least one window"),
+        ({"include": [[10, 5]]}, None, "0 <= start < end"),
+        ({"include": [[0, 10.5]]}, None, "integer"),
+        ({"include": [[0, 10]], "exclude": [[0, 10]]}, None, "excludes every"),
+        ({"exclude": [[0, 10]]}, None, "include"),
+        ({"include": [[0, 10]]}, {"start": 0, "end": 10}, "filters.start/end"),
+    ],
+)
+def test_position_declarations_are_validated(positions, filters, message):
+    from smftools.machine_learning.plan import MLPlanValidationError, parse_ml_plan
+
+    with pytest.raises(MLPlanValidationError, match=message):
+        parse_ml_plan(_positions_document(positions, filters))

@@ -81,6 +81,7 @@ Every required key, nothing optional:
 | `references` | no | Reference names to restrict to. |
 | `filters` | no | Free-form additional selection on per-read metadata: the molecule index, the raw obs, then the obs of each stage the dataset reads (e.g. preprocess `passes_qc`, `passes_dedup`). |
 | `labels` | no | Required for any dataset a `train` job uses. |
+| `positions` | no | `{"include": [[start, end), ...], "exclude": [...]}`: the reference positions used as features. See below. |
 
 Each **channel** separates the biological meaning from the physical layer it comes from:
 
@@ -133,6 +134,19 @@ in `keys` -- for labels that live in a sample sheet rather than in any stored st
   column.
 - The table's checksum is part of the dataset selection identity: editing a label changes it.
 - Project scope only, since the path is resolved against the project directory.
+
+**Positions**: by default a dataset uses every position of its reference (or `filters.start` to
+`filters.end`). `positions` keeps only `include` windows minus `exclude` windows, half-open, in the
+reference's forward coordinates — for region studies such as "everything but the enhancer":
+
+```python
+"positions": {"include": [[995, 3718]], "exclude": [[3127, 3528]]}
+```
+
+Only kept positions become features: a masked position contributes no signal and no mask
+indicator, rather than an imputed constant. Kept windows are placed side by side, so a
+convolutional model sees them joined; a single window keeps true distances. `positions` cannot be
+combined with `filters.start`/`end`.
 
 ## `splits`
 

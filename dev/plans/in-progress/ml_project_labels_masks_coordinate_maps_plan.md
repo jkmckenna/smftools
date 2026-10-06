@@ -1,7 +1,7 @@
 # ML project labels, position masks and coordinate maps (`MLX`)
 
-**Status:** in progress. `MLX-01`, `MLX-05`, `MLX-06` merged; `MLX-09`
-implemented on `feature/mlx-09-partition-major-reads`, not merged; `MLX-02`–`MLX-04`,
+**Status:** in progress. `MLX-01`, `MLX-05`, `MLX-06`, `MLX-09` merged; `MLX-02`
+implemented on `feature/mlx-02-position-masks`, not merged; `MLX-03`, `MLX-04`,
 `MLX-07`, `MLX-08` proposed.
 
 ## Problem
@@ -33,14 +33,14 @@ an ML plan today, for three independent reasons found while designing it:
 | item | status | scope |
 |---|---|---|
 | `MLX-01` external label table | merged | `labels.source: table` joined on declared keys |
-| `MLX-02` position masks | proposed | include/exclude windows within a dataset's span |
+| `MLX-02` position masks | implemented, not merged | include/exclude windows within a dataset's span |
 | `MLX-03` cross-reference coordinate maps | proposed | place several references' molecules in one coordinate frame |
 | `MLX-04` qualification | proposed | one real project study end to end |
 | `MLX-05` real-store compatibility | merged | resolve channels and QC filters against real pipeline stores (`F66`) |
 | `MLX-06` plan job runner | merged | bind a resolved plan to a dataset snapshot, split and partition dataset per fold; train and test-evaluate each fold |
 | `MLX-07` training-only groups | proposed | let single-class groups train without being held-out folds |
 | `MLX-08` published fold runs | proposed | run `MLX-06` folds through the job service as immutable run artifacts |
-| `MLX-09` partition-major reads | implemented, not merged | open each store partition once per pass instead of once per batch (`F67`) |
+| `MLX-09` partition-major reads | merged | open each store partition once per pass instead of once per batch (`F67`) |
 
 Order: `MLX-01`, `MLX-05`, `MLX-06` (together they unblock a single-reference,
 full-span pilot), then `MLX-02`, then `MLX-03`, which builds on `MLX-02`'s
@@ -111,6 +111,31 @@ Tests: `test_table_*`, `test_filters_and_groups_may_name_table_columns`,
 - Tests: masked positions carry no signal into any backend; widths and
   coordinates in the snapshot; a single-window mask is identical to the
   equivalent `filters.start/end` dataset.
+
+**As implemented — differs from the above on one point.** Masked positions
+are *not in the feature set*, rather than kept as unavailable columns. The
+transform has no per-position exclusion: a masked cell would be imputed to a
+constant and still emit its observed/design/padding indicator columns, and
+for Bernoulli NB thousands of constant columns add a class-dependent offset
+to every row's log-probability (ranking metrics unchanged, probabilities
+shifted). So `PositionMask` (`include` minus `exclude`) resolves to disjoint
+windows; selection counts features from them (refusing a window past the
+reference); `snapshot_from_selection` writes one snapshot interval per
+window; the reader builds the feature coordinates from all of them
+(`_coordinates`) and `_position_columns` places values by position, so no
+other reader change was needed. A multi-window plan's id hashes its
+coordinates. Cost: a convolutional model sees kept windows joined, not at true
+distance -- single-window masks (enhancer-only, intervening-only, ...) are
+unaffected. `positions` is omitted from `MLPlan.to_dict` when unset, so
+earlier plans keep their hash.
+
+Tests: `test_positions_resolve_to_kept_windows_and_round_trip`,
+`test_plans_without_positions_serialise_without_them`,
+`test_position_declarations_are_validated` (plan);
+`test_masked_dataset_holds_only_kept_positions` (batch values equal the kept
+columns of the unmasked dataset), `test_trained_model_sees_only_kept_positions`
+(runner). Real data: the pilot with the enhancer masked binds 4,289 of 4,690
+positions, none in the enhancer, and a fold trains and evaluates in 197 s.
 
 ### `MLX-03` — cross-reference coordinate maps
 

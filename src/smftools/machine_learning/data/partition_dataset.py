@@ -285,6 +285,38 @@ class MLMaterializedPartitionData:
         return self.labels
 
 
+def _coordinates(
+    dataset: DatasetSnapshotManifest,
+    start: int | None,
+    end: int | None,
+) -> np.ndarray:
+    """Feature coordinates: one window, or several disjoint ones (`MLX-02`)."""
+    if start is None and end is None:
+        matching = sorted(
+            (interval.start, interval.end)
+            for interval in dataset.selection.intervals
+            if interval.reference == dataset.input_schema.reference
+        )
+        if len(matching) > 1:
+            for (_, previous_end), (next_start, _) in zip(matching, matching[1:]):
+                if next_start < previous_end:
+                    raise MLPartitionDataError("dataset intervals overlap")
+            width = sum(window_end - window_start for window_start, window_end in matching)
+            if width != dataset.input_schema.n_positions:
+                raise MLPartitionDataError(
+                    "coordinate width does not match input_schema.n_positions: "
+                    f"{width} != {dataset.input_schema.n_positions}"
+                )
+            return np.concatenate(
+                [
+                    np.arange(window_start, window_end, dtype=np.int64)
+                    for window_start, window_end in matching
+                ]
+            )
+    window_start, window_end = _interval(dataset, start, end)
+    return np.arange(window_start, window_end, dtype=np.int64)
+
+
 def _interval(
     dataset: DatasetSnapshotManifest,
     start: int | None,
@@ -298,11 +330,6 @@ def _interval(
             for interval in dataset.selection.intervals
             if interval.reference == dataset.input_schema.reference
         ]
-        if len(matching) > 1:
-            raise MLPartitionDataError(
-                "dataset has multiple intervals for its input-schema reference; "
-                "provide coordinate_start and coordinate_end"
-            )
         if matching:
             start, end = matching[0].start, matching[0].end
         else:
@@ -412,7 +439,8 @@ def build_partition_data_plan(
     """Bind immutable manifests to local partition sources and preflight batches."""
     split.validate_against(dataset)
     policy = policy or PartitionReadPolicy()
-    start, end = _interval(dataset, coordinate_start, coordinate_end)
+    coordinates = _coordinates(dataset, coordinate_start, coordinate_end)
+    start, end = int(coordinates[0]), int(coordinates[-1]) + 1
     bindings = {source.experiment_uid: source for source in sources}
     if len(bindings) != len(sources):
         raise MLPartitionDataError("experiment source bindings must have unique experiment UIDs")
@@ -484,6 +512,9 @@ def build_partition_data_plan(
         "coordinate_start": start,
         "coordinate_end": end,
     }
+    if len(coordinates) != end - start:
+        # Several windows: which positions, not just their bounds.
+        identity["coordinates_sha256"] = _sha256(coordinates.tolist())
     return MLPartitionDataPlan(
         plan_id=_sha256(identity),
         dataset=dataset,
@@ -492,7 +523,7 @@ def build_partition_data_plan(
         entries=entries,
         coordinate_start=start,
         coordinate_end=end,
-        coordinates=np.arange(start, end, dtype=np.int64),
+        coordinates=coordinates,
         bytes_per_row=row_bytes,
         effective_batch_size=effective_batch_size,
         policy=policy,

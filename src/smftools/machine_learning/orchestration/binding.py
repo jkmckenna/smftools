@@ -154,6 +154,11 @@ def snapshot_from_selection(
     dataset = plan.datasets[selection.dataset_name]
     input_schema = _input_schema(plan, selection.dataset_name, selection)
     start = int(dataset.filters.get("start", 0))
+    windows = (
+        dataset.positions.windows()
+        if dataset.positions is not None
+        else ((start, start + selection.n_features),)
+    )
     return DatasetSnapshotManifest.create(
         selection=DatasetSelection(
             scope_kind=selection.scope_kind,
@@ -163,8 +168,9 @@ def snapshot_from_selection(
             plan_hash=selection.plan_hash,
             samples=tuple(sorted(set(selection.identity_table["sample_id"].astype(str)))),
             references=(input_schema.reference,),
-            intervals=(
-                GenomicInterval(input_schema.reference, start, start + selection.n_features),
+            intervals=tuple(
+                GenomicInterval(input_schema.reference, window_start, window_end)
+                for window_start, window_end in windows
             ),
             filters=dict(dataset.filters),
         ),
@@ -250,7 +256,6 @@ def bind_ml_job(
     )
     snapshot = snapshot_from_selection(plan, selection)
     partition_sources = _partition_sources(selection)
-    interval = snapshot.selection.intervals[0]
     folds = []
     for resolution in plan_ml_splits(plan, job.split, selection):
         split = resolution.to_manifest(snapshot)
@@ -258,8 +263,6 @@ def bind_ml_job(
             snapshot,
             split,
             partition_sources,
-            coordinate_start=interval.start,
-            coordinate_end=interval.end,
             policy=policy,
         )
         folds.append(
