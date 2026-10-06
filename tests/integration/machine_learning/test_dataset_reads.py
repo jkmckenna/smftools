@@ -230,3 +230,15 @@ def test_a_plan_may_declare_datasets_only() -> None:
     plan = _plan()
     assert not plan.splits and not plan.models and not plan.jobs
     assert parse_ml_plan(plan.to_dict()).plan_hash == plan.plan_hash
+
+
+def test_whole_dataset_reads_split_across_workers(project) -> None:
+    root, calls, _ = project
+    bound = bind_ml_dataset(_plan(), "reads", project_dir=root)
+    shards = [
+        read_id
+        for worker in range(2)
+        for batch in bound.iter_batches(worker_id=worker, num_workers=2)
+        for read_id in batch.read_ids
+    ]
+    assert sorted(shards) == sorted(calls)

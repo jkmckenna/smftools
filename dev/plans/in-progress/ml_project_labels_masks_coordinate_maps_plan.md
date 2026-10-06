@@ -1,7 +1,7 @@
 # ML project labels, position masks and coordinate maps (`MLX`)
 
-**Status:** in progress. `MLX-01`–`MLX-03`, `MLX-05`–`MLX-07`, `MLX-09` merged; `MLX-10`
-implemented on `feature/mlx-10-dataset-reads`, not merged; `MLX-04`, `MLX-08` proposed.
+**Status:** in progress. `MLX-01`–`MLX-03`, `MLX-05`–`MLX-07`, `MLX-09`, `MLX-10` merged; `MLX-11`
+implemented on `feature/mlx-11-parallel-block-reads`, not merged; `MLX-04`, `MLX-08` proposed.
 
 ## Problem
 
@@ -40,7 +40,8 @@ an ML plan today, for three independent reasons found while designing it:
 | `MLX-07` training-only groups | merged | let single-class groups train without being held-out folds |
 | `MLX-08` published fold runs | proposed | run `MLX-06` folds through the job service as immutable run artifacts |
 | `MLX-09` partition-major reads | merged | open each store partition once per pass instead of once per batch (`F67`) |
-| `MLX-10` whole-dataset reads, HMM-stage channels | implemented, not merged | read a dataset's rows without a split (for embeddings), and resolve HMM/spatial stage read indexes |
+| `MLX-10` whole-dataset reads, HMM-stage channels | merged | read a dataset's rows without a split (for embeddings), and resolve HMM/spatial stage read indexes |
+| `MLX-11` block-sharded workers | implemented, not merged | let N processes split the read by whole blocks (`F69`) |
 
 Order: `MLX-01`, `MLX-05`, `MLX-06` (together they unblock a single-reference,
 full-span pilot), then `MLX-02`, then `MLX-03`, which builds on `MLX-02`'s
@@ -438,4 +439,17 @@ active / B6 inactive / enh-del, downstream of the deletion in B6 coordinates)
 binds 36,981 molecules over 3,151 positions with C-site, accessible-feature
 and footprint-feature channels all populated; ~30 rows/s over two stages.
 HMM channels use the C-site design mask, so they are read at C sites only.
+
+### `MLX-11` — block-sharded workers (`F69`)
+
+`iter_batches(worker_id, num_workers)` sharded by batch index, but since
+`MLX-09` a worker decodes whole blocks of several batches. Every block held
+batches of every worker, so N workers each decoded every block: parallel reads
+were N times the work, and a real embedding read (~31k molecules, two stages,
+four channels) ran on one core for 15+ minutes. Workers now take whole blocks
+(block *k* -> worker *k* mod N); batches stay disjoint and complete, and each
+block is decoded once. `BoundDataset.iter_batches` passes the sharding
+through. Test: `test_workers_split_blocks_so_each_is_read_once` (12 block
+reads instead of 6 with the old sharding), and
+`test_whole_dataset_reads_split_across_workers`.
 

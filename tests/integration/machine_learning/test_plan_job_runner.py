@@ -348,3 +348,36 @@ def test_trained_model_sees_only_kept_positions(project: Path) -> None:
         assert positions == set(kept)  # no signal or indicator column for a masked position
         metrics = {m.name: m.value for m in run.evaluation.metrics if m.modality is None}
         assert metrics["average_precision"] > 0.9
+
+
+def test_workers_split_blocks_so_each_is_read_once(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # F69: sharding by batch put every block on every worker.
+    import smftools.machine_learning.data.partition_dataset as reader
+
+    calls = []
+    original = reader.materialize
+
+    def counting(*args, **kwargs):
+        calls.append(1)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(reader, "materialize", counting)
+    # Blocks of two batches, so a block holds batches of different workers.
+    probe = bind_ml_job(_plan(), "train", project_dir=project).folds[0].dataset.plan
+    policy = PartitionReadPolicy(batch_size=8, max_block_bytes=probe.bytes_per_row * 8 * 2)
+    dataset = bind_ml_job(_plan(), "train", project_dir=project, policy=policy).folds[0].dataset
+
+    calls.clear()
+    alone = [batch.read_ids for batch in dataset.iter_batches("train")]
+    reads_alone = len(calls)
+    calls.clear()
+    shared = [
+        batch.read_ids
+        for worker in range(3)
+        for batch in dataset.iter_batches("train", worker_id=worker, num_workers=3)
+    ]
+
+    assert len(calls) == reads_alone
+    assert sorted(shared) == sorted(alone)

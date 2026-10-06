@@ -307,8 +307,13 @@ class BoundDataset:
     def identity(self) -> pd.DataFrame:
         return self.selection.identity_table
 
-    def iter_batches(self):
-        return self.dataset.iter_batches(_ALL_ROWS)
+    def iter_batches(self, *, worker_id: int = 0, num_workers: int = 1):
+        """Batches of every row; with ``num_workers`` > 1, this worker's blocks only.
+
+        Workers split whole blocks (`F69`), so N processes each reading their
+        share decode every row exactly once between them.
+        """
+        return self.dataset.iter_batches(_ALL_ROWS, worker_id=worker_id, num_workers=num_workers)
 
     def materialize(self):
         return self.dataset.materialize(_ALL_ROWS)
