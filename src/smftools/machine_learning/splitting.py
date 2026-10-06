@@ -696,8 +696,24 @@ def plan_ml_splits(
         )
 
     classes = _stratification_feasibility(groups, n_roles=2)
+    # `MLX-07`: groups that only ever train -- named, or (on request) every
+    # group holding a single class, which cannot be scored as a test fold.
+    named = set(spec.train_groups)
+    unknown = sorted(named.difference(group.token for group in groups))
+    if unknown:
+        raise MLSplitPlanningError(f"train_groups name unknown groups: {unknown}")
+    train_only = {group.group_id for group in groups if group.token in named}
+    if spec.single_class_groups == "train":
+        train_only |= {
+            group.group_id
+            for group in groups
+            if len([count for count in group.counts_by_class.values() if count]) < len(classes)
+        }
+    held_out_groups = [group for group in groups if group.group_id not in train_only]
+    if not held_out_groups:
+        raise MLSplitPlanningError("leave-one-group-out has no group left to hold out")
     result = []
-    for held_out in sorted(groups, key=lambda item: item.token):
+    for held_out in sorted(held_out_groups, key=lambda item: item.token):
         roles = {
             group.group_id: "test" if group.group_id == held_out.group_id else "train"
             for group in groups

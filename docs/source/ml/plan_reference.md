@@ -173,7 +173,8 @@ scope only.
 | --- | --- | --- |
 | `strategy` | yes | `explicit_groups`, `leave_one_group_out`, or `stratified_group`. |
 | `group_by` | yes | Fields defining a group, e.g. `["sample_id"]`. |
-| `train_groups`, `validation_groups`, `test_groups` | for `explicit_groups` | Group names per role. |
+| `train_groups`, `validation_groups`, `test_groups` | for `explicit_groups` | Group names per role. `leave_one_group_out` accepts `train_groups` only: groups that train in every fold and are never held out. |
+| `single_class_groups` | no | `leave_one_group_out` only. `refuse` (default) fails when a group lacks a class, since it cannot be scored as a test fold; `train` keeps such groups in every fold's train role instead. |
 | `fractions` | for `stratified_group` | Role fractions. |
 | `seed` | no | Defaults to `0`. |
 

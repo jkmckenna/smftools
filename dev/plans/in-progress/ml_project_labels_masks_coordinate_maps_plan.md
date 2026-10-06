@@ -1,8 +1,8 @@
 # ML project labels, position masks and coordinate maps (`MLX`)
 
-**Status:** in progress. `MLX-01`, `MLX-02`, `MLX-05`, `MLX-06`, `MLX-09` merged;
-`MLX-03` implemented on `feature/mlx-03-coordinate-maps`, not merged; `MLX-04`,
-`MLX-07`, `MLX-08` proposed.
+**Status:** in progress. `MLX-01`–`MLX-03`, `MLX-05`, `MLX-06`, `MLX-09` merged;
+`MLX-07` implemented on `feature/mlx-07-training-only-groups`, not merged;
+`MLX-04`, `MLX-08` proposed.
 
 ## Problem
 
@@ -34,11 +34,11 @@ an ML plan today, for three independent reasons found while designing it:
 |---|---|---|
 | `MLX-01` external label table | merged | `labels.source: table` joined on declared keys |
 | `MLX-02` position masks | merged | include/exclude windows within a dataset's span |
-| `MLX-03` cross-reference coordinate maps | implemented, not merged | place several references' molecules in one coordinate frame |
+| `MLX-03` cross-reference coordinate maps | merged | place several references' molecules in one coordinate frame |
 | `MLX-04` qualification | proposed | one real project study end to end |
 | `MLX-05` real-store compatibility | merged | resolve channels and QC filters against real pipeline stores (`F66`) |
 | `MLX-06` plan job runner | merged | bind a resolved plan to a dataset snapshot, split and partition dataset per fold; train and test-evaluate each fold |
-| `MLX-07` training-only groups | proposed | let single-class groups train without being held-out folds |
+| `MLX-07` training-only groups | implemented, not merged | let single-class groups train without being held-out folds |
 | `MLX-08` published fold runs | proposed | run `MLX-06` folds through the job service as immutable run artifacts |
 | `MLX-09` partition-major reads | merged | open each store partition once per pass instead of once per batch (`F67`) |
 
@@ -297,6 +297,25 @@ study may still want such a group's rows in training (an experiment with only
 active samples). Add a split option naming groups that only ever train, so
 folds are the remaining groups and every fold's train set includes them.
 Tests: the named groups appear in no test role and in every train role.
+
+**As implemented.** Two ways, both `leave_one_group_out` only:
+`train_groups` (named groups; unknown names refused), as planned, and
+`single_class_groups: train`, which makes every group lacking a class
+train-only automatically -- what a task grid needs, since which experiments
+are single-class depends on the task and group tokens (experiment uids) are
+opaque. Default `refuse` keeps the old behaviour; it is omitted from
+`to_dict`, so earlier plan hashes are unchanged. Folds are the remaining
+groups; with none left, refused. The rule that `leave_one_group_out` rejects
+role lists now rejects only validation/test lists (test updated).
+
+Tests: `test_single_class_groups_are_refused_by_default`,
+`test_single_class_groups_train_in_every_fold_when_asked`,
+`test_named_train_groups_never_hold_out`, `test_unknown_train_groups_are_refused`
+(splitting); `test_single_class_groups_policy_is_validated_and_hash_neutral`
+(plan). Real data (workflow dry runs): the pilot keeps its five folds and now
+trains on the single-class experiment it had to exclude; B6 vs enh-del over
+all seven experiments resolves to three scoreable folds, the four
+single-class experiments training in each.
 
 ### `MLX-08` — published fold runs
 

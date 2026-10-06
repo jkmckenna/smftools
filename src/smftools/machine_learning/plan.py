@@ -244,6 +244,9 @@ class SplitSpec:
     test_groups: tuple[str, ...] = ()
     fractions: Mapping[str, float] = field(default_factory=lambda: MappingProxyType({}))
     seed: int = 0
+    # leave_one_group_out only (`MLX-07`): "train" keeps groups holding a
+    # single class in every fold's train role instead of refusing them.
+    single_class_groups: str = "refuse"
 
 
 @dataclass(frozen=True)
@@ -319,6 +322,9 @@ class MLPlan:
         """Return a JSON/YAML-serializable resolved representation."""
         payload = _thaw(self)
         payload["scope"]["set"] = payload["scope"].pop("set_name")
+        for split in payload["splits"].values():
+            if split.get("single_class_groups") == "refuse":
+                split.pop("single_class_groups")  # default; keeps earlier hashes
         for dataset in payload["datasets"].values():
             for key in ("positions", "coordinate_frame"):
                 if dataset.get(key) is None:
@@ -727,10 +733,16 @@ def _parse_split(raw: Any, path: str) -> SplitSpec:
             "test_groups",
             "fractions",
             "seed",
+            "single_class_groups",
         },
         required={"strategy", "group_by"},
     )
     strategy = _required_string(value, "strategy", path).lower()
+    single_class_groups = str(value.get("single_class_groups", "refuse")).strip().lower()
+    if single_class_groups not in {"refuse", "train"}:
+        _fail(f"{path}.single_class_groups", "must be 'refuse' or 'train'")
+    if single_class_groups != "refuse" and strategy != "leave_one_group_out":
+        _fail(f"{path}.single_class_groups", "applies only to leave_one_group_out")
     if strategy not in {
         "explicit_groups",
         "leave_one_group_out",
@@ -784,10 +796,12 @@ def _parse_split(raw: Any, path: str) -> SplitSpec:
         if not math.isclose(sum(fractions.values()), 1.0, rel_tol=0.0, abs_tol=1e-9):
             _fail(f"{path}.fractions", "must sum to 1.0")
     else:
-        if any(role_groups.values()) or fractions:
+        # train_groups: groups that only ever train, never held out (`MLX-07`).
+        if role_groups["validation"] or role_groups["test"] or fractions:
             _fail(
                 path,
-                "leave_one_group_out cannot include explicit role groups or fractions",
+                "leave_one_group_out takes only train_groups (groups that never hold out), "
+                "not validation/test groups or fractions",
             )
     return SplitSpec(
         strategy=strategy,
@@ -795,6 +809,7 @@ def _parse_split(raw: Any, path: str) -> SplitSpec:
         train_groups=role_groups["train"],
         validation_groups=role_groups["validation"],
         test_groups=role_groups["test"],
+        single_class_groups=single_class_groups,
         fractions=MappingProxyType(fractions),
         seed=seed,
     )
