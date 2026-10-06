@@ -1,6 +1,6 @@
 # Modification-site sequence-context bias (`SCB`)
 
-**Status:** in progress. `SCB-01` implemented. One PR per item, in order.
+**Status:** in progress. `SCB-01` merged; `SCB-02` implemented. One PR per item, in order.
 
 ## Question
 
@@ -59,8 +59,8 @@ Windows running off a reference end are padded with `N` and counted as such.
 
 | item | status | scope |
 |---|---|---|
-| `SCB-01` counting + statistics | implemented, not merged | library: stream a bound dataset into per-site counts; per-offset, per-k-mer and between-group tables |
-| `SCB-02` figures | proposed | offset x base enrichment heatmaps and logos, k-mer rate plots, group-difference heatmaps |
+| `SCB-01` counting + statistics | merged | library: stream a bound dataset into per-site counts; per-offset, per-k-mer and between-group tables |
+| `SCB-02` figures | implemented, not merged | offset x base enrichment heatmaps and logos, k-mer rate plots, group-difference heatmaps |
 | `SCB-03` CLI | proposed | `smftools project context-bias` over a plan dataset |
 | `SCB-04` qualification | proposed | a real enzyme panel |
 
@@ -99,10 +99,19 @@ one materialized matrix; worker split gives identical counts.
 
 ### `SCB-02` — figures
 
-`smftools.analysis.plot.site_context_bias`: offset x base enrichment heatmap
-per group (diverging colours, centre site marked); an information-content
-style logo of enrichment; k-mer rate dot plot with intervals and distinct-site
-counts; group-difference heatmaps. Smoke tests write each figure.
+`smftools.analysis.plot.site_context_bias`, one panel per group:
+`plot_offset_enrichment_heatmap` (offset x base, diverging, shared scale,
+centre site marked), `plot_enrichment_logo` (letter height = |log2
+enrichment|, enriched above the axis and depleted below, drawn with
+matplotlib text paths -- no logo dependency), `plot_kmer_rates` (rate with
+Wilson interval for the most-observed k-mers, labelled with distinct-site
+counts), `plot_group_differences`. Smoke tests write each figure.
+
+Also here: `offset_enrichment` and `kmer_rates` drop contexts containing a
+non-ACGT base by default (`drop_ambiguous`). Real references carry internal
+`N` (masked bases): on an enzyme panel ~1.6% of calls at a handful of
+positions, whose noisy enrichments swamped every figure. Modified and
+background calls are dropped alike, so the comparison stays consistent.
 
 ### `SCB-03` — CLI
 

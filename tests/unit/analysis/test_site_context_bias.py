@@ -12,6 +12,7 @@ from smftools.analysis.compute.site_context_bias import (
     site_contexts,
     site_table,
     strand_of,
+    unambiguous,
     wilson_interval,
 )
 
@@ -156,3 +157,33 @@ def test_group_differences_against_a_reference_group():
     assert t_plus_one > 1  # enzyme_a prefers +1 T; enzyme_b is unbiased
     with pytest.raises(KeyError):
         group_differences(table, reference_group="missing")
+
+
+def test_ambiguous_contexts_are_dropped_by_default():
+    sites = pd.concat(
+        [
+            _planted(),
+            pd.DataFrame(
+                [
+                    {
+                        "group": "g",
+                        "physical_reference": "ref_top",
+                        "position": 99,
+                        "observed": 100,
+                        "modified": 100,
+                        "context": "NCT",
+                    }
+                ]
+            ),
+        ],
+        ignore_index=True,
+    )
+    assert len(unambiguous(sites)) == len(sites) - 1
+    dropped = offset_enrichment(sites, flank=1)
+    assert dropped.loc[dropped["base"] == "N", "log2_enrichment"].isna().all()
+    pd.testing.assert_frame_equal(dropped, offset_enrichment(_planted(), flank=1))
+    kept = offset_enrichment(sites, flank=1, drop_ambiguous=False)
+    assert kept.loc[(kept["base"] == "N") & (kept["offset"] == -1), "log2_enrichment"].notna().all()
+    assert "NCT" not in set(kmer_rates(sites, flank=1, k=3)["kmer"])
+    assert "NCT" in set(kmer_rates(sites, flank=1, k=3, drop_ambiguous=False)["kmer"])
+    assert "C" in set(kmer_rates(sites, flank=1, k=1)["kmer"])  # the centre alone is unambiguous
