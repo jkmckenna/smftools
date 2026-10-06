@@ -18,7 +18,11 @@ Either way, peak memory scales with the selection rather than the full dataset.
 
 from __future__ import annotations
 
+import copy
+import os
 import re
+import threading
+from collections import OrderedDict
 from pathlib import Path
 from typing import TYPE_CHECKING, Iterable
 
@@ -60,6 +64,42 @@ REFERENCE_LENGTHS_KEY = "reference_lengths"
 def read_catalog(catalog_path: str | Path) -> pd.DataFrame:
     """Read a partition ``catalog.parquet`` into a DataFrame."""
     return pd.read_parquet(catalog_path)
+
+
+# Process-local cache of spines `materialize` has loaded (`MRC-02`): batched
+# readers call it once per block, and re-reading the spine cost ~2.6 s each
+# time on a real store. Keyed on the file's identity, so a re-published spine
+# is a new entry; bounded, so memory stays flat across experiments. Only
+# `materialize`'s own spine resolution uses it -- `load_spine` stays uncached
+# for callers that modify and rewrite a spine.
+_SPINE_CACHE: "OrderedDict[tuple[str, int, int], ad.AnnData]" = OrderedDict()
+_SPINE_CACHE_SIZE = 4
+_SPINE_CACHE_LOCK = threading.Lock()
+
+
+def clear_spine_cache() -> None:
+    """Drop every spine `materialize` has cached in this process."""
+    with _SPINE_CACHE_LOCK:
+        _SPINE_CACHE.clear()
+
+
+def _cached_spine(spine_path: Path) -> "ad.AnnData":
+    if os.environ.get("SMFTOOLS_SPINE_CACHE", "1") == "0":
+        return load_spine(spine_path)
+    resolved = spine_path.resolve()
+    stat = resolved.stat()
+    key = (str(resolved), stat.st_size, stat.st_mtime_ns)
+    with _SPINE_CACHE_LOCK:
+        if key in _SPINE_CACHE:
+            _SPINE_CACHE.move_to_end(key)
+            return _SPINE_CACHE[key]
+    spine = load_spine(spine_path)
+    with _SPINE_CACHE_LOCK:
+        _SPINE_CACHE[key] = spine
+        _SPINE_CACHE.move_to_end(key)
+        while len(_SPINE_CACHE) > _SPINE_CACHE_SIZE:
+            _SPINE_CACHE.popitem(last=False)
+    return spine
 
 
 def load_spine(spine_path: str | Path, *, verbose: bool = True) -> "ad.AnnData":
@@ -149,7 +189,7 @@ def _resolve_spine(spine, base_dir):
     """
     if isinstance(spine, (str, Path)):
         spine_path = Path(spine)
-        obj = load_spine(spine_path)
+        obj = _cached_spine(spine_path)
         if not bool(obj.uns.get("is_spine", False)):
             return obj, Path(base_dir) if base_dir is not None else spine_path.parent
         if base_dir is not None:
@@ -421,7 +461,8 @@ def _load_ragged_selection(
         reference_lengths=lengths,
         layers=None if requires_pair_consensus else layers,
         uns={
-            key: value
+            # Copies: the spine may be cached and shared between calls.
+            key: copy.deepcopy(value)
             for key, value in spine.uns.items()
             if key == "References" or key.endswith("_map")
         },
@@ -1216,7 +1257,8 @@ def materialize(
     # Carry decoder / reference maps so the result is self-describing.
     for key, value in spine_obj.uns.items():
         if key == "References" or key.endswith("_map"):
-            result.uns.setdefault(key, value)
+            # A copy: the spine may be cached and shared between calls.
+            result.uns.setdefault(key, copy.deepcopy(value))
 
     _overlay_preprocess_layers(
         spine_obj, result, requested_derived, run_root, lazy, query_memory_mb
