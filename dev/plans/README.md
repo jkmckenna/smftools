@@ -71,6 +71,7 @@ A plan with no implementation branch yet.
 | document | scope |
 |---|---|
 | `agent_files_plan.md` | restructuring the repo's `AGENTS.md`/`CLAUDE.md` files; explicitly not deployed |
+| `read_periodicity_implementation_plan.md` | `RPG-01`–`RPG-05` per-read Lomb-Scargle periodograms over regions for any plan channel (C sites, HMM layers at sites or every position), period range narrowed to short regions, paired input/periodogram clustermaps sorted by peak period; `smftools project/experiment periodicity`; shared cache key with label-table hashing (`F72`) |
 | `pipeline_throughput_implementation_plan.md` | `THR-01`–`THR-06` -- single-threaded, pool-collapse and redundant-scan bottlenecks found running `experiment batch full` (`F53`–`F57`, `F59`): alignment rescue, duplicate-detection group sizing, latent, raw extraction |
 
 ## `logs/` — not tracked
