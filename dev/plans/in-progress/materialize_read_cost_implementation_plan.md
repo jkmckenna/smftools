@@ -1,8 +1,7 @@
 # Materialize read cost (`MRC`)
 
-**Status:** in progress. `MRC-01`, `MRC-02` merged; `MRC-04` implemented on
-`fix/mrc-04-skip-x-for-derived-layers`, not merged; `MRC-03`, `MRC-05` proposed. One PR per
-item; `MRC-04` was done before `MRC-03` as the larger remaining gain.
+**Status:** in progress. `MRC-01`, `MRC-02`, `MRC-04` merged; `MRC-03` (rescoped) implemented on
+`fix/mrc-03-overlay-owning-stores`, on top of the `F71` fix, not merged; `MRC-05` proposed.
 
 ## Problem (`F70`)
 
@@ -28,8 +27,8 @@ whole-dataset read: ~30 molecules/s per process before `MLX-11`.
 |---|---|---|---|
 | `MRC-01` index-directed partition reads | merged | open only the partitions the read index names | ~16 s -> under 1 s + spine load, per call |
 | `MRC-02` spine cache | merged | reuse a loaded spine within a process | -2.6 s per call after the first |
-| `MRC-03` column-projected partition opens | proposed | read only the obs/var columns a subset needs | lower cost per open |
-| `MRC-04` skip `X` for derived-only requests | implemented, not merged | do not load preprocess `X` when only derived layers are asked for | roughly halves HMM-stage calls |
+| `MRC-03` overlay opens only owning stores (rescoped) | implemented, not merged | skip a stage's store when its catalog lists none of the requested layers | HMM call 0.95 s -> 0.59 s |
+| `MRC-04` skip `X` for derived-only requests | merged | do not load preprocess `X` when only derived layers are asked for | roughly halves HMM-stage calls |
 | `MRC-05` qualification | proposed | before/after on real stores, end to end | -- |
 
 Each item is behaviour-preserving: the same molecules, values, layers and
@@ -85,17 +84,24 @@ calls, reload after rewrite, LRU bound, cached == uncached, result edits do
 not reach the cached spine). Real store, second call on the same spine:
 preprocess 2.54 s -> 0.46 s, HMM 3.39 s -> 1.23 s; values identical.
 
-### `MRC-03` — column-projected partition opens
+### `MRC-03` — overlay opens only stores that wrote a requested layer (rescoped)
 
-`read_zarr_subset` reads obs/var through anndata's full-dataframe readers
-before slicing. Read only the obs columns the caller keeps (identity columns
-plus any requested) and the var columns needed for position selection and
-design (`<reference>_*_site`, `position_in_*`), lazily where anndata allows.
+**Rescoped from column-projected opens.** Measured after `MRC-01`/`02`/`04`,
+reading obs/var dataframes costs ~0.01 s (preprocess) to ~0.14 s (HMM) per
+call -- under 10% -- so projecting columns was not worth a PR and an opt-in
+API. The eager full-partition reads in the original profile came from the
+`read_ids=` scan that `MRC-01` removed; the lazy path works on these stores.
+The same profile showed the real waste: `_overlay_preprocess_layers` loops over
+both derived stages' stores for every request, so asking for HMM layers also
+opened the matching preprocess partitions, which cannot hold them.
 
-Tests: projected and unprojected reads give identical `X`, layers, obs names
-and kept columns; a wide-obs fixture shows fewer column reads. Decide in the
-PR whether callers that rely on every obs column (plotting) opt in to the full
-read.
+**As implemented.** Each stage's catalog `layers` column (already read by the
+`F71` fix) says what it wrote; a stage listing none of the requested layers is
+skipped. Catalogs without a `layers` column are read as before. Test:
+`test_overlay_skips_stages_that_wrote_none_of_the_requested_layers` (a second
+stage over the same partitions listing another layer: 3 opens before, 1
+after). Real HMM call, 800 reads, warm spine: 2 opens -> 1, 0.95 s -> 0.59 s;
+layer sums identical. Preprocess calls unchanged.
 
 ### `MRC-04` — skip `X` for derived-only requests
 
