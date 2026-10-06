@@ -70,6 +70,7 @@ A plan with no implementation branch yet.
 | document | scope |
 |---|---|
 | `agent_files_plan.md` | restructuring the repo's `AGENTS.md`/`CLAUDE.md` files; explicitly not deployed |
+| `site_context_bias_implementation_plan.md` | `SCB` modification-site sequence-context bias: strand-oriented `2*flank+1` contexts of modified vs observed calls, per-offset enrichment, k-mer rates, between-group differences; `smftools project context-bias` |
 | `pipeline_throughput_implementation_plan.md` | `THR-01`–`THR-06` -- single-threaded, pool-collapse and redundant-scan bottlenecks found running `experiment batch full` (`F53`–`F57`, `F59`): alignment rescue, duplicate-detection group sizing, latent, raw extraction |
 
 ## `logs/` — not tracked
