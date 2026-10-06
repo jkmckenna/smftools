@@ -24,6 +24,12 @@ does) it reads rows **partition by partition** rather than in manifest order. On
 contents follow read order; `materialize()` returns rows in manifest order. Lowering
 `max_block_bytes` trades speed for memory: one block's decoded rows are in memory at once.
 
+Reading is single-threaded per process. To read in parallel, run N processes that each call
+`iter_batches(..., worker_id=i, num_workers=N)` (or `BoundDataset.iter_batches(worker_id=i,
+num_workers=N)`): workers take whole blocks (block *k* goes to worker *k* mod N), so between them
+they decode every block exactly once. Use a smaller `max_block_bytes` with many workers so there
+are enough blocks to share out.
+
 `materialize()` runs a preflight and **refuses** rather than risking an out-of-memory kill. The
 refusal is a closed form:
 

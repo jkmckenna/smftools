@@ -633,26 +633,21 @@ class PartitionDataset:
         entries = self.plan.read_order(split)
         batch_size = self.plan.effective_batch_size
         # Read whole blocks of batches at once and cut them up: each store read
-        # has a fixed cost of seconds on real stores (`F67`). Batch boundaries,
-        # and so worker sharding, are the same as reading batch by batch.
+        # has a fixed cost of seconds on real stores (`F67`). Workers take whole
+        # blocks (block i -> worker i % num_workers), so each block is decoded
+        # by exactly one worker; sharding by batch put batches of every block on
+        # every worker, so N workers decoded every block N times (`F69`).
         batches_per_block = max(
             1, self.plan.policy.max_block_bytes // (self.plan.bytes_per_row * batch_size)
         )
         block_rows = batch_size * batches_per_block
-        for block_offset in range(0, len(entries), block_rows):
-            first_batch = block_offset // batch_size
-            block_entries = entries[block_offset : block_offset + block_rows]
-            n_batches = -(-len(block_entries) // batch_size)
-            mine = [
-                index
-                for index in range(n_batches)
-                if (first_batch + index) % num_workers == worker_id
-            ]
-            if not mine:
+        for block_index, block_offset in enumerate(range(0, len(entries), block_rows)):
+            if block_index % num_workers != worker_id:
                 continue
+            block_entries = entries[block_offset : block_offset + block_rows]
             block = self._read_batch(block_entries)
-            for index in mine:
-                yield _slice_batch(block, slice(index * batch_size, (index + 1) * batch_size))
+            for start in range(0, len(block_entries), batch_size):
+                yield _slice_batch(block, slice(start, start + batch_size))
 
     def materialize(self, split: str) -> MLMaterializedPartitionData:
         """Materialize one split only after a conservative peak-memory preflight."""
