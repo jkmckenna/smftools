@@ -205,6 +205,19 @@ class PositionMask:
 
 
 @dataclass(frozen=True)
+class CoordinateFrame:
+    """Place several references' molecules in one reference's coordinates (`MLX-03`).
+
+    ``maps`` names, per canonical source reference, a project-relative table of
+    ``(source_position, frame_position)`` pairs; a source position it does not
+    list has no counterpart in the frame.
+    """
+
+    reference: str
+    maps: Mapping[str, str]
+
+
+@dataclass(frozen=True)
 class DatasetSpec:
     """Named selection and ordered input-channel declaration."""
 
@@ -217,6 +230,7 @@ class DatasetSpec:
     filters: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
     labels: LabelSpec | None = None
     positions: PositionMask | None = None
+    coordinate_frame: CoordinateFrame | None = None
 
 
 @dataclass(frozen=True)
@@ -306,9 +320,10 @@ class MLPlan:
         payload = _thaw(self)
         payload["scope"]["set"] = payload["scope"].pop("set_name")
         for dataset in payload["datasets"].values():
-            if dataset.get("positions") is None:
-                # Unset: emitting it would change the hash of every earlier plan.
-                dataset.pop("positions", None)
+            for key in ("positions", "coordinate_frame"):
+                if dataset.get(key) is None:
+                    # Unset: emitting it would change the hash of every earlier plan.
+                    dataset.pop(key, None)
             labels = dataset.get("labels")
             if labels is not None and labels.get("table") is None:
                 # Unset for obs labels: emitting them would change the hash of
@@ -537,6 +552,7 @@ def _parse_dataset(raw: Any, path: str) -> DatasetSpec:
             "filters",
             "labels",
             "positions",
+            "coordinate_frame",
         },
         required={"modalities"},
     )
@@ -615,6 +631,11 @@ def _parse_dataset(raw: Any, path: str) -> DatasetSpec:
         if "start" in filters or "end" in filters:
             _fail(f"{path}.positions", "cannot be combined with filters.start/end")
         positions = _parse_positions(value["positions"], f"{path}.positions")
+    coordinate_frame = (
+        _parse_coordinate_frame(value["coordinate_frame"], f"{path}.coordinate_frame")
+        if value.get("coordinate_frame") is not None
+        else None
+    )
     return DatasetSpec(
         modalities=modalities,
         channels=channels,
@@ -625,6 +646,7 @@ def _parse_dataset(raw: Any, path: str) -> DatasetSpec:
         filters=filters,
         labels=labels,
         positions=positions,
+        coordinate_frame=coordinate_frame,
     )
 
 
@@ -651,6 +673,33 @@ def _parse_windows(raw: Any, path: str, *, required: bool) -> tuple[tuple[int, i
     if required and not windows:
         _fail(path, "must contain at least one window")
     return tuple(sorted(windows))
+
+
+def _project_table_path(value: Any, path: str) -> str:
+    """A project-relative .parquet/.csv path, as label tables and coordinate maps use."""
+    if not isinstance(value, str) or not value.strip():
+        _fail(path, "must be a non-empty string")
+    if Path(value).is_absolute() or ".." in Path(value).parts:
+        _fail(path, "must be a path inside the project directory")
+    if Path(value).suffix.lower() not in {".parquet", ".csv"}:
+        _fail(path, "must be a .parquet or .csv file")
+    return value
+
+
+def _parse_coordinate_frame(raw: Any, path: str) -> CoordinateFrame:
+    value = _as_mapping(raw, path)
+    _check_keys(value, path=path, allowed={"reference", "maps"}, required={"reference", "maps"})
+    reference = _required_string(value, "reference", path)
+    maps_raw = _as_mapping(value["maps"], f"{path}.maps")
+    if not maps_raw:
+        _fail(f"{path}.maps", "must map at least one reference onto the frame")
+    if reference in maps_raw:
+        _fail(f"{path}.maps", "must not map the frame reference onto itself")
+    maps = {
+        str(source): _project_table_path(table, f"{path}.maps.{source}")
+        for source, table in sorted(maps_raw.items())
+    }
+    return CoordinateFrame(reference=reference, maps=MappingProxyType(maps))
 
 
 def _parse_positions(raw: Any, path: str) -> PositionMask:
@@ -1062,6 +1111,11 @@ def parse_ml_plan(
                 _fail(
                     f"datasets.{name}.labels.source",
                     "'table' requires project scope: the table path is project-relative",
+                )
+            if dataset.coordinate_frame is not None:
+                _fail(
+                    f"datasets.{name}.coordinate_frame",
+                    "requires project scope: map paths are project-relative",
                 )
     return plan
 

@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 import pyarrow.dataset as ds
 
@@ -37,7 +38,7 @@ from smftools.project.reference_registry import (
 )
 from smftools.project.registry import list_experiments, resolve_set_membership
 
-from .plan import DatasetSpec, LabelSpec, MLPlan, PhysicalChannelSource
+from .plan import CoordinateFrame, DatasetSpec, LabelSpec, MLPlan, PhysicalChannelSource
 
 ML_SELECTION_PLAN_VERSION = 1
 _STAGE_DIRS = {
@@ -204,6 +205,10 @@ class MLDataSelectionPlan:
     modality_counts: Mapping[str, int]
     sample_counts: Mapping[str, int]
     label_table_sha256: str | None = None
+    # `MLX-03`: per mapped canonical reference, frame position by source
+    # position (-1: no counterpart), and each map's sha256.
+    coordinate_maps: Mapping[str, Any] = field(default_factory=dict)
+    coordinate_map_sha256: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         table = self.identity_table.copy(deep=True).reset_index(drop=True)
@@ -237,6 +242,11 @@ class MLDataSelectionPlan:
             **(
                 {"label_table_sha256": self.label_table_sha256}
                 if self.label_table_sha256 is not None
+                else {}
+            ),
+            **(
+                {"coordinate_map_sha256": dict(self.coordinate_map_sha256)}
+                if self.coordinate_map_sha256
                 else {}
             ),
         }
@@ -667,6 +677,93 @@ def _join_label_table(
     return frame
 
 
+@dataclass(frozen=True)
+class _CoordinateMap:
+    frame_of: np.ndarray  # frame position by source position; -1 = none
+    sha256: str
+
+
+def _load_coordinate_maps(project_path: Path, frame: CoordinateFrame) -> dict[str, _CoordinateMap]:
+    """Validated source -> frame position maps (`MLX-03`)."""
+    maps = {}
+    for source_name, relative in frame.maps.items():
+        path = project_path / relative
+        if not path.is_file():
+            raise MLSelectionError(f"coordinate map not found: {path}")
+        table = pd.read_parquet(path) if path.suffix.lower() == ".parquet" else pd.read_csv(path)
+        if not {"source_position", "frame_position"}.issubset(table):
+            raise MLSelectionError(
+                f"coordinate map {relative!r} needs source_position and frame_position columns"
+            )
+        pairs = table[["source_position", "frame_position"]]
+        if pairs.isna().any().any() or not all(
+            pd.api.types.is_integer_dtype(pairs[column]) for column in pairs
+        ):
+            raise MLSelectionError(f"coordinate map {relative!r} positions must be integers")
+        pairs = pairs.sort_values("source_position")
+        source = pairs["source_position"].to_numpy(dtype=np.int64)
+        target = pairs["frame_position"].to_numpy(dtype=np.int64)
+        if len(source) and (source.min() < 0 or target.min() < 0):
+            raise MLSelectionError(f"coordinate map {relative!r} has negative positions")
+        if len(np.unique(source)) != len(source) or len(np.unique(target)) != len(target):
+            raise MLSelectionError(f"coordinate map {relative!r} must be one-to-one")
+        if np.any(np.diff(target) <= 0):
+            raise MLSelectionError(
+                f"coordinate map {relative!r} must keep order: frame positions must increase "
+                "with source positions"
+            )
+        frame_of = np.full(int(source.max()) + 1 if len(source) else 0, -1, dtype=np.int64)
+        frame_of[source] = target
+        maps[str(source_name)] = _CoordinateMap(frame_of=frame_of, sha256=_file_sha256(path))
+    return maps
+
+
+def _runs(positions: np.ndarray) -> list[tuple[int, int]]:
+    if positions.size == 0:
+        return []
+    breaks = np.flatnonzero(np.diff(positions) != 1)
+    starts = np.concatenate([[positions[0]], positions[breaks + 1]])
+    ends = np.concatenate([positions[breaks], [positions[-1]]]) + 1
+    return [(int(start), int(end)) for start, end in zip(starts, ends, strict=True)]
+
+
+def _frame_feature_count(
+    metadata: Sequence[_ExperimentMetadata],
+    reference_maps: Mapping[str, Mapping[str, str]],
+    frame: CoordinateFrame,
+    maps: Mapping[str, _CoordinateMap],
+    windows: Sequence[tuple[int, int]],
+) -> int:
+    """Feature count in the frame, refusing positions some reference lacks.
+
+    Which frame positions a molecule *has* would identify its reference -- in
+    an intact-vs-deletion task, its class. So every selected frame position
+    must exist on every selected reference; there is no override (`MLX-03`).
+    """
+    lengths = _reference_lengths(metadata, reference_maps)
+    if frame.reference not in lengths:
+        raise MLSelectionError(
+            f"coordinate_frame reference {frame.reference!r} is not among the selected references"
+        )
+    kept_windows = list(windows) or [(0, lengths[frame.reference])]
+    if kept_windows[-1][1] > lengths[frame.reference]:
+        raise MLSelectionError(
+            f"positions window ends at {kept_windows[-1][1]}, beyond the frame reference length "
+            f"{lengths[frame.reference]}"
+        )
+    kept = np.concatenate([np.arange(start, end) for start, end in kept_windows])
+    for reference in sorted(set(lengths).difference({frame.reference})):
+        mapped = maps[reference].frame_of
+        missing = np.setdiff1d(kept, mapped[mapped >= 0])
+        if missing.size:
+            raise MLSelectionError(
+                f"frame positions {_runs(missing)} have no counterpart on {reference!r}: "
+                "a model could tell the references apart by which positions a molecule has. "
+                "Select only positions every reference carries (positions.exclude)."
+            )
+    return int(kept.size)
+
+
 def _required_metadata_columns(
     dataset: DatasetSpec,
     group_by: tuple[str, ...],
@@ -1036,6 +1133,7 @@ def plan_ml_dataset(
         )
     )
     label_table = None
+    coordinate_maps: dict[str, _CoordinateMap] = {}
     if plan.scope.kind == "experiment":
         if experiment_dir is None:
             raise MLSelectionError("experiment-scoped plan requires experiment_dir")
@@ -1060,6 +1158,8 @@ def plan_ml_dataset(
         scope_id = project_path.name
         if dataset.labels is not None and dataset.labels.source == "table":
             label_table = _load_label_table(project_path, dataset.labels)
+        if dataset.coordinate_frame is not None:
+            coordinate_maps = _load_coordinate_maps(project_path, dataset.coordinate_frame)
     if not metadata:
         raise MLSelectionError("dataset selection matched no active experiments")
     unknown = sorted({item.modality for item in metadata}.difference(dataset.modalities))
@@ -1074,6 +1174,14 @@ def plan_ml_dataset(
         reference_map = _canonical_reference_map(item, dataset.references)
         if not reference_map:
             continue
+        if dataset.coordinate_frame is not None:
+            allowed = {dataset.coordinate_frame.reference, *dataset.coordinate_frame.maps}
+            unmapped = sorted(set(reference_map.values()).difference(allowed))
+            if unmapped:
+                raise MLSelectionError(
+                    f"experiment {item.experiment_id!r} selects references {unmapped} that "
+                    "coordinate_frame neither uses as frame nor maps"
+                )
         reference_maps[item.experiment_id] = reference_map
         channels = _resolve_channels(item, dataset, tuple(sorted(reference_map)))
         table, membership_artifact = _identity_for_experiment(
@@ -1129,12 +1237,13 @@ def plan_ml_dataset(
     identity = pd.concat(tables, ignore_index=True).sort_values(MOLECULE_UID_COLUMN, kind="stable")
     if identity[MOLECULE_UID_COLUMN].duplicated().any():
         raise MLSelectionError("selected experiments contain duplicate molecule identities")
-    n_features = _feature_count(
-        selected_metadata,
-        reference_maps,
-        dataset.filters,
-        dataset.positions.windows() if dataset.positions is not None else (),
-    )
+    windows = dataset.positions.windows() if dataset.positions is not None else ()
+    if dataset.coordinate_frame is not None:
+        n_features = _frame_feature_count(
+            selected_metadata, reference_maps, dataset.coordinate_frame, coordinate_maps, windows
+        )
+    else:
+        n_features = _feature_count(selected_metadata, reference_maps, dataset.filters, windows)
     membership_fingerprint = _sha256(identity[MOLECULE_UID_COLUMN].astype(str).tolist())
     feature_fingerprint = _sha256(
         [
@@ -1158,6 +1267,10 @@ def plan_ml_dataset(
             for source in sorted(source_records, key=lambda item: item.experiment_id)
         ],
     }
+    if coordinate_maps:
+        identity_payload["coordinate_maps"] = {
+            reference: item.sha256 for reference, item in sorted(coordinate_maps.items())
+        }
     if label_table is not None:
         # Labels changed in the table are a different dataset.
         identity_payload["label_table"] = {
@@ -1193,4 +1306,8 @@ def plan_ml_dataset(
         modality_counts=dict(sorted(Counter(identity["modality"].astype(str)).items())),
         sample_counts=dict(sorted(Counter(identity["sample_id"].astype(str)).items())),
         label_table_sha256=label_table.sha256 if label_table is not None else None,
+        coordinate_maps={reference: item.frame_of for reference, item in coordinate_maps.items()},
+        coordinate_map_sha256={
+            reference: item.sha256 for reference, item in coordinate_maps.items()
+        },
     )

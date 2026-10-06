@@ -1,7 +1,7 @@
 # ML project labels, position masks and coordinate maps (`MLX`)
 
-**Status:** in progress. `MLX-01`, `MLX-05`, `MLX-06`, `MLX-09` merged; `MLX-02`
-implemented on `feature/mlx-02-position-masks`, not merged; `MLX-03`, `MLX-04`,
+**Status:** in progress. `MLX-01`, `MLX-02`, `MLX-05`, `MLX-06`, `MLX-09` merged;
+`MLX-03` implemented on `feature/mlx-03-coordinate-maps`, not merged; `MLX-04`,
 `MLX-07`, `MLX-08` proposed.
 
 ## Problem
@@ -33,8 +33,8 @@ an ML plan today, for three independent reasons found while designing it:
 | item | status | scope |
 |---|---|---|
 | `MLX-01` external label table | merged | `labels.source: table` joined on declared keys |
-| `MLX-02` position masks | implemented, not merged | include/exclude windows within a dataset's span |
-| `MLX-03` cross-reference coordinate maps | proposed | place several references' molecules in one coordinate frame |
+| `MLX-02` position masks | merged | include/exclude windows within a dataset's span |
+| `MLX-03` cross-reference coordinate maps | implemented, not merged | place several references' molecules in one coordinate frame |
 | `MLX-04` qualification | proposed | one real project study end to end |
 | `MLX-05` real-store compatibility | merged | resolve channels and QC filters against real pipeline stores (`F66`) |
 | `MLX-06` plan job runner | merged | bind a resolved plan to a dataset snapshot, split and partition dataset per fold; train and test-evaluate each fold |
@@ -164,6 +164,41 @@ positions, none in the enhancer, and a fold trains and evaluates in 197 s.
   aligned bases; a selection that includes an unmapped position is refused;
   snapshot changes with the map; an identity map reproduces the unmapped
   dataset exactly.
+
+**As implemented.** `CoordinateFrame(reference, maps)` on the dataset
+(project scope; omitted from `to_dict` when unset). Selection loads each map
+(`_load_coordinate_maps`: integer, one-to-one, order-preserving), refuses a
+selected reference neither frame nor mapped, and counts features in the frame
+(`_frame_feature_count`), refusing any kept frame position a selected
+reference lacks -- the leakage guard, no override. Map sha256s join the
+selection identity and dry run. Planning takes the frame as the schema
+reference; the snapshot lists every canonical reference. The reader gets
+the maps (`build_partition_data_plan(coordinate_maps=...)`), reads each
+reference separately with its own source span (real ragged stores refuse a
+position window over several references), and translates a mapped read's
+source positions into frame positions (`_mapped_position_columns`). Not done:
+the identity-map equivalence test; tests instead check placement directly.
+
+**Found on the way (`F68`).** The reader made the design mask "site and not
+padding", so a read ending before the window gave its row a different design
+row, and the position-by-channel schema refuses any batch whose rows differ.
+Real data has such reads (partial enh-del molecules). Design is now the
+reference's site mask alone; observed still requires coverage; the uniformity
+check ignores rows that cover none of the window. Test:
+`test_reads_outside_the_window_are_padding_not_a_design_conflict` (fails with
+only that change reverted, with the same error real data raised).
+
+Tests: `test_coordinate_frame.py` (deletion fixture written with
+`write_experiment_store`): deletion reads land at their frame positions; a
+position some reference lacks is refused, naming it; an unmapped reference is
+refused; the map file is part of the identity; a mixed-reference job trains;
+F68. Plan: `test_coordinate_frame_*`. Real data: B6 vs enh-del (DAFseq fresh,
+top strand) -- the full span is refused naming exactly `[3151, 3673)`;
+downstream-of-deletion selects 3,151 shared positions over B6 and enh-del
+reads; above the deletion, 20 enh-del reads placed at frame `[3673, 4690)`
+equal their stored values at source `[3151, 4168)` exactly. A trained fold
+scored at chance (AP = positive fraction) on few training negatives -- a
+plumbing result. Several experiments in that task are single-class (`MLX-07`).
 
 ### `MLX-04` — qualification
 

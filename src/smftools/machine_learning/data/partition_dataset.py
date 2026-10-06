@@ -163,6 +163,11 @@ class MLPartitionDataPlan:
     bytes_per_row: int
     effective_batch_size: int
     policy: PartitionReadPolicy
+    # `MLX-03`: canonical reference -> frame position by source position (-1:
+    # none), and the source span of each mapped reference that covers the
+    # selected frame positions.
+    coordinate_maps: Mapping[str, np.ndarray] = field(default_factory=dict)
+    read_spans: Mapping[str, tuple[int, int]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "sources", MappingProxyType(dict(self.sources)))
@@ -435,6 +440,7 @@ def build_partition_data_plan(
     coordinate_start: int | None = None,
     coordinate_end: int | None = None,
     policy: PartitionReadPolicy | None = None,
+    coordinate_maps: Mapping[str, np.ndarray] | None = None,
 ) -> MLPartitionDataPlan:
     """Bind immutable manifests to local partition sources and preflight batches."""
     split.validate_against(dataset)
@@ -515,6 +521,21 @@ def build_partition_data_plan(
     if len(coordinates) != end - start:
         # Several windows: which positions, not just their bounds.
         identity["coordinates_sha256"] = _sha256(coordinates.tolist())
+    maps = {
+        str(reference): np.asarray(frame_of, dtype=np.int64)
+        for reference, frame_of in (coordinate_maps or {}).items()
+    }
+    if dataset.input_schema.reference in maps:
+        raise MLPartitionDataError("the frame reference cannot also be mapped onto itself")
+    read_spans: dict[str, tuple[int, int]] = {}
+    if maps:
+        identity["coordinate_maps_sha256"] = _sha256(
+            {reference: frame_of.tolist() for reference, frame_of in sorted(maps.items())}
+        )
+        for reference, frame_of in maps.items():
+            sources = np.flatnonzero(np.isin(frame_of, coordinates))
+            if sources.size:
+                read_spans[reference] = (int(sources[0]), int(sources[-1]) + 1)
     return MLPartitionDataPlan(
         plan_id=_sha256(identity),
         dataset=dataset,
@@ -527,6 +548,8 @@ def build_partition_data_plan(
         bytes_per_row=row_bytes,
         effective_batch_size=effective_batch_size,
         policy=policy,
+        coordinate_maps=maps,
+        read_spans=read_spans,
     )
 
 
@@ -561,6 +584,20 @@ def _position_columns(
             source_columns.append(source_column)
             target_columns.append(target_column)
     return np.asarray(source_columns, dtype=np.int64), np.asarray(target_columns, dtype=np.int64)
+
+
+def _mapped_position_columns(
+    var_names: Sequence[Any], coordinates: np.ndarray, frame_of: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """`_position_columns` for a mapped reference: source positions -> frame ones."""
+    try:
+        source_positions = np.asarray(var_names, dtype=np.int64)
+    except (TypeError, ValueError) as exc:
+        raise MLPartitionDataError("partition position names must be integer coordinates") from exc
+    in_map = (source_positions >= 0) & (source_positions < len(frame_of))
+    frame_positions = np.full(len(source_positions), -1, dtype=np.int64)
+    frame_positions[in_map] = frame_of[source_positions[in_map]]
+    return _position_columns(frame_positions.tolist(), coordinates)
 
 
 def _design_columns(var, reference: str, site_context: str) -> np.ndarray | None:
@@ -715,12 +752,15 @@ class PartitionDataset:
         design_output = design
         design_spec = next(mask for mask in schema.masks if mask.kind == "design")
         if design_spec.axes == ("position", "channel"):
-            if not np.all(design == design[0]):
+            # Rows that cover none of the window were never projected and carry
+            # no design; the others must agree (`F68`).
+            covered = design[~padding.all(axis=1)]
+            if len(covered) and not np.all(covered == covered[0]):
                 raise MLPartitionDataError(
                     "batch has observation-specific design masks but the input schema "
                     "declares position-by-channel design; use an observation-axis design mask"
                 )
-            design_output = design[0]
+            design_output = covered[0] if len(covered) else design[0]
         batch = MLPartitionBatch(
             order_indices=np.asarray([entry.order_index for entry in entries], dtype=np.int64),
             molecule_uids=tuple(entry.molecule_uid for entry in entries),
@@ -752,6 +792,44 @@ class PartitionDataset:
         design: np.ndarray,
         padding: np.ndarray,
     ) -> None:
+        if not self.plan.coordinate_maps:
+            self._read_stage_span(
+                entries,
+                batch_rows,
+                spine,
+                stage_channels,
+                (self.plan.coordinate_start, self.plan.coordinate_end),
+                values,
+                observed,
+                design,
+                padding,
+            )
+            return
+        # A position window projects one reference at a time, and each mapped
+        # reference has its own source span (`MLX-03`).
+        by_reference: dict[str, list[int]] = defaultdict(list)
+        for row in batch_rows:
+            by_reference[entries[row].reference].append(row)
+        for reference, rows in sorted(by_reference.items()):
+            span = self.plan.read_spans.get(
+                reference, (self.plan.coordinate_start, self.plan.coordinate_end)
+            )
+            self._read_stage_span(
+                entries, rows, spine, stage_channels, span, values, observed, design, padding
+            )
+
+    def _read_stage_span(
+        self,
+        entries: Sequence[PartitionReadEntry],
+        batch_rows: Sequence[int],
+        spine: Path,
+        stage_channels: Sequence[tuple[int, Any]],
+        span: tuple[int, int],
+        values: np.ndarray,
+        observed: np.ndarray,
+        design: np.ndarray,
+        padding: np.ndarray,
+    ) -> None:
         read_ids = [entries[row].read_id for row in batch_rows]
         layers = sorted({source.layer for _, source in stage_channels if source.layer != "X"})
         try:
@@ -759,8 +837,8 @@ class PartitionDataset:
                 spine,
                 read_ids=read_ids,
                 layers=layers,
-                start=self.plan.coordinate_start,
-                end=self.plan.coordinate_end,
+                start=span[0],
+                end=span[1],
                 lazy=self.plan.policy.lazy,
                 query_memory_mb=self.plan.policy.query_memory_mb,
             )
@@ -774,11 +852,22 @@ class PartitionDataset:
         unknown = sorted(set(actual_ids).difference(expected_rows))
         if unknown:
             raise MLPartitionDataError(f"partition projection returned unknown reads: {unknown}")
-        source_columns, target_columns = _position_columns(
-            tuple(projected.var_names), self.plan.coordinates
-        )
-        if not len(source_columns):
-            return
+        var_names = tuple(projected.var_names)
+        column_cache: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+
+        def columns_for(row: int) -> tuple[np.ndarray, np.ndarray]:
+            """Source/target columns for one row's reference, through its map if any."""
+            reference = entries[row].reference
+            if reference not in column_cache:
+                frame_of = self.plan.coordinate_maps.get(reference)
+                if frame_of is None:
+                    column_cache[reference] = _position_columns(var_names, self.plan.coordinates)
+                else:
+                    column_cache[reference] = _mapped_position_columns(
+                        var_names, self.plan.coordinates, frame_of
+                    )
+            return column_cache[reference]
+
         physical_references = (
             projected.obs["Reference_strand"].astype(str)
             if "Reference_strand" in projected.obs
@@ -786,6 +875,9 @@ class PartitionDataset:
         )
         for local_row, read_id in enumerate(actual_ids):
             target_row = expected_rows[read_id]
+            source_columns, target_columns = columns_for(target_row)
+            if not len(source_columns):
+                continue
             valid_columns = np.ones(len(source_columns), dtype=bool)
             reference = (
                 str(physical_references.iloc[local_row])
@@ -811,6 +903,9 @@ class PartitionDataset:
             dense = _dense(matrix)
             for local_row, read_id in enumerate(actual_ids):
                 target_row = expected_rows[read_id]
+                source_columns, target_columns = columns_for(target_row)
+                if not len(source_columns):
+                    continue
                 reference = (
                     str(physical_references.iloc[local_row])
                     if physical_references is not None
@@ -826,9 +921,12 @@ class PartitionDataset:
                     designed = np.isfinite(source_values)
                 else:
                     designed = design_columns[source_columns]
+                # Design is a property of the reference position, not of the
+                # read: a read that ends early is padded there, not "not a site"
+                # (`F68`). Observation still needs coverage.
                 not_padding = ~padding[target_row, target_columns]
-                designed = np.asarray(designed, dtype=bool) & not_padding
+                designed = np.asarray(designed, dtype=bool)
                 design[target_row, target_columns, channel_index] = designed
                 observed[target_row, target_columns, channel_index] = (
-                    np.isfinite(source_values) & designed
+                    np.isfinite(source_values) & designed & not_padding
                 )

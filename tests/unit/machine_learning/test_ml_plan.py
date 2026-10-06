@@ -544,3 +544,45 @@ def test_position_declarations_are_validated(positions, filters, message):
 
     with pytest.raises(MLPlanValidationError, match=message):
         parse_ml_plan(_positions_document(positions, filters))
+
+
+# --- MLX-03: coordinate frames ---------------------------------------------
+
+
+def _frame_document(frame, scope="project") -> dict:
+    document = _label_table_document({}, scope=scope)
+    document["datasets"]["reads"]["coordinate_frame"] = frame
+    return document
+
+
+def test_coordinate_frame_parses_and_round_trips():
+    from smftools.machine_learning.plan import parse_ml_plan
+
+    plan = parse_ml_plan(
+        _frame_document({"reference": "6B6", "maps": {"6B6_enh_del": "ml/maps/del.parquet"}})
+    )
+    frame = plan.datasets["reads"].coordinate_frame
+    assert (frame.reference, dict(frame.maps)) == ("6B6", {"6B6_enh_del": "ml/maps/del.parquet"})
+    assert parse_ml_plan(plan.to_dict()).plan_hash == plan.plan_hash
+    assert (
+        "coordinate_frame"
+        not in parse_ml_plan(_positions_document()).to_dict()["datasets"]["reads"]
+    )
+
+
+@pytest.mark.parametrize(
+    "frame, scope, message",
+    [
+        ({"reference": "a", "maps": {"b": "m.parquet"}}, "experiment", "project scope"),
+        ({"reference": "a", "maps": {}}, "project", "at least one"),
+        ({"reference": "a", "maps": {"a": "m.parquet"}}, "project", "onto itself"),
+        ({"reference": "a", "maps": {"b": "/abs/m.parquet"}}, "project", "inside the project"),
+        ({"reference": "a", "maps": {"b": "m.tsv"}}, "project", ".parquet or .csv"),
+        ({"maps": {"b": "m.parquet"}}, "project", "reference"),
+    ],
+)
+def test_coordinate_frame_declarations_are_validated(frame, scope, message):
+    from smftools.machine_learning.plan import MLPlanValidationError, parse_ml_plan
+
+    with pytest.raises(MLPlanValidationError, match=message):
+        parse_ml_plan(_frame_document(frame, scope=scope))
