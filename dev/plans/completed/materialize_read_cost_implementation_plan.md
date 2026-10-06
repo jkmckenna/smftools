@@ -1,7 +1,6 @@
 # Materialize read cost (`MRC`)
 
-**Status:** in progress. `MRC-01`, `MRC-02`, `MRC-04` merged; `MRC-03` (rescoped) implemented on
-`fix/mrc-03-overlay-owning-stores`, on top of the `F71` fix, not merged; `MRC-05` proposed.
+**Status:** completed. `MRC-01`–`MRC-04` merged (with the `F71` fix); `MRC-05` qualified.
 
 ## Problem (`F70`)
 
@@ -27,9 +26,9 @@ whole-dataset read: ~30 molecules/s per process before `MLX-11`.
 |---|---|---|---|
 | `MRC-01` index-directed partition reads | merged | open only the partitions the read index names | ~16 s -> under 1 s + spine load, per call |
 | `MRC-02` spine cache | merged | reuse a loaded spine within a process | -2.6 s per call after the first |
-| `MRC-03` overlay opens only owning stores (rescoped) | implemented, not merged | skip a stage's store when its catalog lists none of the requested layers | HMM call 0.95 s -> 0.59 s |
+| `MRC-03` overlay opens only owning stores (rescoped) | merged | skip a stage's store when its catalog lists none of the requested layers | HMM call 0.95 s -> 0.59 s |
 | `MRC-04` skip `X` for derived-only requests | merged | do not load preprocess `X` when only derived layers are asked for | roughly halves HMM-stage calls |
-| `MRC-05` qualification | proposed | before/after on real stores, end to end | -- |
+| `MRC-05` qualification | qualified | before/after on real stores, end to end | -- |
 
 Each item is behaviour-preserving: the same molecules, values, layers and
 order come back. Each PR carries an equivalence test (result of the changed
@@ -130,7 +129,17 @@ derived-only readers do not use. Warm call, 800 reads: 1.21 s -> 0.91 s
 
 ### `MRC-05` — qualification
 
-On a real project: per-call cost before/after each item for one partition's
-reads (preprocess and HMM stages), a whole-dataset read with 1 and 8 workers,
-and an ML fold train pass; values identical to a pre-`MRC` read of the same
-rows.
+On a real project, with everything merged:
+
+| measurement | before `MRC` | after |
+|---|---|---|
+| one call, 800 reads of one partition, preprocess | 15.9 s (39 partition opens) | 0.78 s warm (2 opens) |
+| same, HMM layers | 17.4 s (41 opens) | 0.59 s warm (1 open) |
+| whole-dataset read, 25,774 molecules, 3 stage channels + 1 display, 8 workers | 346 s | 79 s |
+| same, 1 worker | ~780 s (from the measured serial rate) | 252 s |
+| ML fold train pass, 16,827 rows, 4,690 positions | 205 s | 169 s |
+
+The whole-dataset re-reads (8 and 1 workers) equal a snapshot of the same
+set read before `MRC` exactly: same molecules, columns, values and missing
+cells. The ML pass gains least: block reads (`MLX-09`) had already amortized
+most per-call cost there, and it reads the preprocess stage only.

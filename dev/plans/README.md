@@ -37,6 +37,7 @@ Every tracked item merged to `main` and verified against the code.
 |---|---|
 | `duplicate_detection_scaling.md` | bitpacking, chunked union-find, permutation banding (`e18d593`) |
 | `experiment_project_partitioned_pipeline_implementation_plan.md` | `PR-00`–`PR-14` |
+| `materialize_read_cost_implementation_plan.md` | `MRC-01`–`MRC-05` `materialize` read cost (`F70`, `F71`): index-directed partition reads, spine cache, overlay of owning stores only, skip `X` for derived-only requests; one call ~16 s -> under 1 s |
 | `project_and_latent_partitioned_pipeline_implementation_plan.md` | `PL-15`–`PL-23` (PR #414) |
 | `semantic_dag_variant_preprocessing_implementation_plan.md` | `SDV-01`–`SDV-14` |
 | `input_ingestion_alignment_implementation_plan.md` | `IAR-01`–`IAR-15` (PRs #468–#488), `PCLI-01`–`PCLI-04` (PRs #489–#493); coverage in `tests/acceptance/*.json` |
@@ -56,7 +57,6 @@ An active branch, some items merged and others open.
 | document | scope |
 |---|---|
 | `alignment_rescue_sequence_implementation_plan.md` | `ARS` rescued reads keep their SEQ (minimap2 omits it on secondaries, so every rescued read was dropped at extraction, `F64`), repair of committed alignments, raw re-extraction |
-| `materialize_read_cost_implementation_plan.md` | `MRC` `materialize` read cost: index-directed partition reads, spine cache, column-projected opens, skip `X` for derived-only requests (`F70`) |
 | `ml_project_labels_masks_coordinate_maps_plan.md` | `MLX` project-scope (`MLX-01` implemented) ML studies: external label table (`labels.source: table`), multi-window position masks, cross-reference coordinate maps with a leakage guard |
 | `barcode_allowlist_implementation_plan.md` | `BAL` -- `barcodes_to_include`, so a run carrying several experiments (e.g. two modalities on one flow cell) keeps each to its own barcodes |
 | `selective_pod5_rebasecalling_implementation_plan.md` | `SRB` |
