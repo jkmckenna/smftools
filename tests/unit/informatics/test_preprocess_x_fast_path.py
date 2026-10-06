@@ -1,3 +1,4 @@
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -201,3 +202,67 @@ def test_fast_path_falls_back_for_window_not_covered_by_one_task(tmp_path):
 
 def test_load_preprocess_x_selection_returns_none_without_run_root():
     assert _load_preprocess_x_selection(None, pd.DataFrame(), None, [], None, None) is None
+
+
+# --- MRC-01: open only the partitions the read index names (F70) -----------
+
+
+def _counting_subset(monkeypatch):
+    from smftools.informatics import partition_read
+
+    calls = []
+    original = partition_read.read_zarr_subset
+
+    def counting(*args, **kwargs):
+        calls.append(args[0] if args else kwargs.get("path"))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(partition_read, "read_zarr_subset", counting)
+    return calls
+
+
+def test_fast_path_opens_only_the_indexed_partition(tmp_path, monkeypatch):
+    barcodes = tuple(f"bc{index}" for index in range(1, 7))  # six partitions, one read each
+    _, preprocess = _build(tmp_path, barcodes=barcodes)
+    spine = load_spine(preprocess["spine"], verbose=False)
+    assert spine.uns.get("preprocess_read_index")  # the index the fast path consults
+    assert len(pd.read_parquet(preprocess["catalog"])) == len(barcodes)
+
+    before = materialize(
+        preprocess["spine"], read_ids=["read6"], start=0, end=12, layers=["nan_half"]
+    )
+    calls = _counting_subset(monkeypatch)
+    after = materialize(
+        preprocess["spine"], read_ids=["read6"], start=0, end=12, layers=["nan_half"]
+    )
+
+    # Only the partition holding the read is opened (for X, then the layer
+    # overlay); before, every partition up to it was opened to look.
+    assert {path.name for path in map(Path, calls)} == {"chunk=00000"}
+    assert {path.parent.name for path in map(Path, calls)} == {"barcode=bc6"}
+    assert list(after.obs_names) == list(before.obs_names) == ["read6"]
+    np.testing.assert_array_equal(after.X, before.X)
+    np.testing.assert_array_equal(after.layers["nan_half"], before.layers["nan_half"])
+
+
+def test_fast_path_still_scans_without_a_read_index(tmp_path, monkeypatch):
+    from smftools.informatics import partition_read
+
+    barcodes = ("bc1", "bc2", "bc3")
+    _, preprocess = _build(tmp_path, barcodes=barcodes)
+    spine = load_spine(preprocess["spine"], verbose=False)
+    spine.uns.pop("preprocess_read_index", None)
+    selection = spine.obs.loc[["read3"]]
+    calls = _counting_subset(monkeypatch)
+
+    part = partition_read._load_preprocess_x_selection(
+        spine,
+        selection,
+        tmp_path,
+        [],
+        0,
+        12,
+    )
+
+    assert part is not None and list(part.obs_names) == ["read3"]
+    assert len(calls) >= 1

@@ -581,7 +581,14 @@ def _load_preprocess_x_selection(
             str(group_path): group
             for group_path, group in indexed.groupby("group_path", sort=False, observed=True)
         }
-    for record in candidates.to_dict("records"):
+    records = candidates.to_dict("records")
+    if indexed_by_path:
+        # The read index already says which partitions hold the selection:
+        # open only those. Scanning the rest -- each opened to look for reads
+        # it does not hold -- cost ~40 opens to find one on a real store (`F70`,
+        # `MRC-01`). The scan below remains for runs without a read index.
+        records = [record for record in records if str(record["group_path"]) in indexed_by_path]
+    for record in records:
         path = catalog_path.parent / str(record["group_path"])
         if not path.exists():
             continue

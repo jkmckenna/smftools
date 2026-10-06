@@ -1,6 +1,7 @@
 # Materialize read cost (`MRC`)
 
-**Status:** proposed. Nothing implemented. One PR per item, in order.
+**Status:** in progress. `MRC-01` implemented on `fix/mrc-01-index-directed-partition-reads`, not
+merged; `MRC-02`–`MRC-05` proposed. One PR per item, in order.
 
 ## Problem (`F70`)
 
@@ -24,7 +25,7 @@ whole-dataset read: ~30 molecules/s per process before `MLX-11`.
 
 | item | status | change | expected effect |
 |---|---|---|---|
-| `MRC-01` index-directed partition reads | proposed | open only the partitions the read index names | ~16 s -> under 1 s + spine load, per call |
+| `MRC-01` index-directed partition reads | implemented, not merged | open only the partitions the read index names | ~16 s -> under 1 s + spine load, per call |
 | `MRC-02` spine cache | proposed | reuse a loaded spine within a process | -2.6 s per call after the first |
 | `MRC-03` column-projected partition opens | proposed | read only the obs/var columns a subset needs | lower cost per open |
 | `MRC-04` skip `X` for derived-only requests | proposed | do not load preprocess `X` when only derived layers are asked for | roughly halves HMM-stage calls |
@@ -49,6 +50,15 @@ Tests: a fixture with many barcode partitions of one reference, the wanted
 reads in the last one; `read_zarr_subset` is called once (was once per
 partition), and the result equals the pre-change result. A run without a read
 index still finds the reads by scanning.
+
+**As implemented.** When `indexed_by_path` is non-empty, the candidate loop
+keeps only the partitions it names; otherwise unchanged. Tests:
+`test_fast_path_opens_only_the_indexed_partition` (six barcode partitions,
+the read in the last; only that partition is opened -- once for `X`, once for
+the layer overlay; fails on the old loop), `test_fast_path_still_scans_without_a_read_index`.
+Real store, one call for 800 reads of one partition: preprocess 11.1 s / 39
+partition opens -> 2.7 s / 1; HMM 11.9 s / 41 -> 3.6 s / 3; `X` and layer sums
+identical. What remains is mostly the spine reload (`MRC-02`).
 
 ### `MRC-02` — spine cache
 
