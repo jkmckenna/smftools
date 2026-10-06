@@ -1,6 +1,6 @@
 # Modification-site sequence-context bias (`SCB`)
 
-**Status:** in progress. `SCB-01`, `SCB-02` merged; `SCB-03` implemented. One PR per item, in order.
+**Status:** completed. `SCB-01`–`SCB-03` merged; `SCB-04` qualified.
 
 ## Question
 
@@ -61,8 +61,8 @@ Windows running off a reference end are padded with `N` and counted as such.
 |---|---|---|
 | `SCB-01` counting + statistics | merged | library: stream a bound dataset into per-site counts; per-offset, per-k-mer and between-group tables |
 | `SCB-02` figures | merged | offset x base enrichment heatmaps and logos, k-mer rate plots, group-difference heatmaps |
-| `SCB-03` CLI | implemented, not merged | `smftools project context-bias` over a plan dataset |
-| `SCB-04` qualification | proposed | a real enzyme panel |
+| `SCB-03` CLI | merged | `smftools project context-bias` over a plan dataset |
+| `SCB-04` qualification | qualified | a real enzyme panel |
 
 ### `SCB-01` — counting and statistics
 
@@ -139,10 +139,20 @@ different `--flank` reuses `site_counts.parquet`.
 
 ### `SCB-04` — qualification
 
-On a real enzyme panel (several deaminases at several doses on one locus):
-per-enzyme offset enrichment and differences between enzymes, run time with 1
-and 8 workers, and agreement of counts with a direct count from materialized
-matrices on one sample.
+On a real enzyme panel: 19 groups (seven deaminase preparations at three
+doses each, less two), ~4,100 molecules, one strand, 4.7 kb amplicon.
+
+| measurement | result |
+|---|---|
+| count, 1 worker (CLI, `--refresh --no-figures`) | 78 s |
+| count, 8 workers | 53 s |
+| 1 vs 8 workers | identical site counts (16,087 rows) |
+| re-run with another flank (cached counts, with figures) | 9 s |
+| one group counted directly with `materialize` (256 molecules) | same 847 sites, identical observed and modified counts |
+
+Workers gain little on a set this small: binding and process start-up
+dominate. Strand orientation is covered by unit tests (bottom-strand sites
+read as the reverse complement).
 
 ## Out of scope
 
