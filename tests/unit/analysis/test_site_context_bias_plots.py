@@ -87,3 +87,24 @@ def test_a_single_group_with_no_signal(tmp_path):
     plot_enrichment_logo(table, tmp_path / "l.png")
     _written(tmp_path / "h.png")
     _written(tmp_path / "l.png")
+
+
+def test_logo_grid_layout(sites, tmp_path):
+    table = offset_enrichment(sites, flank=3)
+    layout = [["enzyme_a", None], [None, "enzyme_b"], ["enzyme_c", "enzyme_a"]]
+    plot_enrichment_logo(
+        table,
+        tmp_path / "grid.png",
+        layout=layout,
+        row_labels=["a", "b", "c"],
+        col_labels=["low", "high"],
+    )
+    _written(tmp_path / "grid.png")
+    plot_enrichment_logo(
+        table, tmp_path / "ragged.png", layout=[["enzyme_a"], ["enzyme_b", "enzyme_c"]]
+    )
+    _written(tmp_path / "ragged.png")
+    with pytest.raises(ValueError, match="row_labels"):
+        plot_enrichment_logo(table, tmp_path / "x.png", layout=layout, row_labels=["a"])
+    with pytest.raises(KeyError, match="groups not in table"):
+        plot_enrichment_logo(table, tmp_path / "x.png", layout=[["missing"]])

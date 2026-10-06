@@ -174,6 +174,40 @@ def _draw_letter(ax, letter: str, x: float, bottom: float, height: float) -> Non
     )
 
 
+def _draw_logo(ax, frame: pd.DataFrame, offsets: list, bound: float) -> None:
+    """One group's logo: letter height = |log2 enrichment|, enriched above the axis."""
+    for x, offset in enumerate(offsets):
+        column = frame.loc[frame["offset"] == offset].dropna(subset=["log2_enrichment"])
+        up = column[column["log2_enrichment"] > 0].sort_values("log2_enrichment")
+        down = column[column["log2_enrichment"] < 0].sort_values("log2_enrichment", ascending=False)
+        bottom = 0.0
+        for base, height in zip(up["base"], up["log2_enrichment"], strict=True):
+            _draw_letter(ax, base, x, bottom, height)
+            bottom += height
+        top = 0.0
+        for base, height in zip(down["base"], down["log2_enrichment"], strict=True):
+            _draw_letter(ax, base, x, top + height, -height)
+            top += height
+    ax.axhline(0, color="black", linewidth=0.6)
+    ax.set_xlim(-0.6, len(offsets) - 0.4)
+    ax.set_ylim(-bound * 1.05, bound * 1.05)
+    ax.set_xticks(range(len(offsets)), [f"{o:+d}" if o else "0" for o in offsets], fontsize=7)
+    ax.tick_params(axis="y", labelsize=7)
+    for side in ("top", "right"):
+        ax.spines[side].set_visible(False)
+
+
+def _logo_bound(enrichment: pd.DataFrame, groups: Sequence[str]) -> float:
+    """Shared y-range: the tallest stack, enriched or depleted, of any shown panel."""
+    shown = enrichment.loc[enrichment["group"].isin(groups)]
+    values = shown["log2_enrichment"].where(np.isfinite(shown["log2_enrichment"]))
+    keys = [shown["group"], shown["offset"]]
+    stacks = pd.concat(
+        [values.clip(lower=0).groupby(keys).sum(), (-values).clip(lower=0).groupby(keys).sum()]
+    )
+    return max(0.25, float(stacks.max()) if len(stacks) else 0.0)
+
+
 def plot_enrichment_logo(
     enrichment: pd.DataFrame,
     output_path: str | Path,
@@ -181,46 +215,74 @@ def plot_enrichment_logo(
     groups: Sequence[str] | None = None,
     ncols: int = 2,
     title: str = "",
+    layout: Sequence[Sequence[str | None]] | None = None,
+    row_labels: Sequence[str] | None = None,
+    col_labels: Sequence[str] | None = None,
 ) -> None:
-    """Enrichment logo: letter height = |log2 enrichment|; enriched above, depleted below."""
-    groups = _groups(enrichment, groups)
+    """Enrichment logo: letter height = |log2 enrichment|; enriched above, depleted below.
+
+    Panels are ``groups`` in ``ncols`` columns, or -- with ``layout``, rows of
+    group names with ``None`` for an empty cell -- a grid, labelled by
+    ``row_labels`` (left) and ``col_labels`` (top) when given. The y-range is
+    shared by every panel shown.
+    """
     offsets = sorted(enrichment["offset"].unique())
-    # Shared y-range: the tallest stack, enriched or depleted, of any panel.
-    values = enrichment["log2_enrichment"].where(np.isfinite(enrichment["log2_enrichment"]))
-    keys = [enrichment["group"], enrichment["offset"]]
-    stacks = pd.concat(
-        [values.clip(lower=0).groupby(keys).sum(), (-values).clip(lower=0).groupby(keys).sum()]
-    )
-    bound = max(0.25, float(stacks.max()) if len(stacks) else 0.0)
-    fig, axes = _grid(len(groups), ncols, (0.45 * len(offsets) + 1.2, 2.4))
-    for ax, group in zip(axes, groups, strict=False):
-        frame = enrichment.loc[enrichment["group"] == group]
-        for x, offset in enumerate(offsets):
-            column = frame.loc[frame["offset"] == offset].dropna(subset=["log2_enrichment"])
-            up = column[column["log2_enrichment"] > 0].sort_values("log2_enrichment")
-            down = column[column["log2_enrichment"] < 0].sort_values(
-                "log2_enrichment", ascending=False
-            )
-            bottom = 0.0
-            for base, height in zip(up["base"], up["log2_enrichment"], strict=True):
-                _draw_letter(ax, base, x, bottom, height)
-                bottom += height
-            top = 0.0
-            for base, height in zip(down["base"], down["log2_enrichment"], strict=True):
-                _draw_letter(ax, base, x, top + height, -height)
-                top += height
-        ax.axhline(0, color="black", linewidth=0.6)
-        ax.set_xlim(-0.6, len(offsets) - 0.4)
-        ax.set_ylim(-bound * 1.05, bound * 1.05)
-        ax.set_xticks(range(len(offsets)), [f"{o:+d}" if o else "0" for o in offsets], fontsize=7)
-        ax.tick_params(axis="y", labelsize=7)
-        ax.set_ylabel("log2 enrichment", fontsize=7)
-        ax.set_title(str(group), fontsize=8)
-        for side in ("top", "right"):
-            ax.spines[side].set_visible(False)
+    panel = (0.45 * len(offsets) + 1.2, 2.4)
+    if layout is None:
+        groups = _groups(enrichment, groups)
+        fig, axes = _grid(len(groups), ncols, panel)
+        cells = list(zip(axes, groups, strict=False))
+        for ax, group in cells:
+            ax.set_title(str(group), fontsize=8)
+            ax.set_ylabel("log2 enrichment", fontsize=7)
+    else:
+        rows = [list(row) for row in layout]
+        width = max((len(row) for row in rows), default=0)
+        rows = [row + [None] * (width - len(row)) for row in rows]
+        groups = _groups(enrichment, [g for row in rows for g in row if g is not None])
+        if row_labels is not None and len(row_labels) != len(rows):
+            raise ValueError("row_labels must match the layout's rows")
+        if col_labels is not None and len(col_labels) != width:
+            raise ValueError("col_labels must match the layout's columns")
+        fig, grid = plt.subplots(
+            len(rows),
+            width,
+            figsize=(panel[0] * width, panel[1] * len(rows)),
+            squeeze=False,
+        )
+        cells = []
+        for r, row in enumerate(rows):
+            for c, group in enumerate(row):
+                ax = grid[r][c]
+                if r == 0 and col_labels is not None:
+                    ax.set_title(str(col_labels[c]), fontsize=9, fontweight="bold")
+                if c == 0 and row_labels is not None:
+                    # Left of the row whether or not its first cell is empty.
+                    ax.annotate(
+                        str(row_labels[r]),
+                        xy=(-0.18, 0.5),
+                        xycoords="axes fraction",
+                        ha="right",
+                        va="center",
+                        fontsize=9,
+                        fontweight="bold",
+                    )
+                if group is None:
+                    ax.axis("off")
+                    continue
+                if row_labels is None and col_labels is None:
+                    ax.set_title(str(group), fontsize=7)
+                cells.append((ax, group))
+    bound = _logo_bound(enrichment, groups)
+    for ax, group in cells:
+        _draw_logo(ax, enrichment.loc[enrichment["group"] == group], offsets, bound)
+    if layout is not None:
+        fig.supylabel("log2 enrichment (modified / observed)", fontsize=8)
     if title:
         fig.suptitle(title, fontsize=9)
-    _save(fig, output_path)
+    fig.tight_layout(rect=(0, 0, 1, 0.97) if title else None)
+    fig.savefig(output_path, bbox_inches="tight")
+    plt.close(fig)
 
 
 def plot_kmer_rates(
