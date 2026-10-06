@@ -106,6 +106,19 @@ for run in run_bound_train_job(bound):
 
 Results come back in memory; they are not yet published as run artifacts.
 
+For a whole-cohort analysis with no folds -- an embedding, clustering -- `bind_ml_dataset` reads
+every selected row of one dataset through the same selection (label tables, filters, `positions`,
+coordinate frames), and the plan may declare datasets only:
+
+```python
+from smftools.machine_learning.orchestration import bind_ml_dataset
+
+bound = bind_ml_dataset(plan, "reads", project_dir="path/to/project", group_by=["Barcode"])
+bound.identity          # one row per molecule, in snapshot order
+for batch in bound.iter_batches():
+    ...
+```
+
 ### sklearn streams by default
 
 For families declaring `incremental_fit` — `bernoulli_nb` today — training reads in bounded batches

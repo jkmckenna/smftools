@@ -1,8 +1,7 @@
 # ML project labels, position masks and coordinate maps (`MLX`)
 
-**Status:** in progress. `MLX-01`–`MLX-03`, `MLX-05`, `MLX-06`, `MLX-09` merged;
-`MLX-07` implemented on `feature/mlx-07-training-only-groups`, not merged;
-`MLX-04`, `MLX-08` proposed.
+**Status:** in progress. `MLX-01`–`MLX-03`, `MLX-05`–`MLX-07`, `MLX-09` merged; `MLX-10`
+implemented on `feature/mlx-10-dataset-reads`, not merged; `MLX-04`, `MLX-08` proposed.
 
 ## Problem
 
@@ -38,9 +37,10 @@ an ML plan today, for three independent reasons found while designing it:
 | `MLX-04` qualification | proposed | one real project study end to end |
 | `MLX-05` real-store compatibility | merged | resolve channels and QC filters against real pipeline stores (`F66`) |
 | `MLX-06` plan job runner | merged | bind a resolved plan to a dataset snapshot, split and partition dataset per fold; train and test-evaluate each fold |
-| `MLX-07` training-only groups | implemented, not merged | let single-class groups train without being held-out folds |
+| `MLX-07` training-only groups | merged | let single-class groups train without being held-out folds |
 | `MLX-08` published fold runs | proposed | run `MLX-06` folds through the job service as immutable run artifacts |
 | `MLX-09` partition-major reads | merged | open each store partition once per pass instead of once per batch (`F67`) |
+| `MLX-10` whole-dataset reads, HMM-stage channels | implemented, not merged | read a dataset's rows without a split (for embeddings), and resolve HMM/spatial stage read indexes |
 
 Order: `MLX-01`, `MLX-05`, `MLX-06` (together they unblock a single-reference,
 full-span pilot), then `MLX-02`, then `MLX-03`, which builds on `MLX-02`'s
@@ -373,4 +373,69 @@ evaluates in 17 min, held-out average precision 0.82-0.93. Tests:
 `test_test_role_is_predicted_in_batches_not_materialized`. Not done: caching a loaded
 spine across `materialize` calls (would take the remaining fixed cost, but
 changes `materialize`'s path-based fast paths).
+
+### `MLX-10` — whole-dataset reads and HMM-stage channels
+
+**Why.** A project embedding study (pool molecules from chosen samples, embed
+them with PCA or a diffusion map, cluster with KNN/Leiden, plot, and order
+per-sample clustermaps by cluster) needs exactly what the ML data path already
+does -- label/group tables (`MLX-01`), QC and dedup filters (`MLX-05`),
+multi-window masks (`MLX-02`), deletion coordinate maps (`MLX-03`) and fast
+partition-major reads (`MLX-09`) -- but over *all* selected rows, with no
+train/test split. `smftools project embedding` covers none of those
+selections, and re-implementing them for embeddings would duplicate `MLX`.
+Two gaps stand in the way:
+
+1. **No split-free read.** `bind_ml_job` binds per fold of a job's split.
+2. **HMM channels cannot be selected.** The registry records a
+   `<stage>_read_index` only for preprocess (resolved through its current
+   generation); for hmm and spatial it looks beside the stage's top-level
+   spine, but generation layouts keep the read index under
+   `generations/<id>/`. `_stage_read_index` then finds nothing for `hmm`, so a
+   channel on an HMM layer (`C_all_accessible_features`,
+   `C_all_footprint_features`) fails at stage membership. The HMM written
+   catalog does list its layers.
+
+**What.**
+
+- `bind_ml_dataset(plan, dataset_name, *, project_dir=...) -> BoundDataset`:
+  selection, snapshot and one `PartitionDataset` over every selected row
+  (a single all-rows role), with `iter_batches()`/`materialize()` as for a fold.
+  Unlabelled datasets allowed; a label table's extra columns (group labels)
+  are carried on the bound rows for plotting.
+- Stage read indexes and catalogs for hmm/spatial resolve through the stage's
+  `current.json` generation, in selection (`_stage_read_index`,
+  `_stage_task_catalog`) and in the registry at `project add`.
+- Multi-stage datasets (a preprocess `X` channel plus HMM-layer channels) are
+  already supported by the reader per stage; verify end to end on real stores.
+
+**Tests.** A fixture whose hmm stage uses the generation layout resolves an
+HMM-layer channel; `bind_ml_dataset` yields every selected row exactly once,
+in manifest order from `materialize()`; a preprocess + hmm multi-channel
+dataset reads both stages' values for the same molecules. Real data: a
+fresh-NK embedding set (B6 active, B6 inactive, enh-del) over C sites,
+`C_all_accessible_features` and `C_all_footprint_features`.
+
+**As implemented.** `bind_ml_dataset(plan, dataset, project_dir=...,
+group_by=...)` returns a `BoundDataset` (selection, snapshot, one
+`PartitionDataset` over every row via a single all-rows role; `identity`,
+`iter_batches()`, `materialize()`); `group_by` carries extra per-row columns
+such as `Barcode`. A plan's `splits`, `models` and `jobs` may now be empty.
+`_stage_read_index` falls back to the stage's current generation
+(`resolve_current_generation`), which also makes the written catalog and stage
+obs resolvable there; `_discover_catalogs` records `hmm_read_index` /
+`spatial_read_index` the same way at `project add`. No reader change was needed
+for preprocess + hmm channels.
+
+Tests: `test_dataset_reads.py` (HMM stage published through
+`staged_generation`, canonical spine at the stage root):
+`test_hmm_channel_reads_through_its_generation` (values of both stages per
+molecule; fails with the generation lookup reverted),
+`test_whole_dataset_materializes_in_manifest_order`,
+`test_registry_records_the_hmm_read_index_in_its_generation`,
+`test_a_plan_may_declare_datasets_only`. Real data: the fresh-NK set (B6
+active / B6 inactive / enh-del, downstream of the deletion in B6 coordinates)
+binds 36,981 molecules over 3,151 positions with C-site, accessible-feature
+and footprint-feature channels all populated; ~30 rows/s over two stages.
+HMM channels use the C-site design mask, so they are read at C sites only.
 

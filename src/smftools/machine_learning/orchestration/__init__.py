@@ -9,9 +9,11 @@ from .actions import (
     train_partition_model,
 )
 from .binding import (
+    BoundDataset,
     BoundFold,
     BoundJob,
     FoldRun,
+    bind_ml_dataset,
     bind_ml_job,
     run_bound_train_job,
     snapshot_from_selection,
@@ -49,6 +51,7 @@ from .service import (
 )
 
 __all__ = [
+    "BoundDataset",
     "BoundFold",
     "BoundJob",
     "FoldRun",
@@ -71,6 +74,7 @@ __all__ = [
     "SklearnTrainOptions",
     "TorchTrainOptions",
     "apply_partition_model",
+    "bind_ml_dataset",
     "bind_ml_job",
     "dry_run_job",
     "evaluate_prediction_result",

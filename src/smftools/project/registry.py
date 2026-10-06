@@ -282,6 +282,16 @@ def _discover_catalogs(spines: dict[str, Path], project_dir: Path) -> dict[str, 
                 )
                 if generation_index is not None:
                     read_index = generation_index
+        elif not read_index.exists():
+            # Generation layout keeps the read index in the current generation.
+            from ..informatics.generation import GenerationError, resolve_current_generation
+
+            try:
+                current = resolve_current_generation(spine.parent)
+            except (GenerationError, OSError, ValueError):
+                current = None
+            if current is not None:
+                read_index = Path(current[0]) / "read_index"
         if read_index.exists():
             found[f"{stage}_read_index"] = _relative_registry_path(read_index, project_dir)
     latent_spine = spines.get("latent")

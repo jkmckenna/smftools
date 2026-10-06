@@ -288,6 +288,85 @@ def bind_ml_job(
     )
 
 
+@dataclass(frozen=True)
+class BoundDataset:
+    """Every selected row of one dataset, ready to read without a split (`MLX-10`).
+
+    ``identity`` is the selection's row table (molecule, experiment, sample,
+    reference, label and any requested group columns, e.g. label-table
+    columns), in snapshot order.
+    """
+
+    plan: MLPlan
+    dataset_name: str
+    selection: MLDataSelectionPlan
+    snapshot: DatasetSnapshotManifest
+    dataset: PartitionDataset
+
+    @property
+    def identity(self) -> pd.DataFrame:
+        return self.selection.identity_table
+
+    def iter_batches(self):
+        return self.dataset.iter_batches(_ALL_ROWS)
+
+    def materialize(self):
+        return self.dataset.materialize(_ALL_ROWS)
+
+
+# A split role covering every row; the reader needs a role, an embedding none.
+_ALL_ROWS = "train"
+
+
+def bind_ml_dataset(
+    plan: MLPlan,
+    dataset_name: str,
+    *,
+    project_dir: str | Path | None = None,
+    experiment_dir: str | Path | None = None,
+    experiment_id: str | None = None,
+    group_by: Sequence[str] = (),
+    policy: PartitionReadPolicy | None = None,
+) -> BoundDataset:
+    """Bind one dataset's selected rows for reading, with no train/test split.
+
+    For embeddings and other whole-cohort analyses that need the ML data path
+    (label tables, QC filters, position masks, coordinate maps, partition-major
+    reads) but no folds. ``group_by`` names extra per-row columns to carry --
+    a label table's group column, ``Barcode`` -- into ``identity``.
+    """
+    if dataset_name not in plan.datasets:
+        raise MLJobServiceError(f"unknown dataset {dataset_name!r}")
+    selection = plan_ml_dataset(
+        plan,
+        dataset_name,
+        project_dir=project_dir,
+        experiment_dir=experiment_dir,
+        experiment_id=experiment_id,
+        group_by=tuple(group_by),
+    )
+    snapshot = snapshot_from_selection(plan, selection)
+    split = SplitManifest.create(
+        dataset=snapshot,
+        group_by=("experiment_uid",),
+        assignments={item.molecule_uid: _ALL_ROWS for item in snapshot.observations},
+    )
+    read_plan = build_partition_data_plan(
+        snapshot,
+        split,
+        _partition_sources(selection),
+        policy=policy,
+        coordinate_maps=selection.coordinate_maps,
+    )
+    return BoundDataset(
+        plan=plan,
+        dataset_name=dataset_name,
+        selection=selection,
+        snapshot=snapshot,
+        dataset=PartitionDataset(read_plan),
+    )
+
+
 def run_bound_train_job(
     bound: BoundJob,
     *,

@@ -1,0 +1,232 @@
+"""MLX-10: whole-dataset reads, and channels on an HMM stage in generation layout."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from uuid import uuid4
+
+import anndata as ad
+import numpy as np
+import pandas as pd
+import pytest
+
+from smftools.informatics.generation import publish_canonical_spine, staged_generation
+from smftools.informatics.molecule_identity import molecule_uid
+from smftools.informatics.partition_read import relative_uns_path
+from smftools.informatics.partition_store import write_experiment_store
+from smftools.machine_learning.orchestration import bind_ml_dataset
+from smftools.machine_learning.plan import parse_ml_plan
+from smftools.project.reference_registry import ReferenceRegistry
+from smftools.project.registry import init_project, load_registry, save_registry
+from smftools.readwrite import safe_read_h5ad, safe_write_h5ad
+
+pytestmark = pytest.mark.integration
+
+N_POSITIONS = 30
+READS = 12
+EXPERIMENTS = ("exp_a", "exp_b")
+
+
+def _store_source(read_ids, barcodes, x, layers=None) -> ad.AnnData:
+    obs = pd.DataFrame(
+        {
+            "Reference_strand": pd.Categorical(["chr1+"] * len(read_ids)),
+            "Sample": pd.Categorical(barcodes),
+        },
+        index=read_ids,
+    )
+    source = ad.AnnData(X=x, obs=obs, layers=layers or {})
+    source.var_names = [str(position) for position in range(N_POSITIONS)]
+    source.var["chr1+_C_site"] = True
+    return source
+
+
+def _write_experiment(root: Path, experiment_id: str, rng: np.random.Generator) -> dict:
+    run_root = root / experiment_id
+    read_ids = [f"{experiment_id}_{barcode}_{i}" for barcode in ("b1", "b2") for i in range(READS)]
+    barcodes = ["barcode01"] * READS + ["barcode02"] * READS
+    calls = (rng.random((len(read_ids), N_POSITIONS)) < 0.5).astype(np.float32)
+    footprint = (rng.random((len(read_ids), N_POSITIONS)) < 0.3).astype(np.float32)
+
+    preprocess = run_root / "preprocess_adata_outputs"
+    pre_paths = write_experiment_store(
+        _store_source(read_ids, barcodes, calls),
+        preprocess,
+        experiment=experiment_id,
+        modality="deaminase",
+    )
+    experiment_uid = str(uuid4())
+    uids = [molecule_uid(experiment_uid, read_id) for read_id in read_ids]
+    partition = {
+        "molecule_uid": uids,
+        "group_path": [f"store/{b}" for b in barcodes],
+        "group_row": list(range(READS)) * 2,
+    }
+    (preprocess / "read_index").mkdir(parents=True)
+    pd.DataFrame(partition).to_parquet(preprocess / "read_index" / "part.parquet", index=False)
+    pd.DataFrame(
+        {"task_id": ["t"], "reference": ["chr1+"], "layers": [[]], "has_x": [True]}
+    ).to_parquet(preprocess / "catalog.parquet", index=False)
+
+    # The HMM stage as the pipeline publishes it: everything inside a
+    # generation, a canonical spine at the stage root.
+    hmm = run_root / "hmm_adata_outputs"
+    with staged_generation(hmm, run_root=run_root) as staged:
+        staged.record_manifest({"kind": "hmm"})
+    generation = staged.final_dir
+    hmm_paths = write_experiment_store(
+        _store_source(
+            read_ids, barcodes, np.zeros_like(calls), layers={"C_all_footprint_features": footprint}
+        ),
+        generation,
+        experiment=experiment_id,
+        modality="deaminase",
+    )
+    (generation / "read_index").mkdir()
+    pd.DataFrame(partition).to_parquet(generation / "read_index" / "part.parquet", index=False)
+    pd.DataFrame(
+        {
+            "task_id": ["t"],
+            "reference": ["chr1+"],
+            "layers": [["C_all_footprint_features"]],
+            "has_x": [True],
+        }
+    ).to_parquet(generation / "catalog.parquet", index=False)
+    generation_spine = Path(hmm_paths["spine"])
+    # As the pipeline's canonical spine: partitions resolve in the generation.
+    spine, _ = safe_read_h5ad(generation_spine, verbose=False)
+    spine.uns["source_base_dir"] = relative_uns_path(generation, run_root)
+    safe_write_h5ad(spine, generation_spine, backup=False, verbose=False)
+    publish_canonical_spine(generation_spine, hmm / "spine.h5ad")
+    assert not (hmm / "read_index").exists()  # only inside the generation
+
+    (run_root / "molecule_index").mkdir()
+    pd.DataFrame(
+        {
+            "molecule_uid": uids,
+            "experiment_uid": experiment_uid,
+            "read_id": read_ids,
+            "Reference_strand": "chr1+",
+            "Sample": barcodes,
+            "Barcode": barcodes,
+            "reference_start": 0,
+            "reference_end": N_POSITIONS,
+        }
+    ).to_parquet(run_root / "molecule_index" / "part.parquet", index=False)
+    raw = run_root / "raw_outputs"
+    raw.mkdir()
+    (raw / "spine.h5ad").touch()
+    pd.DataFrame({"reference": ["chr1+"], "max_end": [N_POSITIONS]}).to_parquet(
+        raw / "interval_catalog.parquet", index=False
+    )
+    return {
+        "entry": {
+            "path": str(run_root),
+            "name": experiment_id,
+            "experiment_uid": experiment_uid,
+            "modality": "deaminase",
+            "schema_version": 1,
+            "spines": {
+                "raw": str(raw / "spine.h5ad"),
+                "preprocess": str(pre_paths["spine"]),
+                "hmm": str(hmm / "spine.h5ad"),
+            },
+            "references": {"chr1+": "uid"},
+            "n_reads": len(read_ids),
+            "status": "active",
+            "catalogs": {
+                "interval_catalog.parquet": str(raw / "interval_catalog.parquet"),
+                "molecule_index": str(run_root / "molecule_index"),
+                "preprocess_read_index": str(preprocess / "read_index"),
+            },
+        },
+        "calls": dict(zip(read_ids, calls, strict=True)),
+        "footprint": dict(zip(read_ids, footprint, strict=True)),
+    }
+
+
+@pytest.fixture
+def project(tmp_path: Path):
+    rng = np.random.default_rng(0)
+    written = {name: _write_experiment(tmp_path / "runs", name, rng) for name in EXPERIMENTS}
+    root = tmp_path / "project"
+    init_project(root)
+    registry = load_registry(root)
+    registry["experiments"] = {name: item["entry"] for name, item in written.items()}
+    save_registry(root, registry)
+    ReferenceRegistry(canonical_names={"uid": "locus"}).save(root / "reference_registry.yaml")
+    calls = {k: v for item in written.values() for k, v in item["calls"].items()}
+    footprint = {k: v for item in written.values() for k, v in item["footprint"].items()}
+    return root, calls, footprint
+
+
+def _plan():
+    def channel(name, stage, layer):
+        return {
+            "name": name,
+            "biological_role": "accessibility",
+            "sources": [
+                {"modality": "deaminase", "stage": stage, "layer": layer, "site_context": "C"}
+            ],
+        }
+
+    # Datasets only: no split, model or job.
+    return parse_ml_plan(
+        {
+            "schema_version": 1,
+            "scope": {"kind": "project"},
+            "datasets": {
+                "reads": {
+                    "modalities": ["deaminase"],
+                    "references": ["locus"],
+                    "channels": [
+                        channel("C", "preprocess", "X"),
+                        channel("footprint", "hmm", "C_all_footprint_features"),
+                    ],
+                }
+            },
+            "splits": {},
+            "models": {},
+            "jobs": {},
+        }
+    )
+
+
+def test_hmm_channel_reads_through_its_generation(project) -> None:
+    root, calls, footprint = project
+    bound = bind_ml_dataset(_plan(), "reads", project_dir=root, group_by=["Barcode"])
+
+    seen = []
+    for batch in bound.iter_batches():
+        for row, read_id in enumerate(batch.read_ids):
+            seen.append(read_id)
+            np.testing.assert_array_equal(batch.values[row, :, 0], calls[read_id])
+            np.testing.assert_array_equal(batch.values[row, :, 1], footprint[read_id])
+    assert sorted(seen) == sorted(calls)
+    assert len(seen) == len(set(seen))
+    assert set(bound.identity["Barcode"]) == {"barcode01", "barcode02"}
+
+
+def test_whole_dataset_materializes_in_manifest_order(project) -> None:
+    root, calls, _ = project
+    bound = bind_ml_dataset(_plan(), "reads", project_dir=root)
+    data = bound.materialize()
+    assert list(data.molecule_uids) == [item.molecule_uid for item in bound.snapshot.observations]
+    assert len(data.molecule_uids) == len(calls)
+
+
+def test_registry_records_the_hmm_read_index_in_its_generation(project) -> None:
+    from smftools.project.registry import _discover_catalogs
+
+    root, _, _ = project
+    entry = load_registry(root)["experiments"]["exp_a"]
+    spines = {stage: Path(path) for stage, path in entry["spines"].items()}
+    catalogs = _discover_catalogs(spines, root)
+    hmm_index = catalogs["hmm_read_index"]
+    assert "/generations/" in hmm_index and hmm_index.endswith("read_index")
+
+
+def test_a_plan_may_declare_datasets_only() -> None:
+    plan = _plan()
+    assert not plan.splits and not plan.models and not plan.jobs
+    assert parse_ml_plan(plan.to_dict()).plan_hash == plan.plan_hash
