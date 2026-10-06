@@ -12,7 +12,7 @@ import hashlib
 import json
 from collections import defaultdict
 from collections.abc import Iterator, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any
@@ -32,6 +32,9 @@ from ..manifests import DatasetSnapshotManifest, SplitManifest
 DEFAULT_BATCH_SIZE = 64
 DEFAULT_BATCH_MEMORY_BYTES = 64 * 1024**2
 DEFAULT_MATERIALIZATION_MEMORY_BYTES = 2 * 1024**3
+# Rows decoded per store read before cutting batches (`MLX-09`): a read has
+# a large fixed cost (spine load, store sections), so it is amortized.
+DEFAULT_BLOCK_MEMORY_BYTES = 512 * 1024**2
 DEFAULT_QUERY_MEMORY_MB = 64
 
 
@@ -75,9 +78,22 @@ class ExperimentPartitionSource:
     experiment_uid: str
     modality: str
     stage_spines: Mapping[str, Path]
+    # Optional per-stage read index (read_id -> store partition), used only to
+    # order reads partition-major (`MLX-09`). Without it reads keep manifest order.
+    stage_read_indexes: Mapping[str, Path] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "experiment_uid", validate_experiment_uid(self.experiment_uid))
+        object.__setattr__(
+            self,
+            "stage_read_indexes",
+            MappingProxyType(
+                {
+                    str(stage).strip().lower(): Path(path).resolve()
+                    for stage, path in self.stage_read_indexes.items()
+                }
+            ),
+        )
         modality = str(self.modality).strip().lower()
         if not modality:
             raise MLPartitionDataError("source modality must be a non-empty string")
@@ -104,9 +120,11 @@ class PartitionReadPolicy:
     max_materialization_bytes: int = DEFAULT_MATERIALIZATION_MEMORY_BYTES
     query_memory_mb: int = DEFAULT_QUERY_MEMORY_MB
     lazy: bool | None = None
+    max_block_bytes: int = DEFAULT_BLOCK_MEMORY_BYTES
 
     def __post_init__(self) -> None:
         _positive_integer(self.batch_size, "batch_size")
+        _positive_integer(self.max_block_bytes, "max_block_bytes")
         _positive_integer(self.max_batch_bytes, "max_batch_bytes")
         _positive_integer(self.max_materialization_bytes, "max_materialization_bytes")
         _positive_integer(self.query_memory_mb, "query_memory_mb")
@@ -126,6 +144,8 @@ class PartitionReadEntry:
     modality: str
     class_id: int | None
     split: str
+    # Where the read is stored, e.g. (group_path, group_row); () when unknown.
+    read_key: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -160,6 +180,25 @@ class MLPartitionDataPlan:
                 f"split role {split!r} is absent; represented roles are {represented}"
             )
         return rows
+
+    def read_order(self, split: str) -> tuple[PartitionReadEntry, ...]:
+        """Rows of one split in the order batches read them (`MLX-09`).
+
+        Partition-major when read keys are known: canonical order scatters a
+        batch over many store partitions, each opened from scratch, so a
+        64-row batch on a real store cost about a minute (`F67`). Rows without
+        a key keep canonical order, so datasets bound without read indexes
+        read exactly as before.
+        """
+        rows = self.entries_for(split)
+        if not any(entry.read_key for entry in rows):
+            return rows
+        return tuple(
+            sorted(
+                rows,
+                key=lambda entry: (entry.experiment_uid, entry.read_key, entry.order_index),
+            )
+        )
 
     def estimate_batch_bytes(self, n_rows: int) -> int:
         """Return the conservative peak estimate for one decoded batch."""
@@ -304,6 +343,63 @@ def _bytes_per_row(n_positions: int, n_channels: int, *, labeled: bool) -> int:
     return 2 * persistent
 
 
+def _slice_batch(batch: MLPartitionBatch, rows: slice) -> MLPartitionBatch:
+    """Rows of a decoded block as their own batch."""
+    return MLPartitionBatch(
+        order_indices=batch.order_indices[rows],
+        molecule_uids=batch.molecule_uids[rows],
+        read_ids=batch.read_ids[rows],
+        experiment_uids=batch.experiment_uids[rows],
+        modalities=batch.modalities[rows],
+        coordinates=batch.coordinates,
+        channel_names=batch.channel_names,
+        values=batch.values[rows],
+        labels=None if batch.labels is None else batch.labels[rows],
+        observed_mask=batch.observed_mask[rows],
+        availability_mask=batch.availability_mask[rows],
+        design_mask=batch.design_mask[rows] if batch.design_mask.ndim == 3 else batch.design_mask,
+        padding_mask=batch.padding_mask[rows],
+    )
+
+
+def _read_keys(
+    dataset: DatasetSnapshotManifest,
+    bindings: Mapping[str, ExperimentPartitionSource],
+) -> dict[str, tuple]:
+    """``molecule_uid -> (group_path, group_row)`` from each source's read index.
+
+    Uses the first required stage that has a read index; reads it lacks, and
+    experiments without one, get no key.
+    """
+    import pyarrow.dataset as pa_ds
+
+    wanted: dict[str, set[str]] = defaultdict(set)
+    for observation in dataset.observations:
+        wanted[observation.experiment_uid].add(observation.molecule_uid)
+    keys: dict[str, tuple] = {}
+    for experiment_uid, binding in bindings.items():
+        stages = sorted(set(binding.stage_spines).intersection(binding.stage_read_indexes))
+        if not stages:
+            continue
+        index = binding.stage_read_indexes[stages[0]]
+        if not index.exists():
+            continue
+        source = pa_ds.dataset(index, format="parquet", partitioning="hive")
+        columns = ["group_path", "group_row", "molecule_uid"]
+        if not set(columns).issubset(source.schema.names):
+            continue
+        frame = source.to_table(columns=columns).to_pandas()
+        frame = frame.loc[frame["molecule_uid"].astype(str).isin(wanted[experiment_uid])]
+        for uid, group_path, group_row in zip(
+            frame["molecule_uid"].astype(str),
+            frame["group_path"].astype(str),
+            frame["group_row"],
+            strict=True,
+        ):
+            keys[uid] = (group_path, int(group_row))
+    return keys
+
+
 def build_partition_data_plan(
     dataset: DatasetSnapshotManifest,
     split: SplitManifest,
@@ -355,6 +451,7 @@ def build_partition_data_plan(
             raise MLPartitionDataError(f"required stage spines do not exist: {nonexistent}")
 
     assignments = {member.molecule_uid: member.split for member in split.members}
+    read_keys = _read_keys(dataset, bindings)
     entries = tuple(
         PartitionReadEntry(
             order_index=index,
@@ -365,6 +462,7 @@ def build_partition_data_plan(
             modality=observation.modality,
             class_id=observation.class_id,
             split=assignments[observation.molecule_uid],
+            read_key=read_keys.get(observation.molecule_uid, ()),
         )
         for index, observation in enumerate(dataset.observations)
     )
@@ -464,12 +562,29 @@ class PartitionDataset:
             raise MLPartitionDataError("worker_id must be an integer")
         if worker_id < 0 or worker_id >= num_workers:
             raise MLPartitionDataError("worker_id must satisfy 0 <= worker_id < num_workers")
-        entries = self.plan.entries_for(split)
+        entries = self.plan.read_order(split)
         batch_size = self.plan.effective_batch_size
-        for batch_index, offset in enumerate(range(0, len(entries), batch_size)):
-            if batch_index % num_workers != worker_id:
+        # Read whole blocks of batches at once and cut them up: each store read
+        # has a fixed cost of seconds on real stores (`F67`). Batch boundaries,
+        # and so worker sharding, are the same as reading batch by batch.
+        batches_per_block = max(
+            1, self.plan.policy.max_block_bytes // (self.plan.bytes_per_row * batch_size)
+        )
+        block_rows = batch_size * batches_per_block
+        for block_offset in range(0, len(entries), block_rows):
+            first_batch = block_offset // batch_size
+            block_entries = entries[block_offset : block_offset + block_rows]
+            n_batches = -(-len(block_entries) // batch_size)
+            mine = [
+                index
+                for index in range(n_batches)
+                if (first_batch + index) % num_workers == worker_id
+            ]
+            if not mine:
                 continue
-            yield self._read_batch(entries[offset : offset + batch_size])
+            block = self._read_batch(block_entries)
+            for index in mine:
+                yield _slice_batch(block, slice(index * batch_size, (index + 1) * batch_size))
 
     def materialize(self, split: str) -> MLMaterializedPartitionData:
         """Materialize one split only after a conservative peak-memory preflight."""
@@ -483,11 +598,19 @@ class PartitionDataset:
         batches = tuple(self.iter_batches(split))
         if not batches:
             raise MLPartitionDataError(f"split role {split!r} produced no batches")
-        labels = (
-            None
-            if batches[0].labels is None
-            else np.concatenate([batch.labels for batch in batches if batch.labels is not None])
+        # Batches arrive in read order; a materialized split is in manifest order.
+        order = np.argsort(
+            np.concatenate([batch.order_indices for batch in batches]), kind="stable"
         )
+
+        def rows(values) -> tuple:
+            flat = [item for batch in batches for item in values(batch)]
+            return tuple(flat[index] for index in order)
+
+        def stacked(values) -> np.ndarray:
+            return np.concatenate([values(batch) for batch in batches])[order]
+
+        labels = None if batches[0].labels is None else stacked(lambda batch: batch.labels)
         if batches[0].design_mask.ndim == 2 and any(
             not np.array_equal(batch.design_mask, batches[0].design_mask) for batch in batches[1:]
         ):
@@ -496,24 +619,24 @@ class PartitionDataset:
             )
         return MLMaterializedPartitionData(
             split=split,
-            molecule_uids=tuple(uid for batch in batches for uid in batch.molecule_uids),
-            read_ids=tuple(read_id for batch in batches for read_id in batch.read_ids),
-            experiment_uids=tuple(uid for batch in batches for uid in batch.experiment_uids),
-            modalities=tuple(modality for batch in batches for modality in batch.modalities),
+            molecule_uids=rows(lambda batch: batch.molecule_uids),
+            read_ids=rows(lambda batch: batch.read_ids),
+            experiment_uids=rows(lambda batch: batch.experiment_uids),
+            modalities=rows(lambda batch: batch.modalities),
             coordinates=self.plan.coordinates,
             channel_names=tuple(
                 channel.name for channel in self.plan.dataset.input_schema.channels
             ),
-            values=np.concatenate([batch.values for batch in batches]),
+            values=stacked(lambda batch: batch.values),
             labels=labels,
-            observed_mask=np.concatenate([batch.observed_mask for batch in batches]),
-            availability_mask=np.concatenate([batch.availability_mask for batch in batches]),
+            observed_mask=stacked(lambda batch: batch.observed_mask),
+            availability_mask=stacked(lambda batch: batch.availability_mask),
             design_mask=(
-                np.concatenate([batch.design_mask for batch in batches])
+                stacked(lambda batch: batch.design_mask)
                 if batches[0].design_mask.ndim == 3
                 else batches[0].design_mask
             ),
-            padding_mask=np.concatenate([batch.padding_mask for batch in batches]),
+            padding_mask=stacked(lambda batch: batch.padding_mask),
         )
 
     def _read_batch(self, entries: Sequence[PartitionReadEntry]) -> MLPartitionBatch:

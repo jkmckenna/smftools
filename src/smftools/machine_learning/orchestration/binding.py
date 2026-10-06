@@ -6,7 +6,8 @@ same resolution one step further: it turns a job's dataset selection into a
 (through `MLSplitResolution.to_manifest`, which re-checks that both describe
 the same rows), and binds both to the experiments' stage spines as a
 `PartitionDataset`. `run_bound_train_job` then fits every declared model on
-each fold's train role and evaluates it on the fold's test role.
+each fold's train role and evaluates it on the fold's test role, predicted
+batch by batch so no split has to fit in memory at once.
 
 Results are returned in memory; publishing them through the job service as
 immutable run artifacts is a separate step.
@@ -15,10 +16,11 @@ immutable run artifacts is a separate step.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from ..contracts import LabelSchema
@@ -187,9 +189,41 @@ def _partition_sources(selection: MLDataSelectionPlan) -> tuple[ExperimentPartit
                 experiment_uid=source.experiment_uid,
                 modality=source.modality,
                 stage_spines=dict(source.stage_spines),
+                # Lets the reader go partition by partition (`MLX-09`).
+                stage_read_indexes=dict(source.stage_read_indexes),
             )
         )
     return tuple(sources)
+
+
+def _concat_predictions(parts: Sequence[Any]) -> Any:
+    """One prediction table from per-batch tables, rows in batch order."""
+    first = parts[0]
+    values = {}
+    for item in fields(first):
+        column = [getattr(part, item.name) for part in parts]
+        if isinstance(column[0], np.ndarray):
+            values[item.name] = np.concatenate(column)
+        elif isinstance(column[0], tuple) and item.name != "class_order":
+            values[item.name] = tuple(value for part in column for value in part)
+        elif column[0] is None:
+            values[item.name] = None
+        else:
+            if any(value != column[0] for value in column[1:]):
+                raise MLJobServiceError(f"prediction batches disagree on {item.name!r}")
+            values[item.name] = column[0]
+    return type(first)(**values)
+
+
+def _predict_split(training: Any, dataset: PartitionDataset, split: str, model_id: str) -> Any:
+    """Predict a split batch by batch: a held-out experiment can exceed the
+    materialization budget (one real test fold estimated 2.5 GB)."""
+    return _concat_predictions(
+        [
+            apply_partition_model(training.model, batch, phase=split, model_id=model_id)
+            for batch in dataset.iter_batches(split)
+        ]
+    )
 
 
 def bind_ml_job(
@@ -285,11 +319,10 @@ def run_bound_train_job(
                 torch_options=th_options if spec.backend == "torch" else None,
                 registry=registry,
             )
-            test = fold.dataset.materialize("test")
-            predictions = apply_partition_model(
-                training.model,
-                test,
-                phase="test",
+            predictions = _predict_split(
+                training,
+                fold.dataset,
+                "test",
                 model_id=f"{bound.job_name}:{model_name}:{fold.fold_name or 'single'}",
             )
             runs.append(

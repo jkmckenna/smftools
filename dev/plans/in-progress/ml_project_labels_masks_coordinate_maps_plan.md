@@ -1,8 +1,8 @@
 # ML project labels, position masks and coordinate maps (`MLX`)
 
-**Status:** in progress. `MLX-01`, `MLX-05` merged; `MLX-06` implemented on
-`feature/mlx-06-plan-job-runner`, not merged; `MLX-02`–`MLX-04`, `MLX-07`–`MLX-09`
-proposed. `MLX-09` blocks training on real stores at useful speed.
+**Status:** in progress. `MLX-01`, `MLX-05`, `MLX-06` merged; `MLX-09`
+implemented on `feature/mlx-09-partition-major-reads`, not merged; `MLX-02`–`MLX-04`,
+`MLX-07`, `MLX-08` proposed.
 
 ## Problem
 
@@ -37,10 +37,10 @@ an ML plan today, for three independent reasons found while designing it:
 | `MLX-03` cross-reference coordinate maps | proposed | place several references' molecules in one coordinate frame |
 | `MLX-04` qualification | proposed | one real project study end to end |
 | `MLX-05` real-store compatibility | merged | resolve channels and QC filters against real pipeline stores (`F66`) |
-| `MLX-06` plan job runner | implemented, not merged | bind a resolved plan to a dataset snapshot, split and partition dataset per fold; train and test-evaluate each fold |
+| `MLX-06` plan job runner | merged | bind a resolved plan to a dataset snapshot, split and partition dataset per fold; train and test-evaluate each fold |
 | `MLX-07` training-only groups | proposed | let single-class groups train without being held-out folds |
 | `MLX-08` published fold runs | proposed | run `MLX-06` folds through the job service as immutable run artifacts |
-| `MLX-09` partition-major reads | proposed | open each store partition once per pass instead of once per batch (`F67`) |
+| `MLX-09` partition-major reads | implemented, not merged | open each store partition once per pass instead of once per batch (`F67`) |
 
 Order: `MLX-01`, `MLX-05`, `MLX-06` (together they unblock a single-reference,
 full-span pilot), then `MLX-02`, then `MLX-03`, which builds on `MLX-02`'s
@@ -264,4 +264,34 @@ Tests: a fixture with many partitions per experiment opens each partition
 once per pass (count opens); batches cover every split row exactly once;
 streamed NB fit equals the materialized fit; on the real pilot, a fold's train
 pass takes minutes, not hours.
+
+**As implemented.** Two changes in `data/partition_dataset.py`, both inside
+the reader (no change to `materialize`):
+
+- *Partition-major order.* `ExperimentPartitionSource.stage_read_indexes`
+  (bound by `MLX-06` from the selection) lets `build_partition_data_plan`
+  key each row by its stored `(group_path, group_row)`; `read_order(split)`
+  sorts rows by experiment, then key. Rows without a key keep canonical
+  order, so a dataset bound without read indexes reads exactly as before.
+  `materialize(split)` restores manifest order from `order_indices`.
+- *Block reads.* Profiling showed the first change alone was not enough: one
+  `materialize` call costs ~10 s fixed on a real store (it reloads the spine,
+  ~3 s, and opens ~22 store sections) even for one partition. `iter_batches`
+  now decodes blocks of whole batches (`PartitionReadPolicy.max_block_bytes`,
+  512 MiB by default) in one call and slices them; batch boundaries, and so
+  worker sharding, are unchanged.
+
+Real pilot fold (16,827 train rows, 4,690 positions): a full train pass in
+205 s, against ~70 s per 64-row batch before (~5 h). `run_bound_train_job`
+also predicts the test role batch by batch: one held-out experiment (12,551
+rows) was estimated at 2.5 GB to materialize, over the default budget. The
+whole five-fold pilot (bernoulli_nb, leave-one-experiment-out) now trains and
+evaluates in 17 min, held-out average precision 0.82-0.93. Tests:
+`test_batches_read_one_partition_at_a_time`,
+`test_materialized_split_keeps_manifest_order`,
+`test_block_reads_match_batch_reads_with_fewer_store_reads`,
+`test_read_order_is_canonical_without_read_keys`,
+`test_test_role_is_predicted_in_batches_not_materialized`. Not done: caching a loaded
+spine across `materialize` calls (would take the remaining fixed cost, but
+changes `materialize`'s path-based fast paths).
 
