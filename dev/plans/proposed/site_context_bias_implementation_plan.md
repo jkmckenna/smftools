@@ -1,6 +1,6 @@
 # Modification-site sequence-context bias (`SCB`)
 
-**Status:** in progress. `SCB-01` merged; `SCB-02` implemented. One PR per item, in order.
+**Status:** in progress. `SCB-01`, `SCB-02` merged; `SCB-03` implemented. One PR per item, in order.
 
 ## Question
 
@@ -60,8 +60,8 @@ Windows running off a reference end are padded with `N` and counted as such.
 | item | status | scope |
 |---|---|---|
 | `SCB-01` counting + statistics | merged | library: stream a bound dataset into per-site counts; per-offset, per-k-mer and between-group tables |
-| `SCB-02` figures | implemented, not merged | offset x base enrichment heatmaps and logos, k-mer rate plots, group-difference heatmaps |
-| `SCB-03` CLI | proposed | `smftools project context-bias` over a plan dataset |
+| `SCB-02` figures | merged | offset x base enrichment heatmaps and logos, k-mer rate plots, group-difference heatmaps |
+| `SCB-03` CLI | implemented, not merged | `smftools project context-bias` over a plan dataset |
 | `SCB-04` qualification | proposed | a real enzyme panel |
 
 ### `SCB-01` — counting and statistics
@@ -116,17 +116,23 @@ background calls are dropped alike, so the comparison stays consistent.
 ### `SCB-03` — CLI
 
 ```
-smftools project context-bias PROJECT_DIR --plan PLAN --dataset NAME \
-    [--flank 3] [--kmer 1 --kmer 3 --kmer 5] [--group-by COLUMN] \
-    [--reference-group VALUE] [--workers N] --output DIR
+smftools project context-bias PROJECT_DIR --plan PLAN --dataset NAME --output DIR \
+    [--channel C] [--group-by COLUMN] [--flank 3] [--kmer 1 --kmer 3 --kmer 5] \
+    [--reference-group VALUE] [--keep-ambiguous] [--workers N] [--refresh] [--no-figures]
+smftools experiment context-bias EXPERIMENT_DIR ...   # same options
 ```
+
+The logic is `smftools.tools.site_context_bias.run_context_bias`; the commands
+only parse options.
 
 Writes `site_counts.parquet` (the re-usable counts), `sites.parquet`,
 `offset_enrichment.csv`, `kmer_rates.csv`, `group_differences.csv`, the
-figures, and `run.json` (plan hash, dataset, flank, k, groups, smftools
-version). `--group-by` takes a label-table column or an identity column
-(`Barcode`, `experiment_id`). An experiment-scope plan works through the same
-command with `--experiment-dir`.
+figures, and `run.json` (plan hash, dataset, channel, grouping, flank, k,
+groups, smftools version). Counts carry a key (`site_counts.json`: plan hash,
+dataset, channel, grouping) and are reused when it matches, so a new flank or
+k reads nothing; `--refresh` forces a re-count. `--group-by` takes a label-table column or an identity column
+(`Barcode`, `experiment_id`). An experiment-scope plan runs through
+`smftools experiment context-bias`.
 
 Tests: CLI on a fixture project writes every output; a second run with a
 different `--flank` reuses `site_counts.parquet`.
