@@ -744,6 +744,10 @@ def _overlay_preprocess_layers(
         for layer in requested_layers
     }
     source_dtypes: dict[str, np.dtype] = {}
+    # Per stage: which layers its catalog says it wrote, and whether any
+    # selected read was found in its partitions (`F71`).
+    stage_layers: dict[str, set[str]] = {}
+    matched_stages: set[str] = set()
     result_positions = {int(position): column for column, position in enumerate(positions)}
     result_reference = result.obs["Reference_strand"].astype(str).to_numpy()
 
@@ -761,6 +765,13 @@ def _overlay_preprocess_layers(
             if catalog_path is None:
                 continue
             catalog = pd.read_parquet(catalog_path)
+            if "layers" in catalog:
+                stage_layers.setdefault(stage, set()).update(
+                    str(layer)
+                    for listed in catalog["layers"]
+                    if listed is not None
+                    for layer in listed
+                )
             catalog = catalog.loc[
                 (catalog["reference"].astype(str) == reference)
                 & (catalog["core_start"] < positions.max() + 1)
@@ -811,6 +822,7 @@ def _overlay_preprocess_layers(
                 ]
                 if not shared_reads or not shared_positions:
                     continue
+                matched_stages.add(stage)
                 source_rows = [part.obs_names.get_loc(read_id) for read_id in shared_reads]
                 source_columns = [
                     part.var_names.get_loc(str(position)) for position in shared_positions
@@ -826,7 +838,16 @@ def _overlay_preprocess_layers(
         values = assembled[layer]
         source_dtype = source_dtypes.get(layer)
         if source_dtype is None:
-            raise KeyError(f"derived layer {layer!r} was not found in selected partitions")
+            owners = {stage for stage, written in stage_layers.items() if layer in written}
+            if not owners or owners & matched_stages:
+                # No stage wrote it, or the stage that did holds these reads
+                # without it: a real error.
+                raise KeyError(f"derived layer {layer!r} was not found in selected partitions")
+            # The stage that wrote the layer holds none of these reads (e.g. a
+            # block of reads it did not keep): absent, as for reads missing from
+            # a partial match, rather than an error that aborts the caller (`F71`).
+            result.layers[layer] = values
+            continue
         if np.issubdtype(source_dtype, np.integer) and not np.isnan(values).any():
             values = values.astype(source_dtype)
         result.layers[layer] = values
