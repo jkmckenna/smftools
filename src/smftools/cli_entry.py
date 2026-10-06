@@ -1887,6 +1887,137 @@ def project_embedding_cmd(
     click.echo(path)
 
 
+def _context_bias_options(command):
+    """Options shared by the project and experiment ``context-bias`` commands."""
+    options = [
+        click.option(
+            "--plan",
+            "plan_path",
+            type=click.Path(exists=True, dir_okay=False, path_type=Path),
+            required=True,
+            help="ML plan (.json/.yaml) whose dataset selects the molecules.",
+        ),
+        click.option("--dataset", required=True, help="Dataset name in the plan."),
+        click.option(
+            "--output",
+            "-o",
+            "output_dir",
+            type=click.Path(file_okay=False, path_type=Path),
+            required=True,
+            help="Output directory (counts are cached here and reused).",
+        ),
+        click.option("--channel", default=None, help="Dataset channel. Default: the first."),
+        click.option(
+            "--group-by",
+            default=None,
+            help="Identity or label-table column to group molecules by. Default: one group.",
+        ),
+        click.option(
+            "--flank",
+            type=click.IntRange(min=0),
+            default=3,
+            show_default=True,
+            help="Bases each side of the site: windows are 2*flank+1.",
+        ),
+        click.option(
+            "--kmer",
+            "kmers",
+            type=int,
+            multiple=True,
+            help="Centred k-mer size for rate tables (odd, repeatable). Default: 1 and 3.",
+        ),
+        click.option(
+            "--reference-group",
+            default=None,
+            help="Group the others' enrichment is compared against.",
+        ),
+        click.option(
+            "--keep-ambiguous",
+            is_flag=True,
+            help="Keep contexts containing non-ACGT reference bases (dropped by default).",
+        ),
+        click.option(
+            "--workers",
+            type=click.IntRange(min=1),
+            default=1,
+            show_default=True,
+            help="Reader processes.",
+        ),
+        click.option("--refresh", is_flag=True, help="Re-count even when cached counts match."),
+        click.option("--no-figures", is_flag=True, help="Write tables only."),
+    ]
+    for option in reversed(options):
+        command = option(command)
+    return command
+
+
+def _run_context_bias(
+    scope: dict,
+    plan_path,
+    dataset,
+    output_dir,
+    channel,
+    group_by,
+    flank,
+    kmers,
+    reference_group,
+    keep_ambiguous,
+    workers,
+    refresh,
+    no_figures,
+):
+    from .machine_learning.plan import load_ml_plan
+    from .tools.site_context_bias import run_context_bias
+
+    try:
+        record = run_context_bias(
+            load_ml_plan(plan_path),
+            dataset,
+            output_dir,
+            **scope,
+            group_by=group_by,
+            channel=channel,
+            flank=flank,
+            kmers=tuple(kmers) or (1, 3),
+            reference_group=reference_group,
+            drop_ambiguous=not keep_ambiguous,
+            workers=workers,
+            refresh=refresh,
+            figures=not no_figures,
+        )
+    except (KeyError, ValueError) as exc:
+        raise click.ClickException(str(exc.args[0] if exc.args else exc)) from exc
+    counted = "reused cached counts" if record["counts_reused"] else "counted"
+    click.echo(
+        f"{counted}: {record['sites']} site rows, {len(record['groups'])} group(s); "
+        f"wrote {output_dir}"
+    )
+
+
+@project_group.command("context-bias")
+@click.argument("project_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@_context_bias_options
+def project_context_bias_cmd(project_dir, **options):
+    """Sequence-context bias of a channel's modified sites across a plan dataset.
+
+    Compares the strand-oriented reference context (2*flank+1 bases) of
+    modified calls against all observed calls at the same site type, per group:
+    per-offset base enrichment, k-mer rates, differences from a reference group.
+    """
+    _run_context_bias({"project_dir": project_dir}, **options)
+
+
+@experiment_group.command("context-bias")
+@click.argument("experiment_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@_context_bias_options
+def experiment_context_bias_cmd(experiment_dir, **options):
+    """Sequence-context bias of a channel's modified sites in one experiment.
+
+    As ``project context-bias``, for an experiment-scope plan.
+    """
+    _run_context_bias({"experiment_dir": experiment_dir}, **options)
+
+
 @project_group.command("validate")
 @click.argument("project_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
 @click.argument("output_root", type=click.Path(exists=True, file_okay=False, path_type=Path))

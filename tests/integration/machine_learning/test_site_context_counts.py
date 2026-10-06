@@ -54,6 +54,7 @@ def project(tmp_path: Path):
     source = ad.AnnData(X=calls, obs=obs)
     source.var_names = [str(position) for position in range(len(SEQUENCE))]
     source.var["locus_top_C_site"] = [position in C_SITES for position in range(len(SEQUENCE))]
+    source.uns["References"] = {"locus_FASTA_sequence": SEQUENCE}
     paths = write_experiment_store(source, preprocess, experiment="exp", modality="deaminase")
 
     experiment_uid = str(uuid4())
@@ -198,3 +199,107 @@ def test_reference_sequences_drop_padding(tmp_path: Path) -> None:
     path = tmp_path / "spine.h5ad"
     spine.write_h5ad(path)
     assert reference_sequences([path]) == {"long": "ACGTACGT", "short": "ACGT", "bare": "ACG"}
+
+
+def _cli(root, tmp_path, *extra):
+    import json
+
+    from click.testing import CliRunner
+
+    from smftools.cli_entry import cli
+
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(json.dumps(_plan().to_dict()))
+    out = tmp_path / "out"
+    result = CliRunner().invoke(
+        cli,
+        [
+            "project",
+            "context-bias",
+            str(root),
+            "--plan",
+            str(plan_path),
+            "--dataset",
+            "sites",
+            "--output",
+            str(out),
+            *extra,
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    return out, json.loads((out / "run.json").read_text()), result.output
+
+
+def test_cli_writes_every_output_and_reuses_counts(project, tmp_path) -> None:
+    root, _, _ = project
+    out, record, output = _cli(
+        root,
+        tmp_path,
+        "--group-by",
+        "Barcode",
+        "--flank",
+        "2",
+        "--kmer",
+        "3",
+        "--kmer",
+        "5",
+        "--reference-group",
+        "barcode01",
+    )
+    assert "counted" in output and not record["counts_reused"]
+    for name in (
+        "site_counts.parquet",
+        "site_counts.json",
+        "sites.parquet",
+        "offset_enrichment.csv",
+        "kmer_rates.csv",
+        "group_differences.csv",
+        "offset_enrichment.png",
+        "enrichment_logo.png",
+        "kmer_rates_k3.png",
+        "kmer_rates_k5.png",
+        "group_differences.png",
+        "run.json",
+    ):
+        assert (out / name).exists(), name
+    assert record["groups"] == ["barcode01", "barcode02"]
+    assert set(pd.read_csv(out / "kmer_rates.csv")["k"]) == {3, 5}
+    assert set(pd.read_parquet(out / "sites.parquet")["context"].str.len()) == {5}
+
+    # Another flank re-uses the counts; the windows follow the new flank.
+    _, again, output = _cli(root, tmp_path, "--group-by", "Barcode", "--flank", "1", "--no-figures")
+    assert again["counts_reused"] and "reused cached counts" in output
+    assert set(pd.read_parquet(out / "sites.parquet")["context"].str.len()) == {3}
+    # A different grouping is a different count.
+    _, regrouped, _ = _cli(root, tmp_path, "--no-figures")
+    assert not regrouped["counts_reused"] and regrouped["groups"] == ["all"]
+
+
+def test_cli_rejects_bad_arguments(project, tmp_path) -> None:
+    import json
+
+    from click.testing import CliRunner
+
+    from smftools.cli_entry import cli
+
+    root, _, _ = project
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(json.dumps(_plan().to_dict()))
+    base = [
+        "project",
+        "context-bias",
+        str(root),
+        "--plan",
+        str(plan_path),
+        "--dataset",
+        "sites",
+        "--output",
+        str(tmp_path / "o"),
+    ]
+    for extra, message in (
+        (["--flank", "1", "--kmer", "5"], "k-mer size 5"),
+        (["--group-by", "Barcode", "--reference-group", "missing"], "reference group"),
+        (["--channel", "nope"], "channel"),
+    ):
+        result = CliRunner().invoke(cli, [*base, *extra])
+        assert result.exit_code != 0 and message in result.output, result.output
