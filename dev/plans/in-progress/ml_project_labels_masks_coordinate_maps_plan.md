@@ -1,7 +1,7 @@
 # ML project labels, position masks and coordinate maps (`MLX`)
 
-**Status:** in progress. `MLX-01`–`MLX-03`, `MLX-05`–`MLX-07`, `MLX-09` merged; `MLX-04`,
-`MLX-08`, `MLX-10` proposed.
+**Status:** in progress. `MLX-01`–`MLX-03`, `MLX-05`–`MLX-07`, `MLX-09` merged; `MLX-10`
+implemented on `feature/mlx-10-dataset-reads`, not merged; `MLX-04`, `MLX-08` proposed.
 
 ## Problem
 
@@ -40,7 +40,7 @@ an ML plan today, for three independent reasons found while designing it:
 | `MLX-07` training-only groups | merged | let single-class groups train without being held-out folds |
 | `MLX-08` published fold runs | proposed | run `MLX-06` folds through the job service as immutable run artifacts |
 | `MLX-09` partition-major reads | merged | open each store partition once per pass instead of once per batch (`F67`) |
-| `MLX-10` whole-dataset reads, HMM-stage channels | proposed | read a dataset's rows without a split (for embeddings), and resolve HMM/spatial stage read indexes |
+| `MLX-10` whole-dataset reads, HMM-stage channels | implemented, not merged | read a dataset's rows without a split (for embeddings), and resolve HMM/spatial stage read indexes |
 
 Order: `MLX-01`, `MLX-05`, `MLX-06` (together they unblock a single-reference,
 full-span pilot), then `MLX-02`, then `MLX-03`, which builds on `MLX-02`'s
@@ -415,4 +415,27 @@ in manifest order from `materialize()`; a preprocess + hmm multi-channel
 dataset reads both stages' values for the same molecules. Real data: a
 fresh-NK embedding set (B6 active, B6 inactive, enh-del) over C sites,
 `C_all_accessible_features` and `C_all_footprint_features`.
+
+**As implemented.** `bind_ml_dataset(plan, dataset, project_dir=...,
+group_by=...)` returns a `BoundDataset` (selection, snapshot, one
+`PartitionDataset` over every row via a single all-rows role; `identity`,
+`iter_batches()`, `materialize()`); `group_by` carries extra per-row columns
+such as `Barcode`. A plan's `splits`, `models` and `jobs` may now be empty.
+`_stage_read_index` falls back to the stage's current generation
+(`resolve_current_generation`), which also makes the written catalog and stage
+obs resolvable there; `_discover_catalogs` records `hmm_read_index` /
+`spatial_read_index` the same way at `project add`. No reader change was needed
+for preprocess + hmm channels.
+
+Tests: `test_dataset_reads.py` (HMM stage published through
+`staged_generation`, canonical spine at the stage root):
+`test_hmm_channel_reads_through_its_generation` (values of both stages per
+molecule; fails with the generation lookup reverted),
+`test_whole_dataset_materializes_in_manifest_order`,
+`test_registry_records_the_hmm_read_index_in_its_generation`,
+`test_a_plan_may_declare_datasets_only`. Real data: the fresh-NK set (B6
+active / B6 inactive / enh-del, downstream of the deletion in B6 coordinates)
+binds 36,981 molecules over 3,151 positions with C-site, accessible-feature
+and footprint-feature channels all populated; ~30 rows/s over two stages.
+HMM channels use the C-site design mask, so they are read at C sites only.
 

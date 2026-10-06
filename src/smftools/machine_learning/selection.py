@@ -452,7 +452,23 @@ def _stage_read_index(metadata: _ExperimentMetadata, stage: str) -> Path | None:
     spine = metadata.spines.get(stage)
     if spine is not None and (spine.parent / "read_index").exists():
         return spine.parent / "read_index"
+    if spine is not None:
+        # Generation layout: the read index lives in the current generation,
+        # not beside the stage's top-level spine (`MLX-10`).
+        generation = _current_generation_dir(spine.parent)
+        if generation is not None and (generation / "read_index").exists():
+            return generation / "read_index"
     return None
+
+
+def _current_generation_dir(stage_dir: Path) -> Path | None:
+    from smftools.informatics.generation import GenerationError, resolve_current_generation
+
+    try:
+        current = resolve_current_generation(stage_dir)
+    except (GenerationError, OSError, ValueError):
+        return None
+    return None if current is None else Path(current[0])
 
 
 def _stage_task_catalog(metadata: _ExperimentMetadata, stage: str) -> Path | None:

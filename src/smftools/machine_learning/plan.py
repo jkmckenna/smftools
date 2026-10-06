@@ -1106,15 +1106,17 @@ def parse_ml_plan(
         schema_version=schema_version,
         scope=_parse_scope(value["scope"]),
         datasets=_parse_named(value["datasets"], "datasets", _parse_dataset),
-        splits=_parse_named(value["splits"], "splits", _parse_split),
+        # May be empty: a plan can declare datasets only, e.g. for an
+        # embedding read through `bind_ml_dataset` (`MLX-10`).
+        splits=_parse_named(value["splits"], "splits", _parse_split, required=False),
         balancing=_parse_named(
             value.get("balancing", {}),
             "balancing",
             _parse_balancing,
             required=False,
         ),
-        models=_parse_named(value["models"], "models", _parse_model),
-        jobs=_parse_named(value["jobs"], "jobs", _parse_job),
+        models=_parse_named(value["models"], "models", _parse_model, required=False),
+        jobs=_parse_named(value["jobs"], "jobs", _parse_job, required=False),
         tracking=(
             _parse_tracking(value["tracking"]) if value.get("tracking") is not None else None
         ),

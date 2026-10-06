@@ -64,10 +64,10 @@ Every required key, nothing optional:
 | `schema_version` | yes | Integer. Currently `1`. |
 | `scope` | yes | `{"kind": "experiment" \| "project", "set": <name>}`. Note the key is `set`, not `set_name`. |
 | `datasets` | yes | Named dataset declarations. |
-| `splits` | yes | Named split declarations. |
+| `splits` | yes | Named split declarations; may be empty for a plan read only through `bind_ml_dataset`. |
 | `balancing` | no | Named balancing profiles. Omitting means natural prevalence everywhere. |
-| `models` | yes | Named model declarations. |
-| `jobs` | yes | Named jobs. |
+| `models` | yes | Named model declarations; may be empty. |
+| `jobs` | yes | Named jobs; may be empty. |
 | `tracking` | no | `{"provider": "none", ...}`. Tracker integrations are deferred; `none` is the only supported provider. |
 
 ## `datasets`
