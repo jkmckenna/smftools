@@ -772,6 +772,11 @@ def _overlay_preprocess_layers(
                     if listed is not None
                     for layer in listed
                 )
+                if not stage_layers[stage] & requested_layers:
+                    # This stage wrote none of the requested layers: opening its
+                    # partitions only to find nothing doubled HMM-layer reads
+                    # (`MRC-03`). Catalogs that list no layers are still read.
+                    continue
             catalog = catalog.loc[
                 (catalog["reference"].astype(str) == reference)
                 & (catalog["core_start"] < positions.max() + 1)

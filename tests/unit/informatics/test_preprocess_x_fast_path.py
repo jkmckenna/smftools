@@ -347,3 +347,36 @@ def test_unknown_layer_in_read_partitions_still_raises(tmp_path, monkeypatch):
             layers=["made_up_layer"],
             x=False,
         )
+
+
+# --- MRC-03: the overlay opens only stores that wrote a requested layer ----
+
+
+def test_overlay_skips_stages_that_wrote_none_of_the_requested_layers(tmp_path, monkeypatch):
+    from smftools.informatics import partition_read
+    from smftools.informatics.partition_read import clear_spine_cache
+    from smftools.readwrite import safe_read_h5ad, safe_write_h5ad
+
+    _, preprocess = _build(tmp_path, barcodes=("bc1", "bc2"))
+    calls = _counting_subset(monkeypatch)
+
+    def opens() -> int:
+        calls.clear()
+        clear_spine_cache()
+        materialize(
+            preprocess["spine"], read_ids=["read2"], start=0, end=12, layers=["nan_half"], x=False
+        )
+        return len(calls)
+
+    baseline = opens()
+
+    # A second stage over the same partitions that lists only another layer.
+    catalog = pd.read_parquet(preprocess["catalog"])
+    other = Path(preprocess["catalog"]).with_name("other_stage_catalog.parquet")
+    catalog.assign(layers=[["other_layer"]] * len(catalog)).to_parquet(other, index=False)
+    spine, _ = safe_read_h5ad(preprocess["spine"], verbose=False)
+    pointer = str(spine.uns["preprocess_catalog"])
+    spine.uns["hmm_catalog"] = pointer.replace(Path(pointer).name, other.name)
+    safe_write_h5ad(spine, preprocess["spine"], backup=False, verbose=False)
+
+    assert opens() == baseline  # the other stage's partitions are not opened
