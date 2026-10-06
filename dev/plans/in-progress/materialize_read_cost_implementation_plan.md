@@ -1,7 +1,7 @@
 # Materialize read cost (`MRC`)
 
-**Status:** in progress. `MRC-01` implemented on `fix/mrc-01-index-directed-partition-reads`, not
-merged; `MRC-02`–`MRC-05` proposed. One PR per item, in order.
+**Status:** in progress. `MRC-01` merged; `MRC-02` implemented on `fix/mrc-02-spine-cache`, not
+merged; `MRC-03`–`MRC-05` proposed. One PR per item, in order.
 
 ## Problem (`F70`)
 
@@ -25,8 +25,8 @@ whole-dataset read: ~30 molecules/s per process before `MLX-11`.
 
 | item | status | change | expected effect |
 |---|---|---|---|
-| `MRC-01` index-directed partition reads | implemented, not merged | open only the partitions the read index names | ~16 s -> under 1 s + spine load, per call |
-| `MRC-02` spine cache | proposed | reuse a loaded spine within a process | -2.6 s per call after the first |
+| `MRC-01` index-directed partition reads | merged | open only the partitions the read index names | ~16 s -> under 1 s + spine load, per call |
+| `MRC-02` spine cache | implemented, not merged | reuse a loaded spine within a process | -2.6 s per call after the first |
 | `MRC-03` column-projected partition opens | proposed | read only the obs/var columns a subset needs | lower cost per open |
 | `MRC-04` skip `X` for derived-only requests | proposed | do not load preprocess `X` when only derived layers are asked for | roughly halves HMM-stage calls |
 | `MRC-05` qualification | proposed | before/after on real stores, end to end | -- |
@@ -71,6 +71,18 @@ cached object; `materialize` must not mutate the spine (audit: it reads
 
 Tests: two calls on one spine load it once; touching the file reloads it; the
 LRU evicts; results equal uncached results.
+
+**As implemented.** `_resolve_spine` loads through `_cached_spine` (key:
+resolved path, size, mtime_ns; LRU of 4; lock-guarded; `SMFTOOLS_SPINE_CACHE=0`
+opts out; `clear_spine_cache()`). `load_spine` itself stays uncached: other
+modules load spines to modify and rewrite them. Audit: `materialize` never
+writes to the spine; the selection is a copy (`obs.loc[mask]`); the two places
+that handed `spine.uns` values to a result by reference (the per-partition
+path and the ragged path) now deep-copy them -- the test that edits a result's
+`uns` caught the ragged one. Tests: `test_spine_cache.py` (one load for repeat
+calls, reload after rewrite, LRU bound, cached == uncached, result edits do
+not reach the cached spine). Real store, second call on the same spine:
+preprocess 2.54 s -> 0.46 s, HMM 3.39 s -> 1.23 s; values identical.
 
 ### `MRC-03` — column-projected partition opens
 
