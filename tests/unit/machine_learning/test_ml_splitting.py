@@ -368,3 +368,58 @@ def test_leave_one_group_out_produces_one_locked_test_fold_per_group() -> None:
     ]
     assert all(fold.locked_roles == ("test",) for fold in folds)
     assert all({summary.split for summary in fold.summaries} == {"train", "test"} for fold in folds)
+
+
+# --- MLX-07: training-only groups ------------------------------------------
+
+
+def _logo(**extra):
+    return _plan({"strategy": "leave_one_group_out", "group_by": ["Sample"], **extra})
+
+
+# s1 and s2 hold both classes; s3 only class 1, s4 only class 0.
+_MIXED = {0: (0, 1, 0, 1), 1: (0, 1, 1, 0), 2: (1, 1, 1), 3: (0, 0)}
+
+
+def _roles_by_sample(fold, identity: pd.DataFrame) -> dict[str, set[str]]:
+    sample_of = dict(zip(identity["molecule_uid"], identity["Sample"], strict=True))
+    roles: dict[str, set[str]] = {}
+    for uid, role in fold.assignments.items():
+        roles.setdefault(role, set()).add(sample_of[uid])
+    return roles
+
+
+def test_single_class_groups_are_refused_by_default() -> None:
+    plan = _logo()
+    identity = _identity(n_groups=4, classes_by_group=_MIXED)
+    with pytest.raises(MLSplitPlanningError, match="cannot preserve all classes in test"):
+        plan_ml_splits(plan, "groups", _selection(plan, identity))
+
+
+def test_single_class_groups_train_in_every_fold_when_asked() -> None:
+    plan = _logo(single_class_groups="train")
+    identity = _identity(n_groups=4, classes_by_group=_MIXED)
+
+    folds = plan_ml_splits(plan, "groups", _selection(plan, identity))
+
+    assert [fold.fold_name for fold in folds] == ["holdout=s1", "holdout=s2"]
+    for fold in folds:
+        roles = _roles_by_sample(fold, identity)
+        assert roles["test"] in ({"s1"}, {"s2"})
+        assert {"s3", "s4"} <= roles["train"]
+
+
+def test_named_train_groups_never_hold_out() -> None:
+    plan = _logo(train_groups=["s3"])
+    identity = _identity(n_groups=3)
+
+    folds = plan_ml_splits(plan, "groups", _selection(plan, identity))
+
+    assert [fold.fold_name for fold in folds] == ["holdout=s1", "holdout=s2"]
+    assert all("s3" in _roles_by_sample(fold, identity)["train"] for fold in folds)
+
+
+def test_unknown_train_groups_are_refused() -> None:
+    plan = _logo(train_groups=["s9"])
+    with pytest.raises(MLSplitPlanningError, match="unknown groups"):
+        plan_ml_splits(plan, "groups", _selection(plan, _identity(n_groups=3)))

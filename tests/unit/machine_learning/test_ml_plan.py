@@ -323,15 +323,17 @@ def test_leave_one_group_out_rejects_role_lists_and_fractions() -> None:
 
     with pytest.raises(
         MLPlanValidationError,
-        match="cannot include explicit role groups or fractions",
+        match="takes only train_groups",
     ):
         parse_ml_plan(raw)
 
-    for field in ("train_groups", "validation_groups", "test_groups"):
+    # Train-only groups are allowed (MLX-07); validation/test lists are not.
+    for field in ("validation_groups", "test_groups"):
         split.pop(field)
     plan = parse_ml_plan(raw)
 
     assert plan.splits["sample_holdout"].strategy == "leave_one_group_out"
+    assert plan.splits["sample_holdout"].train_groups
 
 
 def test_resolved_serialization_and_hash_are_order_stable() -> None:
@@ -586,3 +588,26 @@ def test_coordinate_frame_declarations_are_validated(frame, scope, message):
 
     with pytest.raises(MLPlanValidationError, match=message):
         parse_ml_plan(_frame_document(frame, scope=scope))
+
+
+# --- MLX-07: training-only groups ------------------------------------------
+
+
+def test_single_class_groups_policy_is_validated_and_hash_neutral():
+    raw = _base_plan()
+    split = raw["splits"]["sample_holdout"]
+    for field in ("train_groups", "validation_groups", "test_groups"):
+        split.pop(field)
+    split["strategy"] = "leave_one_group_out"
+    default = parse_ml_plan(raw)
+    assert "single_class_groups" not in default.to_dict()["splits"]["sample_holdout"]
+
+    split["single_class_groups"] = "train"
+    plan = parse_ml_plan(raw)
+    assert plan.splits["sample_holdout"].single_class_groups == "train"
+    assert plan.plan_hash != default.plan_hash
+    assert parse_ml_plan(plan.to_dict()).plan_hash == plan.plan_hash
+
+    split["single_class_groups"] = "drop"
+    with pytest.raises(MLPlanValidationError, match="'refuse' or 'train'"):
+        parse_ml_plan(raw)
