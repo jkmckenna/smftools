@@ -187,3 +187,15 @@ def test_ambiguous_contexts_are_dropped_by_default():
     assert "NCT" not in set(kmer_rates(sites, flank=1, k=3)["kmer"])
     assert "NCT" in set(kmer_rates(sites, flank=1, k=3, drop_ambiguous=False)["kmer"])
     assert "C" in set(kmer_rates(sites, flank=1, k=1)["kmer"])  # the centre alone is unambiguous
+
+
+def test_kmer_relative_rates():
+    rates = kmer_rates(_planted(rate_with_t=0.8, rate_without=0.1), flank=1, k=3)
+    overall = rates["modified"].sum() / rates["observed"].sum()
+    assert np.allclose(rates["overall_rate"], overall)
+    act = rates.set_index("kmer").loc["ACT"]
+    assert act["log2_relative_rate"] == pytest.approx(np.log2(0.8 / overall))
+    assert act["log2_relative_low"] < act["log2_relative_rate"] < act["log2_relative_high"]
+    # The centre base alone is every site: relative rate 0.
+    centre = kmer_rates(_planted(), flank=1, k=1)
+    assert centre["log2_relative_rate"].iloc[0] == pytest.approx(0.0)
