@@ -8,7 +8,7 @@ writes one figure with one panel per group.
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import matplotlib
@@ -329,6 +329,146 @@ def plot_kmer_rates(
         ax.tick_params(axis="x", labelsize=7)
         ax.set_title(str(group), fontsize=8)
         ax.grid(axis="x", alpha=0.2)
+    if title:
+        fig.suptitle(title, fontsize=9)
+    _save(fig, output_path)
+
+
+_SCALES = {
+    "absolute": ("rate", "rate_low", "rate_high", "modification rate"),
+    "relative": (
+        "log2_relative_rate",
+        "log2_relative_low",
+        "log2_relative_high",
+        "log2(k-mer rate / group's overall rate)",
+    ),
+}
+
+
+def _series_values(rates: pd.DataFrame, groups: Sequence[str], scale: str) -> pd.DataFrame:
+    """Per k-mer centre and bar of one series.
+
+    One group: its value and Wilson interval. Several groups (e.g. doses): the
+    mean of their values, with the bar spanning their lowest to highest value.
+    """
+    value, low, high, _ = _SCALES[scale]
+    frame = rates.loc[rates["group"].isin(groups)]
+    if len(groups) == 1:
+        out = frame.set_index("kmer")[[value, low, high]]
+        out.columns = ["centre", "low", "high"]
+        return out
+    table = frame.pivot_table(index="kmer", columns="group", values=value)
+    return pd.DataFrame(
+        {"centre": table.mean(axis=1), "low": table.min(axis=1), "high": table.max(axis=1)}
+    )
+
+
+def plot_kmer_rate_series(
+    rates: pd.DataFrame,
+    output_path: str | Path,
+    *,
+    panels: Mapping[str, Sequence[Mapping]],
+    scale: str = "absolute",
+    max_kmers: int = 40,
+    sort: str = "mean",
+    title: str = "",
+    legend_title: str = "",
+) -> None:
+    """K-mer rates of several series per panel, in one k-mer order shared by all panels.
+
+    The x-range follows the points; bars wider than it are clipped at the edge.
+
+    ``panels`` maps a panel title to its series, each ``{"label", "groups",
+    "color"}``. A one-group series shows the group's rate and Wilson interval;
+    a several-group series shows their mean with a bar from lowest to highest
+    (e.g. an enzyme over its doses). ``scale`` is ``"absolute"`` (rate) or
+    ``"relative"`` (log2 of the rate over the group's overall rate, which puts
+    groups of different activity on one axis). Rows are the ``max_kmers``
+    most-observed k-mers, ordered by mean centre (``sort="mean"``) or by the
+    spread of centres between series (``"spread"``, largest at the top), and
+    labelled with their distinct-site count.
+    """
+    if scale not in _SCALES:
+        raise ValueError(f"scale must be one of {sorted(_SCALES)}")
+    if sort not in ("mean", "spread"):
+        raise ValueError("sort must be 'mean' or 'spread'")
+    series = [(panel, item) for panel, items in panels.items() for item in items]
+    shown = sorted({group for _, item in series for group in item["groups"]})
+    _groups(rates, shown)
+    subset = rates.loc[rates["group"].isin(shown)]
+    kmers = subset.groupby("kmer")["observed"].sum().nlargest(max_kmers).index
+    subset = subset.loc[subset["kmer"].isin(kmers)]
+    values = {
+        (panel, item["label"]): _series_values(subset, list(item["groups"]), scale).reindex(kmers)
+        for panel, item in series
+    }
+    centres = pd.DataFrame({key: frame["centre"] for key, frame in values.items()})
+    if sort == "mean":
+        order = centres.mean(axis=1).sort_values().index.tolist()
+    else:
+        order = (centres.max(axis=1) - centres.min(axis=1)).sort_values().index.tolist()
+    sites = subset.groupby("kmer")["n_sites"].max()
+    labels = [f"{kmer} ({sites[kmer]})" for kmer in order]
+
+    # Axis from the points, not the bars: a group with few calls has bars wide
+    # enough to flatten everyone else. Bars running past the edge are clipped.
+    finite = centres.to_numpy(dtype=float).ravel()
+    finite = finite[np.isfinite(finite)]
+    if scale == "absolute":
+        top = float(finite.max()) * 1.25 if finite.size else 1.0
+        limits = (0.0, min(1.0, max(top, 0.05)))
+    else:
+        bound = float(np.abs(finite).max()) * 1.3 if finite.size else 1.0
+        limits = (-max(bound, 0.5), max(bound, 0.5))
+
+    width = max(2.8 * len(panels), 4.5) + 0.8
+    fig, axes = plt.subplots(
+        1,
+        len(panels),
+        figsize=(width, 0.17 * len(order) + 2.0),
+        squeeze=False,
+        sharey=True,
+    )
+    y = np.arange(len(order))
+    for ax, (panel, items) in zip(axes[0], panels.items(), strict=True):
+        step = min(0.22, 0.8 / max(len(items), 1))
+        for index, item in enumerate(items):
+            frame = values[(panel, item["label"])].reindex(order)
+            offset = (index - (len(items) - 1) / 2) * step
+            ax.errorbar(
+                frame["centre"],
+                y + offset,
+                xerr=[
+                    (frame["centre"] - frame["low"]).clip(lower=0),
+                    (frame["high"] - frame["centre"]).clip(lower=0),
+                ],
+                fmt="o",
+                markersize=3,
+                color=item["color"],
+                ecolor=item["color"],
+                elinewidth=0.9,
+                capsize=0,
+                label=item["label"],
+            )
+        if scale == "relative":
+            ax.axvline(0, color="black", linewidth=0.6)
+        ax.set_xlim(*limits)
+        ax.set_xlabel(_SCALES[scale][3], fontsize=7)
+        ax.tick_params(axis="x", labelsize=7)
+        ax.set_title(str(panel), fontsize=8)
+        ax.grid(axis="x", alpha=0.2)
+        # Below the axis, clear of the points.
+        ax.legend(
+            fontsize=6,
+            title=legend_title or None,
+            title_fontsize=6,
+            loc="upper center",
+            bbox_to_anchor=(0.5, -0.16),
+            ncol=min(len(items), 3),
+            frameon=False,
+        )
+    axes[0][0].set_yticks(y, labels, fontsize=6, family="monospace")
+    axes[0][0].set_ylim(-0.6, len(order) - 0.4)
     if title:
         fig.suptitle(title, fontsize=9)
     _save(fig, output_path)

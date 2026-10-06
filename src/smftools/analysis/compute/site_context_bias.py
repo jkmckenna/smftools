@@ -196,7 +196,10 @@ def kmer_rates(
 ) -> pd.DataFrame:
     """Per group and centred ``k``-mer: calls, rate, Wilson interval, distinct sites.
 
-    ``drop_ambiguous`` drops k-mers containing a non-ACGT base.
+    ``drop_ambiguous`` drops k-mers containing a non-ACGT base. Relative columns
+    put groups with different overall activity on one scale:
+    ``log2_relative_rate = log2(rate / overall_rate)``, ``overall_rate`` being
+    the group's rate over every k-mer kept (its Wilson bounds scale alike).
     """
     if k < 1 or k % 2 == 0 or k > 2 * flank + 1:
         raise ValueError(f"k must be odd and between 1 and {2 * flank + 1}")
@@ -215,6 +218,15 @@ def kmer_rates(
     )
     table["rate"] = table["modified"] / table["observed"]
     table["rate_low"], table["rate_high"] = wilson_interval(table["modified"], table["observed"])
+    totals = table.groupby("group")[["modified", "observed"]].transform("sum")
+    table["overall_rate"] = totals["modified"] / totals["observed"]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        for column, source in (
+            ("log2_relative_rate", "rate"),
+            ("log2_relative_low", "rate_low"),
+            ("log2_relative_high", "rate_high"),
+        ):
+            table[column] = np.log2(table[source] / table["overall_rate"])
     return table
 
 

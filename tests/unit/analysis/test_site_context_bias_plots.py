@@ -108,3 +108,51 @@ def test_logo_grid_layout(sites, tmp_path):
         plot_enrichment_logo(table, tmp_path / "x.png", layout=layout, row_labels=["a"])
     with pytest.raises(KeyError, match="groups not in table"):
         plot_enrichment_logo(table, tmp_path / "x.png", layout=[["missing"]])
+
+
+def test_kmer_series_single_and_ranged(sites):
+    from smftools.analysis.plot.site_context_bias import _series_values
+
+    rates = kmer_rates(sites, flank=3, k=3)
+    one = _series_values(rates, ["enzyme_a"], "absolute")
+    a = rates[rates["group"] == "enzyme_a"].set_index("kmer")
+    pd.testing.assert_series_equal(one["low"], a["rate_low"], check_names=False)
+    both = _series_values(rates, ["enzyme_a", "enzyme_b"], "relative")
+    table = rates.pivot_table(index="kmer", columns="group", values="log2_relative_rate")
+    kmer = both.index[0]
+    assert both.loc[kmer, "low"] == pytest.approx(table.loc[kmer, ["enzyme_a", "enzyme_b"]].min())
+    assert both.loc[kmer, "high"] == pytest.approx(table.loc[kmer, ["enzyme_a", "enzyme_b"]].max())
+
+
+def test_kmer_series_figures(sites, tmp_path):
+    from smftools.analysis.plot.site_context_bias import plot_kmer_rate_series
+
+    rates = kmer_rates(sites, flank=3, k=3)
+    by_enzyme = {
+        "A": [{"label": "low", "groups": ["enzyme_a"], "color": "#90CAF9"}],
+        "B": [
+            {"label": "low", "groups": ["enzyme_b"], "color": "#A5D6A7"},
+            {"label": "high", "groups": ["enzyme_c"], "color": "#2E7D32"},
+        ],
+    }
+    merged = {
+        "all": [
+            {"label": "A", "groups": ["enzyme_a"], "color": "#1565C0"},
+            {"label": "B", "groups": ["enzyme_b", "enzyme_c"], "color": "#2E7D32"},
+        ]
+    }
+    for scale in ("absolute", "relative"):
+        plot_kmer_rate_series(rates, tmp_path / f"d_{scale}.png", panels=by_enzyme, scale=scale)
+        plot_kmer_rate_series(
+            rates, tmp_path / f"m_{scale}.png", panels=merged, scale=scale, sort="spread"
+        )
+        _written(tmp_path / f"d_{scale}.png")
+        _written(tmp_path / f"m_{scale}.png")
+    with pytest.raises(ValueError, match="scale"):
+        plot_kmer_rate_series(rates, tmp_path / "x.png", panels=merged, scale="log")
+    with pytest.raises(KeyError):
+        plot_kmer_rate_series(
+            rates,
+            tmp_path / "x.png",
+            panels={"p": [{"label": "x", "groups": ["missing"], "color": "k"}]},
+        )
