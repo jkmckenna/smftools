@@ -306,3 +306,45 @@ def test_test_role_is_predicted_in_batches_not_materialized(
     for run, fold in zip(runs, bound.folds, strict=True):
         expected = [entry.molecule_uid for entry in fold.dataset.plan.read_order("test")]
         assert list(run.predictions.molecule_uids) == expected
+
+
+# --- MLX-02: position masks ------------------------------------------------
+
+
+def _masked_plan(include, exclude=()):
+    document = _plan().to_dict()
+    document["datasets"]["reads"]["positions"] = {
+        "include": [list(window) for window in include],
+        "exclude": [list(window) for window in exclude],
+    }
+    return parse_ml_plan(document)
+
+
+def test_masked_dataset_holds_only_kept_positions(project: Path) -> None:
+    policy = PartitionReadPolicy(batch_size=8)
+    full = bind_ml_job(_plan(), "train", project_dir=project, policy=policy).folds[0].dataset
+    masked_plan = _masked_plan([(0, N_POSITIONS)], exclude=[(10, 30)])
+    masked = bind_ml_job(masked_plan, "train", project_dir=project, policy=policy).folds[0].dataset
+
+    kept = list(range(0, 10)) + list(range(30, N_POSITIONS))
+    assert list(masked.plan.coordinates) == kept
+    assert masked.plan.dataset.input_schema.n_positions == len(kept)
+    for full_batch, masked_batch in zip(
+        full.iter_batches("train"), masked.iter_batches("train"), strict=True
+    ):
+        np.testing.assert_array_equal(masked_batch.values, full_batch.values[:, kept])
+        np.testing.assert_array_equal(masked_batch.observed_mask, full_batch.observed_mask[:, kept])
+
+
+def test_trained_model_sees_only_kept_positions(project: Path) -> None:
+    kept = [*range(0, 5), *range(35, N_POSITIONS)]
+    runs = run_bound_train_job(
+        bind_ml_job(_masked_plan([(0, 5), (35, N_POSITIONS)]), "train", project_dir=project)
+    )
+    for run in runs:
+        transform = run.training.model.transform
+        assert list(transform.coordinates) == kept
+        positions = {int(name.rsplit("@", 1)[1]) for name in transform.feature_names}
+        assert positions == set(kept)  # no signal or indicator column for a masked position
+        metrics = {m.name: m.value for m in run.evaluation.metrics if m.modality is None}
+        assert metrics["average_precision"] > 0.9

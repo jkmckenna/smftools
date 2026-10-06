@@ -171,6 +171,40 @@ LABEL_TABLE_KEYS = frozenset(
 
 
 @dataclass(frozen=True)
+class PositionMask:
+    """Positions a dataset keeps: ``include`` windows minus ``exclude`` (`MLX-02`).
+
+    Windows are half-open ``[start, end)`` in the dataset reference's
+    coordinates. Only kept positions become features, so a masked position
+    contributes no signal and no mask indicator.
+    """
+
+    include: tuple[tuple[int, int], ...]
+    exclude: tuple[tuple[int, int], ...] = ()
+
+    def windows(self) -> tuple[tuple[int, int], ...]:
+        """Disjoint, sorted kept windows."""
+        kept: list[tuple[int, int]] = []
+        for start, end in sorted(self.include):
+            if kept and start <= kept[-1][1]:
+                kept[-1] = (kept[-1][0], max(kept[-1][1], end))
+            else:
+                kept.append((start, end))
+        for cut_start, cut_end in self.exclude:
+            pieces = []
+            for start, end in kept:
+                if cut_end <= start or cut_start >= end:
+                    pieces.append((start, end))
+                    continue
+                if start < cut_start:
+                    pieces.append((start, cut_start))
+                if cut_end < end:
+                    pieces.append((cut_end, end))
+            kept = pieces
+        return tuple(kept)
+
+
+@dataclass(frozen=True)
 class DatasetSpec:
     """Named selection and ordered input-channel declaration."""
 
@@ -182,6 +216,7 @@ class DatasetSpec:
     references: tuple[str, ...] = ()
     filters: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
     labels: LabelSpec | None = None
+    positions: PositionMask | None = None
 
 
 @dataclass(frozen=True)
@@ -271,6 +306,9 @@ class MLPlan:
         payload = _thaw(self)
         payload["scope"]["set"] = payload["scope"].pop("set_name")
         for dataset in payload["datasets"].values():
+            if dataset.get("positions") is None:
+                # Unset: emitting it would change the hash of every earlier plan.
+                dataset.pop("positions", None)
             labels = dataset.get("labels")
             if labels is not None and labels.get("table") is None:
                 # Unset for obs labels: emitting them would change the hash of
@@ -498,6 +536,7 @@ def _parse_dataset(raw: Any, path: str) -> DatasetSpec:
             "references",
             "filters",
             "labels",
+            "positions",
         },
         required={"modalities"},
     )
@@ -571,6 +610,11 @@ def _parse_dataset(raw: Any, path: str) -> DatasetSpec:
     labels = (
         _parse_label(value["labels"], f"{path}.labels") if value.get("labels") is not None else None
     )
+    positions = None
+    if value.get("positions") is not None:
+        if "start" in filters or "end" in filters:
+            _fail(f"{path}.positions", "cannot be combined with filters.start/end")
+        positions = _parse_positions(value["positions"], f"{path}.positions")
     return DatasetSpec(
         modalities=modalities,
         channels=channels,
@@ -580,7 +624,45 @@ def _parse_dataset(raw: Any, path: str) -> DatasetSpec:
         references=_string_tuple(value.get("references"), f"{path}.references"),
         filters=filters,
         labels=labels,
+        positions=positions,
     )
+
+
+def _parse_windows(raw: Any, path: str, *, required: bool) -> tuple[tuple[int, int], ...]:
+    if raw is None:
+        if required:
+            _fail(path, "is required")
+        return ()
+    if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes)):
+        _fail(path, "must be a list of [start, end) windows")
+    windows = []
+    for index, window in enumerate(raw):
+        if (
+            not isinstance(window, Sequence)
+            or isinstance(window, (str, bytes))
+            or len(window) != 2
+            or any(isinstance(item, bool) or not isinstance(item, int) for item in window)
+        ):
+            _fail(f"{path}[{index}]", "must be an integer [start, end) pair")
+        start, end = window
+        if start < 0 or end <= start:
+            _fail(f"{path}[{index}]", "must satisfy 0 <= start < end")
+        windows.append((int(start), int(end)))
+    if required and not windows:
+        _fail(path, "must contain at least one window")
+    return tuple(sorted(windows))
+
+
+def _parse_positions(raw: Any, path: str) -> PositionMask:
+    value = _as_mapping(raw, path)
+    _check_keys(value, path=path, allowed={"include", "exclude"}, required={"include"})
+    mask = PositionMask(
+        include=_parse_windows(value["include"], f"{path}.include", required=True),
+        exclude=_parse_windows(value.get("exclude"), f"{path}.exclude", required=False),
+    )
+    if not mask.windows():
+        _fail(path, "excludes every included position")
+    return mask
 
 
 def _parse_split(raw: Any, path: str) -> SplitSpec:
