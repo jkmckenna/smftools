@@ -1372,6 +1372,10 @@ class ExperimentConfig:
     hmm_init_transition_probs: List[list] = field(default_factory=lambda: [[0.9, 0.1], [0.1, 0.9]])
     hmm_init_start_probs: List[float] = field(default_factory=lambda: [0.5, 0.5])
     hmm_eps: float = 1e-8
+    # Sequence-context QC of a stage's calls (`SCQ`): plot/QC only, not hashed.
+    stage_context_qc: bool = True
+    stage_context_qc_flank: int = 3
+    stage_context_qc_kmers: List[int] = field(default_factory=lambda: [1, 3])
     # Sequence-context-aware emissions (`HCE`): none | table | learned.
     hmm_context_model: str = "none"
     hmm_context_k: int = 3
@@ -2744,6 +2748,11 @@ class ExperimentConfig:
             ),
             hmm_init_start_probs=merged.get("hmm_init_start_probs", [0.5, 0.5]),
             hmm_eps=merged.get("hmm_eps", 1e-8),
+            stage_context_qc=_parse_bool(merged.get("stage_context_qc", True)),
+            stage_context_qc_flank=int(merged.get("stage_context_qc_flank", 3) or 3),
+            stage_context_qc_kmers=[
+                int(k) for k in _parse_list(merged.get("stage_context_qc_kmers", [1, 3]))
+            ],
             hmm_context_model=str(merged.get("hmm_context_model", "none") or "none"),
             hmm_context_k=int(merged.get("hmm_context_k", 3)),
             hmm_context_states=str(merged.get("hmm_context_states", "modified")),
