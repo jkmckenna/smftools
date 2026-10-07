@@ -94,3 +94,19 @@ def configure_worker_threads(n_threads: int = 1) -> None:
     torch = sys.modules.get("torch")
     if torch is not None:
         torch.set_num_threads(n_threads)
+
+    # Dask's threaded scheduler keeps one module-level thread pool. A forked
+    # worker (the Linux default outside the CLI, e.g. under pytest) inherits
+    # that pool object but not its threads, so the first compute -- anndata's
+    # lazy zarr reads in ``materialize`` -- waits forever. A single-threaded
+    # worker gains nothing from the pool: run dask synchronously. The
+    # environment variable covers a later import; an already-imported dask
+    # (the fork case) is reconfigured directly.
+    if n_threads == 1:
+        os.environ["DASK_SCHEDULER"] = "synchronous"
+        dask = sys.modules.get("dask")
+        if dask is not None:
+            try:
+                dask.config.set(scheduler="synchronous")
+            except Exception:
+                pass

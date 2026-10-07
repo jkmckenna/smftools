@@ -147,7 +147,13 @@ def count_stage_sites(
             )
         )
     if workers > 1 and len(jobs) > 1:
-        with ProcessPoolExecutor(max_workers=min(workers, len(jobs))) as pool:
+        from smftools.parallel_utils import configure_worker_threads
+
+        with ProcessPoolExecutor(
+            max_workers=min(workers, len(jobs)),
+            initializer=configure_worker_threads,
+            initargs=(1,),
+        ) as pool:
             frames = list(pool.map(_tally_barcode, *zip(*jobs)))
     else:
         frames = [_tally_barcode(*job) for job in jobs]

@@ -146,7 +146,13 @@ def backfill_context_qc(
         records = pd.read_parquet(generation / "task_catalog.parquet").to_dict("records")
         jobs = [(str(spine_path), str(generation), item, cfg) for item in records]
         if workers > 1 and len(jobs) > 1:
-            with ProcessPoolExecutor(max_workers=min(workers, len(jobs))) as pool:
+            from smftools.parallel_utils import configure_worker_threads
+
+            with ProcessPoolExecutor(
+                max_workers=min(workers, len(jobs)),
+                initializer=configure_worker_threads,
+                initargs=(1,),
+            ) as pool:
                 partials = list(pool.map(_hmm_task_partial, *zip(*jobs)))
         else:
             partials = [_hmm_task_partial(*job) for job in jobs]
