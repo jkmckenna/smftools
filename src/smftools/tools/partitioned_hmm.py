@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import uuid
 from pathlib import Path
@@ -126,23 +127,81 @@ def _configured_model_specs(cfg) -> list[HMMModelSpec]:
                 else "single"
             )
         )
-        if context_model(cfg) != "none" and not multichannel:
-            if architecture != "single":
-                raise ValueError(
-                    "hmm_context_model needs the single-channel HMM; "
-                    "it does not combine with hmm_distance_aware"
-                )
-            architecture = "context_single"
-        specs.append(
-            HMMModelSpec(
-                name=str(task.name),
-                label=label,
-                signals=tuple(map(str, task.signals)),
-                feature_groups=tuple(map(str, task.feature_groups)),
-                architecture=architecture,
-            )
+        base = HMMModelSpec(
+            name=str(task.name),
+            label=label,
+            signals=tuple(map(str, task.signals)),
+            feature_groups=tuple(map(str, task.feature_groups)),
+            architecture=_context_architecture(cfg, architecture, multichannel),
+            base_label=label,
         )
+        specs.append(base)
+        for variant, settings in hmm_variants(cfg).items():
+            if multichannel:
+                continue  # context emissions are single-channel
+            overrides = tuple(
+                (key, tuple(value) if isinstance(value, list) else value)
+                for key, value in sorted(settings.items())
+            )
+            variant_spec = HMMModelSpec(
+                name=f"{base.name}_{variant}",
+                label=f"{label}_{variant}",
+                signals=base.signals,
+                feature_groups=base.feature_groups,
+                architecture="",
+                variant=variant,
+                base_label=label,
+                overrides=overrides,
+            )
+            specs.append(
+                dataclasses.replace(
+                    variant_spec,
+                    architecture=_context_architecture(
+                        variant_spec.config(cfg), architecture, multichannel
+                    ),
+                )
+            )
     return specs
+
+
+VARIANT_SETTINGS_PREFIX = "hmm_context_"
+
+
+def hmm_variants(cfg) -> dict[str, dict]:
+    """Configured emission variants (`HCE-06`), validated: name -> hmm_context_* settings."""
+    variants = getattr(cfg, "hmm_variants", None) or {}
+    feature_sets = normalize_hmm_feature_sets(getattr(cfg, "hmm_feature_sets", None))
+    # A variant's layers are <label>_<variant>_<feature>: a name that is the
+    # leading word of a feature layer would make layers ambiguous.
+    reserved = {"all", "merged"} | {
+        str(feature).split("_")[0]
+        for group in feature_sets.values()
+        for feature in dict(group.get("features", {}) or {})
+    }
+    for name, settings in variants.items():
+        if not str(name).isidentifier() or str(name).startswith("_"):
+            raise ValueError(f"hmm variant name {name!r} must be a plain identifier")
+        if str(name) in reserved:
+            raise ValueError(f"hmm variant name {name!r} clashes with HMM feature layer names")
+        unknown = [key for key in (settings or {}) if not key.startswith(VARIANT_SETTINGS_PREFIX)]
+        if unknown:
+            raise ValueError(
+                f"hmm variant {name!r} may only set {VARIANT_SETTINGS_PREFIX}* settings, "
+                f"not {unknown}"
+            )
+    return dict(variants)
+
+
+def _context_architecture(cfg, architecture: str, multichannel: bool) -> str:
+    """The single-channel architecture, or the context model when one is configured."""
+    if context_model(cfg) == "none" or multichannel:
+        return architecture
+    if architecture != "single":
+        raise ValueError(
+            "hmm_context_model needs the single-channel HMM; "
+            "it does not combine with hmm_distance_aware"
+        )
+    return "context_single"
 
 
 def context_model(cfg) -> str:
@@ -223,6 +282,28 @@ def _prepare_model_input(adata, reference: str, spec: HMMModelSpec, cfg):
         signal_mask = _resolve_pos_mask_for_methbase(adata, reference, signal)
         position_mask = signal_mask if position_mask is None else position_mask | signal_mask
     return _mask_uncovered_model_input(adata, values, coordinates), coordinates, position_mask
+
+
+# Feature layers summarised per molecule (`HCE-06`): the fraction of the read's
+# own span in the feature, stored as `<layer>_fraction`.
+FRACTION_LAYER_SUFFIXES = ("_all_accessible_features", "_all_footprint_features")
+
+
+def molecule_fractions(adata, layers, core_mask) -> dict[str, np.ndarray]:
+    """Per read: the fraction of its span (finite positions) inside each feature layer."""
+    import warnings
+
+    fractions = {}
+    for name in layers:
+        if not str(name).endswith(FRACTION_LAYER_SUFFIXES) or name not in adata.layers:
+            continue
+        values = np.asarray(adata.layers[name], dtype=float)[:, core_mask]
+        with warnings.catch_warnings():  # a read with no positions in the core: NaN
+            warnings.simplefilter("ignore", RuntimeWarning)
+            fractions[f"{name}_fraction"] = np.nanmean(
+                np.where(np.isfinite(values), values > 0, np.nan), axis=1
+            )
+    return fractions
 
 
 def _mask_uncovered_model_input(adata, values: np.ndarray, coordinates: np.ndarray) -> np.ndarray:
@@ -373,9 +454,11 @@ def execute_hmm_fit_task(
             "reason": str(exc),
         }
 
-    trainer = HMMTrainer(cfg=cfg, models_dir=Path(models_dir))
+    # A variant fits under its own settings (`HCE-06`); the default under cfg.
+    variant_cfg = plan.model_spec.config(cfg)
+    trainer = HMMTrainer(cfg=variant_cfg, models_dir=Path(models_dir))
     if plan.model_spec.architecture == "context_single":
-        trainer.context_setup = context_setup(adata, plan.reference, cfg)
+        trainer.context_setup = context_setup(adata, plan.reference, variant_cfg)
     device = resolve_torch_device(
         getattr(cfg, "hmm_device", None) or getattr(cfg, "device", "auto")
     )
@@ -489,6 +572,7 @@ def execute_hmm_task(
     positions = np.asarray(adata.var_names, dtype=np.int64)
     core_mask = (positions >= task.core_start) & (positions < task.core_end)
     core_obs = adata.obs.copy()
+    core_obs = core_obs.assign(**molecule_fractions(adata, appended_layers, core_mask))
     core_var = adata.var.loc[core_mask].copy()
     n_positions = int(core_mask.sum())
 
@@ -645,7 +729,7 @@ def _feature_run_lengths(row: np.ndarray) -> np.ndarray:
     return ends - starts
 
 
-def _plot_feature_count_size_histograms(records, output_dir: Path, layout) -> None:
+def _plot_feature_count_size_histograms(records, output_dir: Path, layout, specs=()) -> None:
     """Per-barcode histograms of feature count-per-read and feature size-per-
     read, for every footprint/accessible feature layer -- both the
     HMM-decoded (unmerged) and post-merge (``_apply_merges``) variants.
@@ -688,15 +772,24 @@ def _plot_feature_count_size_histograms(records, output_dir: Path, layout) -> No
                     bucket["size"][value] = bucket["size"].get(value, 0) + 1
     if not histograms:
         return
-    windows: dict[tuple[str, int, int, str], dict[str, dict[str, dict[int, int]]]] = {}
+    # One figure per feature (default layer); emission variants overlay it (`HCE-06`).
+    variant_of = {
+        layer: (base, variant)
+        for base, members in variant_layer_groups({key[3] for key in histograms}, specs)
+        for variant, layer in members
+    }
+    windows: dict[tuple[str, int, int, str], dict[str, dict[str, dict[str, dict[int, int]]]]] = {}
     for (reference, core_start, core_end, layer, barcode), values in histograms.items():
-        windows.setdefault((reference, core_start, core_end, layer), {})[barcode] = values
+        base, variant = variant_of.get(layer, (layer, ""))
+        by_variant = windows.setdefault((reference, core_start, core_end, base), {})
+        by_variant.setdefault(variant, {})[barcode] = values
     metrics = (
         ("count", "Features per read", "hmm_feature_count_histogram"),
         ("size", "Feature size (positions)", "hmm_feature_size_histogram"),
     )
-    for (reference, core_start, core_end, layer), by_barcode in sorted(windows.items()):
-        barcodes = sorted(by_barcode)
+    for (reference, core_start, core_end, layer), by_variant in sorted(windows.items()):
+        variants = list(by_variant)  # default first (variant_layer_groups order)
+        barcodes = sorted({barcode for values in by_variant.values() for barcode in values})
         n_cols = min(4, len(barcodes))
         n_rows = -(-len(barcodes) // n_cols)  # ceil division
 
@@ -706,16 +799,64 @@ def _plot_feature_count_size_histograms(records, output_dir: Path, layout) -> No
             )
             for i, barcode in enumerate(barcodes):
                 axis = axes[i // n_cols][i % n_cols]
-                counts = by_barcode[barcode][metric]
-                if counts:
-                    values = np.asarray(sorted(counts), dtype=int)
-                    weights = np.asarray([counts[value] for value in values], dtype=int)
-                    bins = np.arange(values.min(), values.max() + 2) - 0.5
-                    axis.hist(values, bins=bins, weights=weights, color="tab:blue")
+                present = [
+                    (variant, by_variant[variant][barcode][metric])
+                    for variant in variants
+                    if barcode in by_variant[variant] and by_variant[variant][barcode][metric]
+                ]
+                if present:
+                    low = min(min(counts) for _, counts in present)
+                    high = max(max(counts) for _, counts in present)
+                    bins = np.arange(low, high + 2) - 0.5  # shared across variants
+                    for index, (variant, counts) in enumerate(present):
+                        values = np.asarray(sorted(counts), dtype=int)
+                        weights = np.asarray([counts[value] for value in values], dtype=int)
+                        color = VARIANT_COLORS[variants.index(variant) % len(VARIANT_COLORS)]
+                        if len(variants) == 1:
+                            axis.hist(values, bins=bins, weights=weights, color="tab:blue")
+                            continue
+                        # Translucent fill, solid outline: overlaps stay legible.
+                        axis.hist(
+                            values,
+                            bins=bins,
+                            weights=weights,
+                            color=color,
+                            alpha=0.3,
+                            histtype="stepfilled",
+                            label=_variant_label(variant),
+                        )
+                        axis.hist(
+                            values,
+                            bins=bins,
+                            weights=weights,
+                            color=color,
+                            histtype="step",
+                            linewidth=1.1,
+                        )
                 axis.set_title(str(barcode), fontsize=8)
                 axis.tick_params(labelsize=6)
             for i in range(len(barcodes), n_rows * n_cols):
                 axes[i // n_cols][i % n_cols].set_visible(False)
+            if len(variants) > 1:
+                from matplotlib.patches import Patch
+
+                handles = [
+                    Patch(
+                        facecolor=VARIANT_COLORS[i % len(VARIANT_COLORS)],
+                        edgecolor=VARIANT_COLORS[i % len(VARIANT_COLORS)],
+                        alpha=0.5,
+                        label=_variant_label(variant),
+                    )
+                    for i, variant in enumerate(variants)
+                ]
+                figure.legend(
+                    handles=handles,
+                    loc="center left",
+                    bbox_to_anchor=(1.0, 0.5),
+                    fontsize=7,
+                    title="HMM",
+                    frameon=False,
+                )
             figure.suptitle(f"{reference}:{core_start}-{core_end} [{layer}]", fontsize=10)
             figure.supxlabel(xlabel, fontsize=8)
             figure.tight_layout(rect=(0, 0, 1, 0.95))
@@ -723,7 +864,7 @@ def _plot_feature_count_size_histograms(records, output_dir: Path, layout) -> No
                 f"{_component(reference)}__{core_start}_{core_end}__{_component(layer)}"
                 f"__feature_{metric}_hist.png"
             )
-            figure.savefig(path, dpi=160)
+            figure.savefig(path, dpi=160, bbox_inches="tight")
             plt.close(figure)
             register_plot_artifact(
                 layout,
@@ -735,6 +876,149 @@ def _plot_feature_count_size_histograms(records, output_dir: Path, layout) -> No
                 core_start=int(core_start),
                 core_end=int(core_end),
             )
+
+
+def _read_task_obs(path: Path, columns) -> pd.DataFrame:
+    """Only the obs of a task store (its layers are not read)."""
+    import anndata as ad
+    import zarr
+
+    obs = ad.io.read_elem(zarr.open_group(str(path), mode="r")["obs"])
+    return obs[[column for column in columns if column in obs]]
+
+
+def _plot_molecule_fractions(records, output_dir: Path, layout, specs=()) -> None:
+    """Per barcode: each read's fraction in each feature, emission variants side by side.
+
+    The HMM counterpart of preprocess's per-read modification-rate plots
+    (`HCE-06`): one figure per reference window, a panel per feature
+    (accessible, footprint), at each barcode one violin per variant -- its
+    own colour, translucent with a solid edge and median -- over the reads'
+    jittered values.
+    """
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import Patch
+
+    rows = []
+    for record in records:
+        names = [
+            f"{layer}_fraction"
+            for layer in record.get("layers", [])
+            if str(layer).endswith(FRACTION_LAYER_SUFFIXES)
+        ]
+        if not names:
+            continue
+        obs = _read_task_obs(output_dir / record["group_path"], names)
+        for name in obs.columns:
+            values = pd.to_numeric(obs[name], errors="coerce").dropna().to_numpy()
+            rows.append(
+                (
+                    str(record["reference"]),
+                    int(record["core_start"]),
+                    int(record["core_end"]),
+                    str(record["barcode"]),
+                    name[: -len("_fraction")],
+                    values,
+                )
+            )
+    if not rows:
+        return
+    variant_of = {
+        layer: (base, variant)
+        for base, members in variant_layer_groups({row[4] for row in rows}, specs)
+        for variant, layer in members
+    }
+    windows: dict = {}
+    for reference, core_start, core_end, barcode, layer, values in rows:
+        base, variant = variant_of.get(layer, (layer, ""))
+        cell = windows.setdefault((reference, core_start, core_end), {}).setdefault(base, {})
+        cell.setdefault(variant, {}).setdefault(barcode, []).append(values)
+    rng = np.random.default_rng(0)
+    for (reference, core_start, core_end), by_feature in sorted(windows.items()):
+        features = sorted(by_feature)
+        variants = list(dict.fromkeys(v for feature in features for v in by_feature[feature]))
+        barcodes = sorted(
+            {b for feature in features for v in by_feature[feature].values() for b in v}
+        )
+        figure, axes = plt.subplots(
+            len(features),
+            1,
+            figsize=(max(10, 0.6 * len(barcodes) * max(1, len(variants))), 3.6 * len(features)),
+            squeeze=False,
+        )
+        width = 0.8 / max(1, len(variants))
+        for axis, feature in zip(axes[:, 0], features, strict=True):
+            for v_index, variant in enumerate(variants):
+                color = VARIANT_COLORS[v_index % len(VARIANT_COLORS)]
+                offset = (v_index - (len(variants) - 1) / 2) * width
+                for b_index, barcode in enumerate(barcodes, start=1):
+                    parts = by_feature[feature].get(variant, {}).get(barcode)
+                    if not parts:
+                        continue
+                    values = np.concatenate(parts)
+                    position = b_index + offset
+                    if values.size >= 2 and np.std(values) > 0:
+                        body = axis.violinplot(
+                            [values],
+                            positions=[position],
+                            widths=width * 0.95,
+                            showmedians=True,
+                            showextrema=False,
+                        )
+                        for patch in body["bodies"]:
+                            patch.set_facecolor(color)
+                            patch.set_edgecolor(color)
+                            patch.set_alpha(0.35)
+                            patch.set_linewidth(1.0)
+                        body["cmedians"].set_color(color)
+                        body["cmedians"].set_linewidth(1.6)
+                    shown = (
+                        values if values.size <= 2000 else rng.choice(values, 2000, replace=False)
+                    )
+                    axis.scatter(
+                        position + rng.uniform(-width / 4, width / 4, shown.size),
+                        shown,
+                        s=4,
+                        alpha=0.35,
+                        color=color,
+                        edgecolors="none",
+                        rasterized=True,
+                    )
+            axis.set_xticks(range(1, len(barcodes) + 1), barcodes, rotation=90, fontsize=6)
+            axis.set_xlim(0.4, len(barcodes) + 0.6)
+            axis.set_ylim(-0.02, 1.02)
+            axis.set_ylabel(f"{feature}\nfraction of read", fontsize=8)
+            axis.grid(axis="y", alpha=0.2)
+        if len(variants) > 1:
+            handles = [
+                Patch(
+                    facecolor=VARIANT_COLORS[i % len(VARIANT_COLORS)],
+                    alpha=0.5,
+                    edgecolor=VARIANT_COLORS[i % len(VARIANT_COLORS)],
+                    label=_variant_label(v),
+                )
+                for i, v in enumerate(variants)
+            ]
+            figure.legend(handles=handles, loc="upper right", fontsize=8, title="HMM")
+        figure.suptitle(
+            f"{reference}:{core_start}-{core_end} per-molecule feature fractions", fontsize=10
+        )
+        figure.tight_layout(rect=(0, 0, 1, 0.96))
+        path = layout.categories["features"] / (
+            f"{_component(reference)}__{core_start}_{core_end}__molecule_fractions.png"
+        )
+        figure.savefig(path, dpi=150)
+        plt.close(figure)
+        register_plot_artifact(
+            layout,
+            path,
+            stage="hmm",
+            category="features",
+            plot_type="hmm_molecule_fractions",
+            reference=str(reference),
+            core_start=int(core_start),
+            core_end=int(core_end),
+        )
 
 
 def _grouped_bar_plot(axis, group_labels, series: dict, *, ylabel: str, title: str) -> None:
@@ -980,6 +1264,39 @@ def _plot_hmm_fit_history(models_dir: Path, layout) -> None:
     )
 
 
+VARIANT_COLORS = ("#1565C0", "#2E7D32", "#EF6C00", "#6A1B9A", "#C62828", "#00838F")
+
+
+def variant_layer_groups(layers, specs) -> list[tuple[str, list[tuple[str, str]]]]:
+    """Layers grouped by the default layer they correspond to (`HCE-06`).
+
+    ``[(base layer, [(variant, layer), ...]), ...]``: the default variant ("")
+    first, then variants in configured order; a layer no spec claims is its
+    own group.
+    """
+    variant_order = {"": 0}
+    for spec in specs:
+        variant_order.setdefault(spec.variant, len(variant_order))
+    prefixes = sorted(specs, key=lambda spec: -len(spec.label))
+    groups: dict[str, list[tuple[str, str]]] = {}
+    for layer in sorted(layers):
+        for spec in prefixes:
+            if layer.startswith(f"{spec.label}_"):
+                base = f"{spec.base_label or spec.label}{layer[len(spec.label) :]}"
+                groups.setdefault(base, []).append((spec.variant, layer))
+                break
+        else:
+            groups.setdefault(layer, []).append(("", layer))
+    return [
+        (base, sorted(members, key=lambda member: variant_order.get(member[0], 99)))
+        for base, members in sorted(groups.items())
+    ]
+
+
+def _variant_label(variant: str) -> str:
+    return variant or "default"
+
+
 def _matching_hmm_layers(records, roots, *, lengths: bool = False) -> list[str]:
     """Resolve configured feature roots against layers actually written by the tasks."""
     available = {str(layer) for record in records for layer in record.get("layers", [])}
@@ -1143,11 +1460,16 @@ def _plot_feature_clustermaps(
             ),
             cfg=cfg,
         )
-        for layer in feature_layers:
+        specs = _configured_model_specs(cfg)
+        # One figure per feature: each emission variant's layer is a further
+        # column in the same read order (`HCE-06`).
+        for _, members in variant_layer_groups(feature_layers, specs):
+            layer, extras = members[0][1], [name for _, name in members[1:]]
             plot_dir = base_dir / "features" / _component(layer)
             combined_hmm_raw_clustermap(
                 adata,
                 hmm_feature_layer=layer,
+                extra_hmm_layers=extras,
                 cmap_hmm=_resolve_feature_colormap(
                     layer, cfg, str(getattr(cfg, "clustermap_cmap_hmm", "coolwarm"))
                 ),
@@ -1161,11 +1483,13 @@ def _plot_feature_clustermaps(
                     plot_type="hmm_accessible_feature_clustermap",
                     layer=layer,
                 )
-        for layer in length_layers:
+        for _, members in variant_layer_groups(length_layers, specs):
+            layer, extras = members[0][1], [name for _, name in members[1:]]
             plot_dir = base_dir / "lengths" / _component(layer)
             combined_hmm_length_clustermap(
                 adata,
                 length_layer=layer,
+                extra_length_layers=extras,
                 cmap_lengths=_resolve_feature_colormap(layer, cfg, "Greens"),
                 length_feature_ranges=_resolve_length_feature_ranges(layer, cfg, "Greens"),
                 save_path=plot_dir,
@@ -1396,7 +1720,10 @@ def execute_partitioned_hmm(spine_path, cfg, output_dir) -> dict[str, Path]:
     layout = prepare_analysis_plot_layout(output_dir, stage="hmm", source_spine=spine_path)
     pd.DataFrame(columns=PLOT_CATALOG_COLUMNS).to_parquet(layout.catalog, index=False)
     _plot_feature_fractions(records, output_dir, layout)
-    _plot_feature_count_size_histograms(records, output_dir, layout)
+    _plot_feature_count_size_histograms(
+        records, output_dir, layout, specs=_configured_model_specs(cfg)
+    )
+    _plot_molecule_fractions(records, output_dir, layout, specs=_configured_model_specs(cfg))
     _plot_hmm_parameters_across_barcodes(records, models_dir, cfg, layout)
     _plot_hmm_fit_history(models_dir, layout)
 

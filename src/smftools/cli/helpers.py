@@ -355,12 +355,24 @@ def _with_hmm_context_identity(values: dict[str, Any]) -> dict[str, Any]:
     weight table is named by path, so its content hash joins the identity: an
     edited table invalidates the stage (cf. `F72`).
     """
+    from ..hmm.model_artifacts import file_sha256_or_missing
+
+    variants = values.get("hmm_variants")
+    if variants is None or _is_unset(variants):
+        # No emission variants (`HCE-06`): the key is absent, as before it existed.
+        values = {key: value for key, value in values.items() if key != "hmm_variants"}
+    else:
+        tables = {
+            name: file_sha256_or_missing(settings["hmm_context_table"])
+            for name, settings in dict(variants).items()
+            if (settings or {}).get("hmm_context_table")
+        }
+        if tables:
+            values = {**values, "hmm_variant_table_sha256": tables}
     mode = values.get("hmm_context_model")
     if mode is None or _is_unset(mode):
         return {key: value for key, value in values.items() if not key.startswith("hmm_context_")}
     if str(mode).lower() == "table" and values.get("hmm_context_table"):
-        from ..hmm.model_artifacts import file_sha256_or_missing
-
         values = {
             **values,
             "hmm_context_table_sha256": file_sha256_or_missing(values["hmm_context_table"]),

@@ -860,6 +860,19 @@ def load_defaults_with_inheritance(
 _DEFAULT_LEIDEN_RESOLUTION_BY_STRATEGY = {"pca": 0.5, "umap": 0.01, "nmf": 0.01, "cp": 0.0005}
 
 
+def _parse_hmm_variants(value: Any) -> Dict[str, Dict[str, Any]]:
+    """``hmm_variants`` from config: a mapping, or its JSON/YAML text (CSV configs)."""
+    if value is None or (isinstance(value, str) and value.strip().lower() in ("", "none", "{}")):
+        return {}
+    if isinstance(value, str):
+        import yaml
+
+        value = yaml.safe_load(value)
+    if not isinstance(value, dict):
+        raise ValueError(f"hmm_variants must be a mapping of name -> settings, not {value!r}")
+    return {str(name): dict(settings or {}) for name, settings in value.items()}
+
+
 @dataclass
 class ExperimentConfig:
     # Compute
@@ -1368,6 +1381,8 @@ class ExperimentConfig:
     hmm_context_cpg: str = "separate"
     hmm_context_shrinkage: float = 50.0
     hmm_context_weight_bounds: List[float] = field(default_factory=lambda: [0.1, 10.0])
+    # Further emission variants in the same HMM run (`HCE-06`): name -> settings.
+    hmm_variants: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     hmm_dtype: str = "float64"
     hmm_annotation_threshold: float = 0.5
     hmm_batch_size: int = 1024
@@ -2737,6 +2752,7 @@ class ExperimentConfig:
             hmm_context_cpg=str(merged.get("hmm_context_cpg", "separate")),
             hmm_context_shrinkage=float(merged.get("hmm_context_shrinkage", 50.0)),
             hmm_context_weight_bounds=list(merged.get("hmm_context_weight_bounds", [0.1, 10.0])),
+            hmm_variants=_parse_hmm_variants(merged.get("hmm_variants")),
             hmm_fit_strategy=hmm_fit_strategy,
             hmm_shared_scope=hmm_shared_scope,
             hmm_groupby=hmm_groupby,

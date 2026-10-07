@@ -1,6 +1,6 @@
 # Sequence-context-aware HMM emissions (`HCE`)
 
-**Status:** in progress. `HCE-01`–`HCE-04` merged; `HCE-05` qualified (not adopted as the default); `HCE-06` proposed. One PR per item, in order. The
+**Status:** in progress. `HCE-01`–`HCE-04` merged; `HCE-05` qualified (not adopted as the default); `HCE-06` implemented. One PR per item, in order. The
 default stays `none` unless `HCE-05` qualifies a mode.
 
 ## Question
@@ -84,7 +84,7 @@ hmm_context_weight_bounds: [0.1, 10]
 | `HCE-03` `learned` mode | merged | per-(state, context) emissions in the M-step with shrinkage; CpG handling; the fitted weights saved as a table |
 | `HCE-04` pipeline integration | merged | config, partitioned fit/apply, model artifacts, fingerprint |
 | `HCE-05` qualification | qualified: default stays `none`, `learned` opt-in | on a panel of several enzymes applied to the same cells |
-| `HCE-06` HMM variants | proposed | several emission models in one HMM stage: namespaced layers, plots comparing them |
+| `HCE-06` HMM variants | implemented, not merged | several emission models in one HMM stage: namespaced layers, plots comparing them |
 | `HCE-07` context weights for every state (learned) | proposed | the protected state's background modification follows the enzyme's preference too |
 
 ### `HCE-01` — context indices and weight tables
@@ -272,9 +272,34 @@ hmm_variants:
 - Not a default: a project turns variants on in its configs (best with a
   re-run it needs anyway); runtime and layer storage grow per variant.
 
+- Per molecule, the fraction of the read's own span in each feature group
+  (all-accessible, all-footprint) per variant, stored as `<layer>_fraction`
+  in the stage's read table, and plotted as preprocess plots per-read
+  modification rates: per reference window a panel per feature, at each
+  barcode the variants' violins side by side, each colour translucent with a
+  solid edge and median over the reads' jittered values.
+
 Tests: no variants -> identical layers, artifacts and hashes; two variants ->
 both layer sets, artifacts per variant, catalog lists both; clustermap columns
 and histogram overlays per variant.
+
+As built: `hmm_variants` (`ExperimentConfig`; a mapping, or JSON/YAML text in
+CSV configs) may set only `hmm_context_*` keys; names must be identifiers and
+may not be the leading word of a feature layer (`all`, `merged`, the
+configured feature names), so `<label>_<variant>_<feature>` stays
+unambiguous. `HMMModelSpec` carries `variant`, `base_label` and `overrides`;
+`spec.config(cfg)` applies them. The default spec, its fit-config hash and
+its fit ids are unchanged by adding variants (its models are reused);
+multi-channel specs get no variants. `variant_layer_groups` pairs each
+variant layer with its default layer for the clustermaps
+(`extra_hmm_layers` / `extra_length_layers` columns), the count and size
+histograms (shared bins, translucent fills, solid step outlines, legend
+beside the panels) and the per-molecule fractions. An empty `hmm_variants`
+is absent from the stage fingerprint; variants enter it, with any variant
+weight table by content. Fractions are computed over each task's core window,
+so a read split across genome chunks is not double counted; accessible and
+footprint fractions need not sum to 1 (feature intervals are filled across
+gaps between sites and can meet at their edges).
 
 ### `HCE-07` — context weights for every state (learned)
 
