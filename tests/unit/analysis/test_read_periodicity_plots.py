@@ -157,3 +157,27 @@ def test_grid_with_an_empty_cell_and_errors(scored, tmp_path):
         plot_read_periodicity_grid(cells, [["missing"]], tmp_path / "x.png")
     with pytest.raises(ValueError, match="col_labels"):
         plot_read_periodicity_grid(cells, layout, tmp_path / "x.png", col_labels=["x"])
+
+
+def test_mean_spectra_figure(scored, tmp_path):
+    from smftools.analysis.plot.read_periodicity import plot_mean_spectra
+
+    positions, values, power, grid, peaks = scored
+    panels = {
+        "NK": [
+            {"label": "WT", "power": power[:10], "color": "#1565C0"},
+            {"label": "enh-del", "power": power[10:], "color": "#C62828"},
+        ],
+        "B": [{"label": "WT", "power": power[:5], "color": "#1565C0"}],
+    }
+    plot_mean_spectra(
+        panels,
+        grid.periods,
+        tmp_path / "spectra.png",
+        layout=[["NK", "B"], ["B", None]],
+        row_labels=["0 mM", "0.5 mM"],
+        col_labels=["NK", "B"],
+        peak_range=grid.peak_range,
+        n_boot=50,
+    )
+    _written(tmp_path / "spectra.png")

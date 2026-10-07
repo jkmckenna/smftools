@@ -212,3 +212,46 @@ def read_periodograms(
         (np.abs(peaks - grid.peak_range[0]) <= 1) | (np.abs(peaks - grid.peak_range[1]) <= 1)
     ) & peaks.notna()
     return power, table
+
+
+def mean_spectrum(
+    power: np.ndarray, *, n_boot: int = 200, ci: float = 0.95, seed: int = 0
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Mean power per period over reads, with a bootstrap band (`RPF-04`).
+
+    Reads without a periodogram (all NaN) are ignored. The band resamples reads
+    with Poisson weights (one matrix product, not ``n_boot`` copies).
+    """
+    power = np.asarray(power, dtype=float)
+    power = power[np.isfinite(power).all(axis=1)]
+    if power.shape[0] == 0:
+        empty = np.full(power.shape[1], np.nan)
+        return empty, empty, empty
+    mean = power.mean(axis=0)
+    weights = np.random.default_rng(seed).poisson(1.0, size=(n_boot, power.shape[0]))
+    totals = weights.sum(axis=1, keepdims=True)
+    totals[totals == 0] = 1
+    boot = (weights @ power) / totals
+    tail = (1 - ci) / 2
+    return mean, np.quantile(boot, tail, axis=0), np.quantile(boot, 1 - tail, axis=0)
+
+
+def periodicity_summary(stats: pd.DataFrame, by) -> pd.DataFrame:
+    """Per group: reads, reads scored, median peak period and SNR, share at the band edge."""
+    by = [by] if isinstance(by, str) else list(by)
+    scored = stats["status"] == OK
+    frame = stats.assign(_scored=scored)
+    table = frame.groupby(by, sort=True, observed=True).agg(
+        reads=("molecule_uid", "size"),
+        scored=("_scored", "sum"),
+    )
+    ok = (
+        frame.loc[scored]
+        .groupby(by, sort=True, observed=True)
+        .agg(
+            median_peak_bp=("peak_period_bp", "median"),
+            median_snr=("snr", "median"),
+            peak_at_edge=("peak_at_edge", "mean"),
+        )
+    )
+    return table.join(ok).reset_index()
