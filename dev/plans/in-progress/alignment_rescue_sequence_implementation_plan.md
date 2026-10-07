@@ -1,7 +1,7 @@
 # Rescued reads keep their sequence (`ARS`)
 
-**Status:** in progress. `ARS-01`–`ARS-03` implemented on
-`fix/rescue-carry-sequence`; not yet merged.
+**Status:** in progress. `ARS-01`–`ARS-03` merged (#641); `ARS-04` qualified
+the repair. The raw re-extraction of the affected runs (`F64`) is pending.
 
 ## Problem (`F64`)
 
@@ -32,9 +32,9 @@ validation; one dual-allele run had 3,246 reads with more than one primary.
 
 | item | status | evidence |
 |---|---|---|
-| `ARS-01` rescue carries SEQ/QUAL (and `MM`/`ML`/`MN`) from the demoted record onto the promoted one; reverse-complements SEQ and reverses QUAL when the two align to opposite strands; promotes exactly one record per read | implemented, not merged | `test_rescued_read_keeps_its_sequence[*]`, `test_rescue_promotes_one_record_when_a_chimeric_read_shares_a_start` |
-| `ARS-02` repair of already-committed alignments: `restore_primary_sequences` keeps the longest-aligned primary per read, gives it SEQ from a sibling record, demotes any other primaries; run as its own raw intermediate after alignment | implemented, not merged | `test_restore_primary_sequences_repairs_an_already_rescued_bam`, `test_restore_demotes_extra_primaries_left_by_old_rescue`, `test_restore_refuses_a_donor_that_does_not_fit_the_cigar`, `test_restore_leaves_paired_mates_as_two_primaries` |
-| `ARS-03` raw algorithm version `4` → `5`, so stored raw generations re-extract with the recovered reads | implemented, not merged | `_STAGE_ALGORITHM_VERSIONS["raw"]` |
+| `ARS-01` rescue carries SEQ/QUAL (and `MM`/`ML`/`MN`) from the demoted record onto the promoted one; reverse-complements SEQ and reverses QUAL when the two align to opposite strands; promotes exactly one record per read | merged | `test_rescued_read_keeps_its_sequence[*]`, `test_rescue_promotes_one_record_when_a_chimeric_read_shares_a_start` |
+| `ARS-02` repair of already-committed alignments: `restore_primary_sequences` keeps the longest-aligned primary per read, gives it SEQ from a sibling record, demotes any other primaries; run as its own raw intermediate after alignment | merged | `test_restore_primary_sequences_repairs_an_already_rescued_bam`, `test_restore_demotes_extra_primaries_left_by_old_rescue`, `test_restore_refuses_a_donor_that_does_not_fit_the_cigar`, `test_restore_leaves_paired_mates_as_two_primaries` |
+| `ARS-03` raw algorithm version `4` → `5`, so stored raw generations re-extract with the recovered reads | merged | `_STAGE_ALGORITHM_VERSIONS["raw"]` |
 | `ARS-04` real-data qualification | qualified (repair) | see below |
 
 ### Design notes

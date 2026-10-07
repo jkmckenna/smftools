@@ -1,6 +1,6 @@
 # Sequence-context-aware HMM emissions (`HCE`)
 
-**Status:** in progress. `HCE-01`–`HCE-04` merged; `HCE-05` qualified (not adopted as the default); `HCE-06` implemented. One PR per item, in order. The
+**Status:** in progress. `HCE-01`–`HCE-04` merged; `HCE-05` qualified (not adopted as the default); `HCE-06`, `HCE-08`, `HCE-09` merged; `HCE-07` proposed. One PR per item, in order. The
 default stays `none` unless `HCE-05` qualifies a mode.
 
 ## Question
@@ -84,10 +84,10 @@ hmm_context_weight_bounds: [0.1, 10]
 | `HCE-03` `learned` mode | merged | per-(state, context) emissions in the M-step with shrinkage; CpG handling; the fitted weights saved as a table |
 | `HCE-04` pipeline integration | merged | config, partitioned fit/apply, model artifacts, fingerprint |
 | `HCE-05` qualification | qualified: default stays `none`, `learned` opt-in | on a panel of several enzymes applied to the same cells |
-| `HCE-06` HMM variants | implemented, not merged | several emission models in one HMM stage: namespaced layers, plots comparing them |
+| `HCE-06` HMM variants | merged | several emission models in one HMM stage: namespaced layers, plots comparing them |
 | `HCE-07` context weights for every state (learned) | proposed | the protected state's background modification follows the enzyme's preference too |
-| `HCE-08` HMM vs raw per-molecule scatter | implemented, not merged | per read: HMM accessible fraction against the raw modified-site fraction, per barcode, variants overlaid |
-| `HCE-09` HMM fractions at observed sites | implemented, not merged | per read: the share of the model's observed sites inside each feature, beside the raw modified-site fraction |
+| `HCE-08` HMM vs raw per-molecule scatter | merged | per read: HMM accessible fraction against the raw modified-site fraction, per barcode, variants overlaid |
+| `HCE-09` HMM fractions at observed sites | merged | per read: the share of the model's observed sites inside each feature, beside the raw modified-site fraction |
 
 ### `HCE-01` — context indices and weight tables
 
