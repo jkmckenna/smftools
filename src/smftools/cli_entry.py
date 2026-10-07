@@ -2042,9 +2042,13 @@ def _context_qc_options(command):
         click.option(
             "--stage",
             "stages",
-            type=click.Choice(["preprocess", "hmm"]),
+            type=click.Choice(["preprocess", "hmm", "hmm-fractions"]),
             multiple=True,
-            help="Stage(s) to backfill (repeatable; default both).",
+            help=(
+                "Stage(s) to backfill (repeatable; default all): preprocess and hmm "
+                "context QC; hmm-fractions, the per-read HMM/raw fractions and their "
+                "violin and scatter figures."
+            ),
         ),
         click.option("--workers", type=int, default=1, show_default=True),
         click.option("--refresh", is_flag=True, help="Replace existing context-QC outputs."),

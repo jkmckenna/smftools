@@ -268,3 +268,50 @@ def test_context_qc_commands_report_per_stage(tmp_path):
     assert result.exit_code == 0, result.output
     assert f"{tmp_path.name} preprocess: no_generation" in result.output
     assert f"{tmp_path.name} hmm: no_generation" in result.output
+
+
+# --- HCE-10: backfill per-read HMM and raw fractions ---------------------------
+
+
+def test_fraction_backfill_equals_what_the_hmm_stage_stores(tmp_path, monkeypatch):
+    from smftools.readwrite import safe_read_zarr
+    from smftools.tools import context_qc_backfill
+
+    from .test_hmm_partitioned_cli import _context_run
+
+    cfg, outputs, _ = _context_run(
+        tmp_path, hmm_variants={"learned": {"hmm_context_model": "learned"}}
+    )
+    generation = outputs["task_catalog"].parent
+    monkeypatch.setattr(context_qc_backfill, "current_generation", lambda *_: generation)
+    plots_before = sorted(p.name for p in (generation / "plots").rglob("*"))
+
+    result = context_qc_backfill.backfill_context_qc(generation.parent, "hmm-fractions", cfg)
+    assert result["status"] == "written"
+    table = pd.read_parquet(generation / "molecule_fractions" / "molecule_fractions.parquet")
+    columns = [c for c in table.columns if c.endswith("fraction")]
+    assert {
+        "C_all_accessible_features_fraction",
+        "C_learned_all_accessible_features_site_fraction",
+        "C_site_modified_fraction",
+    } <= set(columns)
+
+    for record in pd.read_parquet(outputs["task_catalog"]).itertuples():
+        task, _ = safe_read_zarr(generation / record.group_path)
+        rows = table[table["task_id"] == record.task_id].reindex(task.obs_names)
+        for column in columns:
+            np.testing.assert_allclose(
+                rows[column].to_numpy(dtype=float),
+                task.obs[column].to_numpy(dtype=float),
+                err_msg=column,
+            )
+    figures = sorted(
+        p.name for p in (generation / "molecule_fractions" / "plots" / "features").glob("*.png")
+    )
+    assert any(name.endswith("molecule_fractions.png") for name in figures)
+    assert any(name.endswith("hmm_vs_raw_scatter.png") for name in figures)
+    assert sorted(p.name for p in (generation / "plots").rglob("*")) == plots_before
+    assert (
+        context_qc_backfill.backfill_context_qc(generation.parent, "hmm-fractions", cfg)["status"]
+        == "exists"
+    )

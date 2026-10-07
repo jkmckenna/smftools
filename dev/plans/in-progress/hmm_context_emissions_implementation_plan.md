@@ -88,6 +88,7 @@ hmm_context_weight_bounds: [0.1, 10]
 | `HCE-07` context weights for every state (learned) | proposed | the protected state's background modification follows the enzyme's preference too |
 | `HCE-08` HMM vs raw per-molecule scatter | merged | per read: HMM accessible fraction against the raw modified-site fraction, per barcode, variants overlaid |
 | `HCE-09` HMM fractions at observed sites | merged | per read: the share of the model's observed sites inside each feature, beside the raw modified-site fraction |
+| `HCE-10` per-read fraction backfill | implemented, not merged | `HCE-06`/`-08`/`-09` per-read fractions and figures for HMM generations made before them |
 
 ### `HCE-01` — context indices and weight tables
 
@@ -349,4 +350,23 @@ raw modified-site fraction as a grey violin beside the variants.
 
 Tests: equals observed-and-in-feature / observed from the model input and
 the stored layer; raw drawn only in the accessible-at-sites panel.
+
+### `HCE-10` — per-read fraction backfill
+
+HMM generations made before `HCE-06` have none of the per-read fractions, so
+neither the per-molecule violins nor the HMM-vs-raw scatters can be drawn
+from them. `smftools experiment|project context-qc --stage hmm-fractions`
+re-materializes each task's reads with their decoded layers (as the `SCQ-03`
+HMM backfill does) and computes what the stage now stores per read --
+`<layer>_fraction`, `<layer>_site_fraction`, `<model>_site_modified_fraction`
+-- into `<generation>/molecule_fractions/molecule_fractions.parquet` (keyed by
+read and task), then draws the violin and scatter figures from it into
+`molecule_fractions/plots/features/` (the plot functions take an
+`obs_reader`). The generation's read table, `plots/` and manifests are not
+changed. Part of the default `context-qc` stages.
+
+Tests: every backfilled column equals the stage-written one on a fixture with
+a variant (span fractions included: re-materialized layers keep NaN outside
+a read); figures written; the generation's plots unchanged; existing output
+kept without `--refresh`.
 
