@@ -124,3 +124,36 @@ def test_tss_relative_figure_with_input_colorbar(scored, tmp_path):
         descending=False,
     )
     _written(tmp_path / "tss.png")
+
+
+def test_grid_with_an_empty_cell_and_errors(scored, tmp_path):
+    from smftools.analysis.plot.read_periodicity import plot_read_periodicity_grid
+
+    positions, values, power, grid, peaks = scored
+    cells = {
+        name: {
+            "values": values[rows],
+            "positions": positions,
+            "power": power[rows],
+            "periods": grid.periods,
+            "peak_period": peaks[rows],
+        }
+        for name, rows in (("a", slice(0, 5)), ("b", slice(5, 10)), ("c", slice(10, 20)))
+    }
+    cells["none"] = {**cells["a"], "peak_period": np.full(5, np.nan)}
+    layout = [["a", "b", None], ["c", "none", "a"]]
+    plot_read_periodicity_grid(
+        cells,
+        layout,
+        tmp_path / "grid.png",
+        row_labels=["low", "high"],
+        col_labels=["x", "y", "z"],
+        coordinate_origin=750,
+        coordinate_reverse=True,
+        title="t",
+    )
+    _written(tmp_path / "grid.png")
+    with pytest.raises(KeyError, match="not given"):
+        plot_read_periodicity_grid(cells, [["missing"]], tmp_path / "x.png")
+    with pytest.raises(ValueError, match="col_labels"):
+        plot_read_periodicity_grid(cells, layout, tmp_path / "x.png", col_labels=["x"])

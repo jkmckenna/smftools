@@ -81,6 +81,12 @@ def _input_cmap(binary: bool, color: str, zero_color: str, nan_color: str):
     return cmap
 
 
+def _inner_ticks(axis_values: np.ndarray) -> tuple[np.ndarray, list[str]]:
+    """Three ticks away from the ends, so neighbouring panels' labels do not meet."""
+    index = np.unique((np.array([0.1, 0.5, 0.9]) * (axis_values.size - 1)).round().astype(int))
+    return index, [f"{axis_values[i]:g}" for i in index]
+
+
 def _ticks(axis_values: np.ndarray, n: int = 6) -> tuple[np.ndarray, list[str]]:
     index = np.unique(
         np.linspace(0, axis_values.size - 1, num=min(n, axis_values.size)).astype(int)
@@ -285,5 +291,195 @@ def plot_read_periodicity_clustermap(
                 fontsize=7,
             )
     fig.suptitle("\n".join(part for part in (heading, counts) if part), fontsize=9)
+    fig.savefig(output_path, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _cell_arrays(
+    cell: dict,
+    *,
+    max_reads: int | None,
+    seed: int,
+    descending: bool,
+    coordinate_origin: float | None,
+    coordinate_reverse: bool,
+) -> dict | None:
+    """One grid cell's rows (by peak period) and columns (observed, display order)."""
+    values = np.asarray(cell["values"], dtype=float)
+    power = np.asarray(cell["power"], dtype=float)
+    peaks = np.asarray(cell["peak_period"], dtype=float)
+    periods = np.asarray(cell["periods"], dtype=float)
+    rows = _subsample(periodicity_row_order(peaks, descending=descending), max_reads, seed)
+    if rows.size == 0:
+        return None
+    shown = values[rows]
+    kept = np.isfinite(shown).any(axis=0)
+    positions = np.asarray(cell["positions"])[kept]
+    key, display, axis_label = _display_coordinates(
+        positions, coordinate_origin, coordinate_reverse
+    )
+    columns = np.argsort(key, kind="stable")
+    period_sort = np.argsort(periods)
+    return {
+        "values": shown[:, kept][:, columns],
+        "display": display[columns],
+        "axis_label": axis_label,
+        "power": power[rows][:, period_sort],
+        "periods": periods[period_sort],
+        "n": int(rows.size),
+        "excluded": int(values.shape[0] - np.isfinite(peaks).sum()),
+        "median_peak": float(np.median(peaks[rows])),
+    }
+
+
+def plot_read_periodicity_grid(
+    cells: dict,
+    layout: Sequence[Sequence[str | None]],
+    output_path: str | Path,
+    *,
+    row_labels: Sequence[str] | None = None,
+    col_labels: Sequence[str] | None = None,
+    max_reads: int | None = 300,
+    seed: int = 0,
+    input_label: str = "input",
+    input_color: str = INPUT_COLOR,
+    zero_color: str = ZERO_COLOR,
+    nan_color: str = NAN_COLOR,
+    binary: bool | None = None,
+    descending: bool = True,
+    coordinate_origin: float | None = None,
+    coordinate_reverse: bool = False,
+    power_vmax: float | None = None,
+    title: str = "",
+) -> None:
+    """Groups in a grid, each cell its input and periodogram heatmaps.
+
+    ``cells`` maps a key to the arrays one clustermap takes (``values``,
+    ``positions``, ``power``, ``periods``, ``peak_period``); ``layout`` is rows
+    of keys (None = empty). Rows within a cell run by peak period; colour
+    scales are shared across the grid, with one periodogram colour bar. Each
+    cell's title gives its reads and median peak period.
+    """
+    rows_n = len(layout)
+    cols_n = max((len(row) for row in layout), default=0)
+    if row_labels is not None and len(row_labels) != rows_n:
+        raise ValueError("row_labels must match the layout's rows")
+    if col_labels is not None and len(col_labels) != cols_n:
+        raise ValueError("col_labels must match the layout's columns")
+    missing = [key for row in layout for key in row if key is not None and key not in cells]
+    if missing:
+        raise KeyError(f"layout names cells not given: {missing}")
+    prepared = {
+        key: _cell_arrays(
+            cells[key],
+            max_reads=max_reads,
+            seed=seed,
+            descending=descending,
+            coordinate_origin=coordinate_origin,
+            coordinate_reverse=coordinate_reverse,
+        )
+        for row in layout
+        for key in row
+        if key is not None
+    }
+    drawn = [cell for cell in prepared.values() if cell is not None]
+    if power_vmax is None:
+        pooled_power = np.concatenate(
+            [c["power"][np.isfinite(c["power"])] for c in drawn] or [np.array([1.0])]
+        )
+        power_vmax = float(np.percentile(pooled_power, 99)) or 1.0
+    pooled_values = np.concatenate(
+        [c["values"][np.isfinite(c["values"])] for c in drawn] or [np.array([0.0])]
+    )
+    if binary is None:
+        binary = bool(np.isin(pooled_values, (0.0, 1.0)).all())
+    vmax_input = 1.0 if binary else float(np.nanpercentile(pooled_values, 99)) or 1.0
+    cmap = _input_cmap(binary, input_color, zero_color, nan_color)
+
+    fig = plt.figure(figsize=(3.9 * cols_n + 1.2, 2.6 * rows_n + 0.8))
+    # Per cell: input, periodogram, spacer; then the colour bar.
+    grid = fig.add_gridspec(
+        rows_n,
+        3 * cols_n + 1,
+        width_ratios=[1.7, 1.0, 0.18] * cols_n + [0.06],
+        wspace=0.08,
+        hspace=0.45,
+        left=0.12,
+        right=0.95,
+        top=0.88 if title else 0.92,
+        bottom=0.08,
+    )
+    spectrum = None
+    for r, row in enumerate(layout):
+        for c in range(cols_n):
+            key = row[c] if c < len(row) else None
+            input_ax = fig.add_subplot(grid[r, 3 * c])
+            power_ax = fig.add_subplot(grid[r, 3 * c + 1])
+            cell = prepared.get(key) if key is not None else None
+            if r == 0 and col_labels is not None:
+                box = input_ax.get_position()
+                right = power_ax.get_position().x1
+                fig.text(
+                    (box.x0 + right) / 2,
+                    box.y1 + 0.035,
+                    str(col_labels[c]),
+                    ha="center",
+                    va="bottom",
+                    fontsize=9,
+                    fontweight="bold",
+                )
+            if c == 0 and row_labels is not None:
+                input_ax.annotate(
+                    str(row_labels[r]),
+                    xy=(-0.12, 0.5),
+                    xycoords="axes fraction",
+                    ha="right",
+                    va="center",
+                    fontsize=9,
+                    fontweight="bold",
+                )
+            if cell is None:
+                for ax in (input_ax, power_ax):
+                    ax.set_xticks([])
+                    ax.set_yticks([])
+                    for spine in ax.spines.values():
+                        spine.set_visible(False)
+                if key is not None:
+                    input_ax.text(0.5, 0.5, "no reads with a peak", ha="center", fontsize=7)
+                continue
+            input_ax.imshow(
+                np.ma.masked_invalid(cell["values"]),
+                aspect="auto",
+                interpolation="nearest",
+                cmap=cmap,
+                vmin=0.0,
+                vmax=vmax_input,
+            )
+            spectrum = power_ax.imshow(
+                np.ma.masked_invalid(cell["power"]),
+                aspect="auto",
+                interpolation="nearest",
+                cmap="magma",
+                vmin=0.0,
+                vmax=power_vmax,
+            )
+            ticks, labels = _inner_ticks(cell["display"])
+            input_ax.set_xticks(ticks, labels, fontsize=5)
+            ticks, labels = _inner_ticks(cell["periods"])
+            power_ax.set_xticks(ticks, labels, fontsize=5)
+            input_ax.set_yticks([])
+            power_ax.set_yticks([])
+            input_ax.set_title(
+                f"n={cell['n']} | median peak {cell['median_peak']:.0f} bp", fontsize=6, loc="left"
+            )
+            if r == rows_n - 1:
+                input_ax.set_xlabel(cell["axis_label"], fontsize=6)
+                power_ax.set_xlabel("period (bp)", fontsize=6)
+    if spectrum is not None:
+        bar = fig.colorbar(spectrum, cax=fig.add_subplot(grid[:, -1]))
+        bar.ax.tick_params(labelsize=6)
+        bar.set_label("Lomb-Scargle power", fontsize=7)
+    if title:
+        fig.suptitle(f"{title} | {input_label}", fontsize=10)
     fig.savefig(output_path, bbox_inches="tight")
     plt.close(fig)

@@ -358,6 +358,48 @@ def load_results(output_dir: Path, key: dict) -> ReadPeriodicity | None:
     saved = json.loads(meta.read_text())
     if saved.get("key") != key:
         return None
+    return _read_saved(Path(output_dir), saved)
+
+
+def read_results(output_dir: str | Path) -> ReadPeriodicity:
+    """A finished run's saved results, whatever made them (`RPF-03`): for figures."""
+    import json
+
+    output_dir = Path(output_dir)
+    meta = output_dir / RESULT_KEY
+    if not meta.is_file():
+        raise FileNotFoundError(f"no periodicity results in {output_dir}")
+    return _read_saved(output_dir, json.loads(meta.read_text()))
+
+
+def group_cells(result: ReadPeriodicity, region: str, grouping: str = "group") -> dict[str, dict]:
+    """Per group of ``grouping``: the plotted molecules' arrays over ``region``.
+
+    The cells `plot_read_periodicity_grid` takes: input values, positions,
+    power, periods and peak periods of the molecules kept for figures.
+    """
+    if region not in result.plot_values:
+        raise KeyError(f"no plot values for region {region!r}")
+    uids, positions, values = result.plot_values[region]
+    stats = result.stats.loc[result.stats["region"] == region].reset_index(drop=True)
+    rows = stats.reset_index().set_index("molecule_uid").loc[uids, "index"].to_numpy()
+    groups = stats[grouping].astype(str).to_numpy()[rows]
+    peaks = stats["peak_period_bp"].to_numpy()[rows]
+    power = result.power[region][rows]
+    periods = result.grids[region].periods
+    return {
+        group: {
+            "values": values[groups == group],
+            "positions": positions,
+            "power": power[groups == group],
+            "periods": periods,
+            "peak_period": peaks[groups == group],
+        }
+        for group in dict.fromkeys(groups)
+    }
+
+
+def _read_saved(output_dir: Path, saved: dict) -> ReadPeriodicity:
     parameters = saved["parameters"]
     stats = pd.read_parquet(output_dir / STATS_FILE)
     grids, power, plot_values = {}, {}, {}
