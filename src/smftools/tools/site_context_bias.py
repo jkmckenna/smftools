@@ -256,6 +256,8 @@ def run_context_bias(
     workers: int = 1,
     refresh: bool = False,
     figures: bool = True,
+    export_weights: bool = False,
+    weights_source: str = "cells",
 ) -> dict:
     """Count (or reuse counts), then write site, enrichment, k-mer and difference
     tables and figures to ``output_dir``. Returns the ``run.json`` record."""
@@ -305,6 +307,20 @@ def run_context_bias(
         ignore_index=True,
     )
     rates.to_csv(output_dir / "kmer_rates.csv", index=False)
+    weight_files = []
+    if export_weights:
+        # Context weights for HMM emissions (`HCE-01`), one table per k >= 3.
+        from smftools.analysis.compute.site_context_bias import weight_table, write_weight_table
+
+        for k in kmers:
+            if k < 3:
+                continue
+            name = f"context_weights_k{k}.parquet"
+            write_weight_table(
+                weight_table(rates.loc[rates["k"] == k], k=k, source=weights_source),
+                output_dir / name,
+            )
+            weight_files.append(name)
     differences = None
     if reference_group is not None and len(groups) > 1:
         differences = group_differences(enrichment, reference_group=reference_group)
@@ -345,6 +361,8 @@ def run_context_bias(
         "groups": groups,
         "sites": int(len(counts.sites)),
         "figures": written,
+        "weight_tables": weight_files,
+        "weights_source": weights_source if weight_files else None,
         "smftools_version": __version__,
     }
     (output_dir / "run.json").write_text(json.dumps(record, indent=2))

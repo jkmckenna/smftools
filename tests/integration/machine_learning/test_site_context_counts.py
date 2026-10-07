@@ -303,3 +303,30 @@ def test_cli_rejects_bad_arguments(project, tmp_path) -> None:
     ):
         result = CliRunner().invoke(cli, [*base, *extra])
         assert result.exit_code != 0 and message in result.output, result.output
+
+
+def test_cli_exports_weight_tables(project, tmp_path) -> None:
+    """`HCE-01`: context-bias writes relative k-mer weights for the HMM."""
+    from smftools.analysis.compute.site_context_bias import read_weight_table
+
+    root, _, _ = project
+    out, record, _ = _cli(
+        root,
+        tmp_path,
+        "--group-by",
+        "Barcode",
+        "--kmer",
+        "1",
+        "--kmer",
+        "3",
+        "--export-weights",
+        "--weights-source",
+        "naked_dna",
+        "--no-figures",
+    )
+    assert record["weight_tables"] == ["context_weights_k3.parquet"]
+    table = read_weight_table(out / "context_weights_k3.parquet")
+    assert set(table["group"]) == {"barcode01", "barcode02"}
+    assert (table["source"] == "naked_dna").all() and (table["k"] == 3).all()
+    # In the fixture a C followed by T is always modified: its weight is above 1.
+    assert (table.loc[table["kmer"].str[2] == "T", "weight"] > 1).all()

@@ -1,6 +1,6 @@
 # Sequence-context-aware HMM emissions (`HCE`)
 
-**Status:** proposed. Nothing implemented. One PR per item, in order. The
+**Status:** in progress. `HCE-01` implemented. One PR per item, in order. The
 default stays `none` unless `HCE-05` qualifies a mode.
 
 ## Question
@@ -79,7 +79,7 @@ hmm_context_weight_bounds: [0.1, 10]
 
 | item | status | scope |
 |---|---|---|
-| `HCE-01` context indices and weight tables | proposed | per-position context index for a reference and strand; the weight-table format; `context-bias` exports it |
+| `HCE-01` context indices and weight tables | implemented, not merged | per-position context index for a reference and strand; the weight-table format; `context-bias` exports it |
 | `HCE-02` context emissions, `table` mode | proposed | a context-aware Bernoulli emission with fixed weights; EM fits the per-state level |
 | `HCE-03` `learned` mode | proposed | per-(state, context) emissions in the M-step with shrinkage; CpG handling; the fitted weights saved as a table |
 | `HCE-04` pipeline integration | proposed | config, partitioned fit/apply, model artifacts, fingerprint |
@@ -98,6 +98,16 @@ from `kmer_rates` (`log2_relative_rate`), marking cell-derived tables
 
 Tests: codes match `site_contexts`; bottom strand reverse-complemented;
 ambiguous windows; table round trip; export from a `context-bias` run.
+
+As built: `strand_window` is the one window reader for both; codes follow
+`context_kmers(k)` (C-centred, 4^(k-1)); positions that are not a C on the
+modified strand, or whose window touches `N`, get `NOT_A_CONTEXT` (-1).
+Weights are smoothed -- `(modified + 0.5) / (observed + 1)` over the group's
+overall rate -- so a context never modified in the data is unlikely rather
+than impossible (a weight of 0 would forbid modification in the HMM).
+`context-bias --export-weights [--weights-source cells|naked_dna]` writes
+`context_weights_k<k>.parquet` for each k >= 3; `weights_for(table, group, k)`
+returns weights in code order (1 for an absent k-mer).
 
 ### `HCE-02` — context emissions, `table` mode
 

@@ -1945,6 +1945,20 @@ def _context_bias_options(command):
         ),
         click.option("--refresh", is_flag=True, help="Re-count even when cached counts match."),
         click.option("--no-figures", is_flag=True, help="Write tables only."),
+        click.option(
+            "--export-weights",
+            is_flag=True,
+            help="Also write relative k-mer weight tables (k >= 3) for context-aware HMM "
+            "emissions.",
+        ),
+        click.option(
+            "--weights-source",
+            type=click.Choice(["cells", "naked_dna"]),
+            default="cells",
+            show_default=True,
+            help="What the molecules are: naked DNA gives enzyme preference alone; cells "
+            "mix in chromatin and methylation.",
+        ),
     ]
     for option in reversed(options):
         command = option(command)
@@ -1965,6 +1979,8 @@ def _run_context_bias(
     workers,
     refresh,
     no_figures,
+    export_weights=False,
+    weights_source="cells",
 ):
     from .machine_learning.plan import load_ml_plan
     from .tools.site_context_bias import run_context_bias
@@ -1984,6 +2000,8 @@ def _run_context_bias(
             workers=workers,
             refresh=refresh,
             figures=not no_figures,
+            export_weights=export_weights,
+            weights_source=weights_source,
         )
     except (KeyError, ValueError) as exc:
         raise click.ClickException(str(exc.args[0] if exc.args else exc)) from exc

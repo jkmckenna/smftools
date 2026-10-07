@@ -89,6 +89,22 @@ def site_table(counts: Mapping, positions: Sequence[int]) -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True)
 
 
+def strand_window(sequence: str, strand: str, position: int, flank: int) -> str:
+    """The ``2 * flank + 1`` window at ``position``, 5'->3' on the modified strand.
+
+    ``sequence`` is forward strand; a bottom-strand window is reverse
+    complemented. Positions past either end read ``N``.
+    """
+    sequence = sequence.upper()
+    start, end = position - flank, position + flank + 1
+    window = (
+        "N" * max(0, -start)
+        + sequence[max(0, start) : min(len(sequence), end)]
+        + "N" * max(0, end - len(sequence))
+    )
+    return window.translate(_COMPLEMENT)[::-1] if strand == "bottom" else window
+
+
 def site_contexts(
     sites: pd.DataFrame,
     sequences: Mapping[str, str],
@@ -111,14 +127,7 @@ def site_contexts(
         key = (sequence_for or {}).get(str(reference), base)
         if key not in sequences:
             raise KeyError(f"no sequence for reference {key!r}")
-        sequence = sequences[key].upper()
-        start, end = int(position) - flank, int(position) + flank + 1
-        window = (
-            "N" * max(0, -start)
-            + sequence[max(0, start) : min(len(sequence), end)]
-            + "N" * max(0, end - len(sequence))
-        )
-        contexts.append(window.translate(_COMPLEMENT)[::-1] if strand == "bottom" else window)
+        contexts.append(strand_window(sequences[key], strand, int(position), flank))
     out = sites.copy()
     out["context"] = contexts
     out["rate"] = out["modified"] / out["observed"]
@@ -245,3 +254,128 @@ def group_differences(enrichment: pd.DataFrame, *, reference_group: str) -> pd.D
     out["difference"] = out["log2_enrichment"] - out["reference_log2_enrichment"]
     out["reference_group"] = reference_group
     return out.reset_index(drop=True)
+
+
+# ---------------------------------------------------------------------------
+# Context codes and weight tables for context-aware HMM emissions (`HCE-01`)
+# ---------------------------------------------------------------------------
+
+NOT_A_CONTEXT = -1  # not a C on the modified strand, or a window touching N
+WEIGHT_COLUMNS = ["group", "k", "kmer", "weight", "n_sites", "observed", "source"]
+WEIGHT_SOURCES = frozenset({"naked_dna", "learned", "cells"})
+
+
+def context_kmers(k: int) -> list[str]:
+    """Every centred ``k``-mer with C at its centre, in code order (4^(k-1) of them)."""
+    from itertools import product
+
+    if k < 1 or k % 2 == 0:
+        raise ValueError("k must be odd and >= 1")
+    half = k // 2
+    return [
+        "".join(left) + "C" + "".join(right)
+        for left in product("ACGT", repeat=half)
+        for right in product("ACGT", repeat=half)
+    ]
+
+
+def context_index(
+    sequence: str, strand: str, positions, *, k: int = 3
+) -> tuple[np.ndarray, np.ndarray]:
+    """Per position: its centred ``k``-mer code (`context_kmers` order) and a CpG flag.
+
+    Windows read as `strand_window` (5'->3' on the modified strand). A position
+    whose centre is not C on that strand, or whose window touches ``N``, gets
+    `NOT_A_CONTEXT` -- never weighted. The CpG flag marks a G immediately 3'
+    of the C on the modified strand.
+    """
+    code_of = {kmer: code for code, kmer in enumerate(context_kmers(k))}
+    half = k // 2
+    positions = np.asarray(positions, dtype=np.int64)
+    codes = np.full(positions.size, NOT_A_CONTEXT, dtype=np.int64)
+    cpg = np.zeros(positions.size, dtype=bool)
+    for index, position in enumerate(positions):
+        window = strand_window(sequence, strand, int(position), max(half, 1))
+        centre = len(window) // 2
+        if window[centre] != "C":
+            continue
+        cpg[index] = window[centre + 1] == "G"
+        kmer = window[centre - half : centre + half + 1]
+        codes[index] = code_of.get(kmer, NOT_A_CONTEXT)
+    return codes, cpg
+
+
+def weight_table(rates: pd.DataFrame, *, k: int, source: str) -> pd.DataFrame:
+    """Relative k-mer weights (smoothed rate over the group's overall rate) from `kmer_rates`.
+
+    ``source`` records where the rates came from: ``naked_dna`` (every site
+    accessible: enzyme preference alone), ``learned`` (an HMM fit) or ``cells``
+    (chromatin and methylation confound it -- not for correcting cells).
+    """
+    if source not in WEIGHT_SOURCES:
+        raise ValueError(f"source must be one of {sorted(WEIGHT_SOURCES)}")
+    kmers = set(context_kmers(k))
+    frame = rates.loc[rates["kmer"].isin(kmers)]
+    if "k" in frame:
+        frame = frame.loc[frame["k"] == k]
+    table = pd.DataFrame(
+        {
+            "group": frame["group"].astype(str).to_numpy(),
+            "k": k,
+            "kmer": frame["kmer"].to_numpy(),
+            "weight": _smoothed_weights(frame),
+            "n_sites": frame["n_sites"].to_numpy(),
+            "observed": frame["observed"].to_numpy(),
+            "source": source,
+        }
+    )
+    return table.sort_values(["group", "kmer"]).reset_index(drop=True)
+
+
+def _smoothed_weights(frame: pd.DataFrame, pseudocount: float = 0.5) -> np.ndarray:
+    """``(modified + c) / (observed + 2c)`` over the group's overall rate.
+
+    Smoothed so a k-mer never modified in the data is unlikely, not impossible
+    (a weight of 0 would forbid modification there in the HMM).
+    """
+    modified = frame["modified"].to_numpy(dtype=float)
+    observed = frame["observed"].to_numpy(dtype=float)
+    rate = (modified + pseudocount) / (observed + 2 * pseudocount)
+    return rate / frame["overall_rate"].to_numpy(dtype=float)
+
+
+def write_weight_table(table: pd.DataFrame, path) -> None:
+    _check_weight_table(table)
+    path = str(path)
+    if path.endswith(".parquet"):
+        table[WEIGHT_COLUMNS].to_parquet(path, index=False)
+    else:
+        table[WEIGHT_COLUMNS].to_csv(path, index=False)
+
+
+def read_weight_table(path) -> pd.DataFrame:
+    path = str(path)
+    table = pd.read_parquet(path) if path.endswith(".parquet") else pd.read_csv(path)
+    table["group"] = table["group"].astype(str)
+    _check_weight_table(table)
+    return table
+
+
+def weights_for(table: pd.DataFrame, group: str, k: int) -> np.ndarray:
+    """Weights in `context_kmers` code order for one group; 1 where a k-mer is absent."""
+    frame = table.loc[(table["group"] == str(group)) & (table["k"] == k)]
+    if frame.empty:
+        raise KeyError(f"no k={k} weights for group {group!r}")
+    by_kmer = dict(zip(frame["kmer"], frame["weight"], strict=True))
+    return np.array([by_kmer.get(kmer, 1.0) for kmer in context_kmers(k)], dtype=float)
+
+
+def _check_weight_table(table: pd.DataFrame) -> None:
+    missing = [column for column in WEIGHT_COLUMNS if column not in table]
+    if missing:
+        raise ValueError(f"weight table lacks columns {missing}")
+    bad = set(table["source"]) - WEIGHT_SOURCES
+    if bad:
+        raise ValueError(f"unknown weight sources {sorted(bad)}")
+    if (table["weight"] <= 0).any() or not np.isfinite(table["weight"]).all():
+        raise ValueError("weights must be finite and positive")
