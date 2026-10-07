@@ -1,6 +1,6 @@
 # Sequence-context QC in the preprocess and HMM stages (`SCQ`)
 
-**Status:** in progress. `SCQ-01`–`SCQ-03` merged; `SCQ-04` (qualification) open. One PR per item, in order.
+**Status:** completed. `SCQ-01`–`SCQ-03` merged; `SCQ-04` qualified (2026-10-07). One PR per item, in order.
 `SCQ-02` follows `HCE-06` (HMM variants).
 
 ## Why
@@ -45,7 +45,7 @@ barcode.
 | `SCQ-01` preprocess context QC | merged | modification bias per barcode x reference from passing reads; tables and figures |
 | `SCQ-02` HMM context QC | merged | per variant: residual context bias of state calls; modification rate within accessible-called sites |
 | `SCQ-03` backfill for finished stages | merged | the same outputs from a finished stage, without re-running it |
-| `SCQ-04` qualification | proposed | a real run: counts equal `context-bias` on the same reads; run time |
+| `SCQ-04` qualification | qualified | a real run: counts equal `context-bias` on the same reads; run time |
 
 ### `SCQ-01` — preprocess context QC
 
@@ -164,6 +164,32 @@ sidecar is registered (the stage-written outputs keep their places in
 On a real run: per barcode, preprocess tallies equal `context-bias` on the
 same passing reads; HMM tallies equal counts from the decoded layers; the
 added run time and output size per stage.
+
+Qualified 2026-10-07 on the `nkg2a_final` project (23 experiments, 6 conversion,
+17 deaminase; generations made before `SCQ`), with `smftools project context-qc
+--workers 8`:
+
+- **Preprocess:** all 23 written in 3 min (6-24 figures each). Every preprocess
+  generation validated (`validate_preprocess_generation`) before and after:
+  the backfill leaves the checksummed artifacts as they were.
+- **Equal to `context-bias`:** 260923 enzyme panel, `6B6_top`, every barcode:
+  calls, per-site rates and 3-mer relative rates identical to the project's
+  context set by sample (the same dedup-passing reads).
+- **HMM:** all 23 written in 28.5 min (6.2 GB peak in the parent), ~1,500
+  figures; the 260923 tables equal an independent single-process tally
+  (1,492 k-mer rows, zero count difference).
+- **EM-seq rates look right:** GpC 0.32-0.33 and CpG 0.58 on both alleles
+  (250924).
+
+Reading across experiments (non-CpG 3-mers, barcodes with >= 10,000 calls,
+mean |log2 relative rate|): the modification rate within accessible-called
+sites is near flat for EM-seq's GpC model (0.003-0.15) and clearly
+context-dependent for deaminases (0.11-0.35), as expected of the enzymes. The
+residual bias of the accessible state, however, is similar for both
+(EM-seq 0.17-0.37, deaminase 0.11-0.30): with an unbiased enzyme the state
+still follows sequence, so most of that residual is sequence-linked chromatin
+(or site density), not enzyme preference. Weigh `HCE-07` against this
+baseline rather than against zero.
 
 ## Out of scope
 
