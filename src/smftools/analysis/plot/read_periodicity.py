@@ -483,3 +483,84 @@ def plot_read_periodicity_grid(
         fig.suptitle(f"{title} | {input_label}", fontsize=10)
     fig.savefig(output_path, bbox_inches="tight")
     plt.close(fig)
+
+
+def plot_mean_spectra(
+    panels: dict,
+    periods: np.ndarray,
+    output_path: str | Path,
+    *,
+    layout: Sequence[Sequence[str | None]] | None = None,
+    row_labels: Sequence[str] | None = None,
+    col_labels: Sequence[str] | None = None,
+    peak_range: tuple[float, float] | None = None,
+    n_boot: int = 200,
+    seed: int = 0,
+    title: str = "",
+) -> None:
+    """Mean periodogram of each series, with bootstrap bands, panel by panel.
+
+    ``panels`` maps a panel key to series ``{"label", "power", "color"}``
+    (power: reads x periods on ``periods``). ``layout`` (rows of keys, None =
+    empty) arranges them, else one row. Each curve marks its peak within
+    ``peak_range``; legends give reads per series. Panels share the y-range.
+    """
+    from smftools.analysis.compute.read_periodicity import mean_spectrum
+
+    periods = np.asarray(periods, dtype=float)
+    order = np.argsort(periods)
+    layout = [list(panels)] if layout is None else [list(row) for row in layout]
+    cols_n = max(len(row) for row in layout)
+    fig, axes = plt.subplots(
+        len(layout),
+        cols_n,
+        figsize=(3.4 * cols_n + 0.8, 2.6 * len(layout) + 0.6),
+        squeeze=False,
+        sharex=True,
+        sharey=True,
+    )
+    in_band = (
+        (periods[order] >= peak_range[0]) & (periods[order] <= peak_range[1])
+        if peak_range is not None
+        else np.ones(order.size, dtype=bool)
+    )
+    for r, row in enumerate(layout):
+        for c in range(cols_n):
+            ax = axes[r][c]
+            key = row[c] if c < len(row) else None
+            if r == 0 and col_labels is not None:
+                ax.set_title(str(col_labels[c]), fontsize=9, fontweight="bold")
+            if c == 0 and row_labels is not None:
+                ax.set_ylabel(f"{row_labels[r]}\nmean power", fontsize=8)
+            if key is None or key not in panels:
+                ax.axis("off")
+                continue
+            for series in panels[key]:
+                power = np.asarray(series["power"], dtype=float)[:, order]
+                mean, low, high = mean_spectrum(power, n_boot=n_boot, seed=seed)
+                n = int(np.isfinite(power).all(axis=1).sum())
+                x = periods[order]
+                ax.fill_between(x, low, high, color=series["color"], alpha=0.25, linewidth=0)
+                ax.plot(
+                    x,
+                    mean,
+                    color=series["color"],
+                    linewidth=1.1,
+                    label=f"{series['label']} (n={n})",
+                )
+                if np.isfinite(mean[in_band]).any():
+                    peak = x[in_band][np.nanargmax(mean[in_band])]
+                    ax.axvline(peak, color=series["color"], linewidth=0.7, linestyle="--")
+            if peak_range is not None:
+                ax.axvspan(*peak_range, color="#FFB74D", alpha=0.12, linewidth=0)
+            ax.legend(fontsize=6, frameon=False, loc="upper right")
+            ax.tick_params(labelsize=7)
+            if r == len(layout) - 1:
+                ax.set_xlabel("period (bp)", fontsize=8)
+            for side in ("top", "right"):
+                ax.spines[side].set_visible(False)
+    if title:
+        fig.suptitle(title, fontsize=10)
+    fig.tight_layout()
+    fig.savefig(output_path, bbox_inches="tight")
+    plt.close(fig)

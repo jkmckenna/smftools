@@ -1,6 +1,6 @@
 # Periodicity figures: orientation, groupings, grids, spectra (`RPF`)
 
-**Status:** in progress. `RPF-01`–`RPF-03` implemented. Follows `RPG` (completed). One PR
+**Status:** in progress. `RPF-01`–`RPF-04` implemented. Follows `RPG` (completed). One PR
 per item, in order.
 
 ## Why
@@ -26,7 +26,7 @@ First use of `smftools project periodicity` on real projects asked for:
 | `RPF-01` clustermap presentation | implemented, not merged | descending order, no input colour bar, display coordinates |
 | `RPF-02` several groupings per run | implemented, not merged | `--group-by` repeatable; one pass; figures per grouping |
 | `RPF-03` grid figure | implemented, not merged | groups laid out by two labels, each cell input + periodogram |
-| `RPF-04` mean spectra and summaries | proposed | mean power per period with bootstrap bands; per-group summary table |
+| `RPF-04` mean spectra and summaries | implemented, not merged | mean power per period with bootstrap bands; per-group summary table |
 
 ### `RPF-01` — clustermap presentation
 
@@ -87,6 +87,10 @@ comparisons.
 
 Tests: bands contain the mean; a planted shift between two series shows in
 the curves and the summary.
+
+As built: `mean_spectrum` (compute) bootstraps with Poisson read weights -- one
+matrix product, so tens of thousands of reads are cheap; `plot_mean_spectra`
+shares the y-range across panels and marks each curve's peak in the band.
 
 ## Out of scope
 

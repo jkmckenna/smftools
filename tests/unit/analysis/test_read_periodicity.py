@@ -146,3 +146,25 @@ def test_reads_are_scored_with_single_threaded_blas(monkeypatch):
     positions, calls, observed, design = _reads(n_reads=2)
     read_periodograms(positions, calls, observed, design, period_grid(0, 1600))
     assert seen and all(threads <= {1} for threads in seen)
+
+
+def test_mean_spectrum_band_and_summary_show_a_shift():
+    import pandas as pd
+
+    from smftools.analysis.compute.read_periodicity import mean_spectrum, periodicity_summary
+
+    grid = period_grid(0, 1600)
+    tables, spectra = [], {}
+    for label, period, seed in (("short", 175.0, 1), ("long", 205.0, 2)):
+        positions, calls, observed, design = _reads(n_reads=12, period=period, seed=seed)
+        power, stats = read_periodograms(positions, calls, observed, design, grid)
+        mean, low, high = mean_spectrum(power, n_boot=100)
+        assert np.all(low <= mean + 1e-12) and np.all(mean <= high + 1e-12)
+        spectra[label] = grid.periods[np.argmax(mean)]
+        tables.append(stats.assign(group=label, molecule_uid=[f"{label}{i}" for i in range(12)]))
+    assert spectra["short"] < spectra["long"]
+    summary = periodicity_summary(pd.concat(tables), "group").set_index("group")
+    assert summary.loc["short", "median_peak_bp"] < summary.loc["long", "median_peak_bp"]
+    assert (summary["scored"] == 12).all() and (summary["reads"] == 12).all()
+    empty = mean_spectrum(np.full((3, 5), np.nan))
+    assert all(np.isnan(part).all() for part in empty)
