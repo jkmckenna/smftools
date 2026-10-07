@@ -360,6 +360,9 @@ def draw_figures(
     max_reads: int,
     seed: int = 0,
     title: str = "",
+    descending: bool = True,
+    coordinate_origin: float | None = None,
+    coordinate_reverse: bool = False,
 ) -> list[str]:
     """Per region: one paired clustermap per group, and all groups binned together."""
     from smftools.analysis.plot.read_periodicity import plot_read_periodicity_clustermap
@@ -400,6 +403,9 @@ def draw_figures(
                 max_reads=max_reads if label != "all_groups" else max_reads * 2,
                 seed=seed,
                 input_label=result.channel,
+                descending=descending,
+                coordinate_origin=coordinate_origin,
+                coordinate_reverse=coordinate_reverse,
                 title=f"{heading} | {label}",
             )
             written.append(str(path.relative_to(output_dir)))
@@ -427,11 +433,16 @@ def run_periodicity(
     workers: int = 1,
     refresh: bool = False,
     figures: bool = True,
+    descending: bool = True,
+    coordinate_origin: float | None = None,
+    coordinate_reverse: bool = False,
 ) -> dict:
     """Compute (or reuse) per-read periodograms; write tables, figures and ``run.json``.
 
     Results are reused when their key -- plan, dataset, the files it references
-    (`F72`), channel, grouping, regions and every parameter -- matches.
+    (`F72`), channel, grouping, regions and every parameter -- matches. Figure
+    options (``descending``, ``coordinate_*``) are not part of it: a cached run
+    redraws with them.
     """
     import json
 
@@ -485,7 +496,14 @@ def run_periodicity(
         save_results(result, output_dir, key)
     written = (
         draw_figures(
-            result, output_dir, max_reads=max_reads_per_plot, seed=seed, title=dataset_name
+            result,
+            output_dir,
+            max_reads=max_reads_per_plot,
+            seed=seed,
+            title=dataset_name,
+            descending=descending,
+            coordinate_origin=coordinate_origin,
+            coordinate_reverse=coordinate_reverse,
         )
         if figures
         else []

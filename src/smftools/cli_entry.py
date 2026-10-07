@@ -2128,6 +2128,21 @@ def _periodicity_options(command):
         ),
         click.option("--refresh", is_flag=True, help="Recompute even when cached results match."),
         click.option("--no-figures", is_flag=True, help="Write tables only."),
+        click.option(
+            "--ascending", is_flag=True, help="Figures: rows by peak period, smallest first."
+        ),
+        click.option(
+            "--coordinate-origin",
+            type=float,
+            default=None,
+            help="Figures: label positions relative to this position (e.g. a TSS).",
+        ),
+        click.option(
+            "--coordinate-reverse",
+            is_flag=True,
+            help="Figures: origin - position, so a reference running toward the origin "
+            "reads upstream on the left.",
+        ),
     ]
     for option in reversed(options):
         command = option(command)
@@ -2153,6 +2168,9 @@ def _run_periodicity(
     workers,
     refresh,
     no_figures,
+    ascending=False,
+    coordinate_origin=None,
+    coordinate_reverse=False,
 ):
     from .machine_learning.plan import load_ml_plan
     from .tools.read_periodicity import run_periodicity
@@ -2179,6 +2197,9 @@ def _run_periodicity(
             workers=workers,
             refresh=refresh,
             figures=not no_figures,
+            descending=not ascending,
+            coordinate_origin=coordinate_origin,
+            coordinate_reverse=coordinate_reverse,
         )
     except (KeyError, ValueError) as exc:
         raise click.ClickException(str(exc.args[0] if exc.args else exc)) from exc
