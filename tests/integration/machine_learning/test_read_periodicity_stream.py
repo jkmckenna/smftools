@@ -175,3 +175,125 @@ def test_workers_give_identical_results(project) -> None:
 def test_bad_channel_is_an_error(project) -> None:
     with pytest.raises(KeyError, match="channel"):
         compute_read_periodicity(_plan(), "reads", project_dir=project, channel="nope")
+
+
+def _labelled_plan(root: Path, names: dict[int, str]):
+    """The plan, grouped by a label table written into the project (`F72`)."""
+    pd.DataFrame(
+        {
+            "experiment_id": "exp",
+            "barcode": list(names),
+            "physical_reference": "locus_top",
+            "group": list(names.values()),
+        }
+    ).to_parquet(root / "labels.parquet", index=False)
+    document = _plan().to_dict()
+    document["datasets"]["reads"]["labels"] = {
+        "source": "table",
+        "table": "labels.parquet",
+        "keys": ["experiment_id", "barcode", "physical_reference"],
+        "column": "group",
+        "classes": {name: index for index, name in enumerate(sorted(set(names.values())))},
+    }
+    return parse_ml_plan(document)
+
+
+def _invoke(*args):
+    from click.testing import CliRunner
+
+    from smftools.cli_entry import cli
+
+    result = CliRunner().invoke(cli, [str(a) for a in args])
+    assert result.exit_code == 0, result.output
+    return result
+
+
+def test_cli_writes_outputs_and_reuses_them(project, tmp_path) -> None:
+    import json
+
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(json.dumps(_plan().to_dict()))
+    regions = tmp_path / "regions.bed"
+    regions.write_text("# name start end\nfull 0 1600\ntail 1000 1600\nshort 0 300\n")
+    out = tmp_path / "out"
+    args = [
+        "project",
+        "periodicity",
+        project,
+        "--plan",
+        plan_path,
+        "--dataset",
+        "reads",
+        "--group-by",
+        "Barcode",
+        "--regions-file",
+        regions,
+        "--max-reads-per-plot",
+        5,
+        "--output",
+        out,
+    ]
+    first = _invoke(*args)
+    assert "computed" in first.output and "narrowed for: 1000-1600" in first.output
+    for name in (
+        "read_periodicity.parquet",
+        "regions.parquet",
+        "power_0-1600.npy",
+        "periods_1000-1600.npy",
+        "plot_values_0-1600.npz",
+        "periodicity_key.json",
+        "run.json",
+        "figures/0-1600/barcode01.png",
+        "figures/0-1600/all_groups.png",
+        "figures/1000-1600/barcode02.png",
+    ):
+        assert (out / name).exists(), name
+    assert not (out / "figures" / "0-300").exists()  # too short: no figure
+    record = json.loads((out / "run.json").read_text())
+    assert record["groups"] == ["barcode01", "barcode02"] and record["molecules"] == 2 * READS
+    again = _invoke(*args, "--no-figures")
+    assert "reused cached results" in again.output
+    changed = _invoke(*args, "--min-coverage", 0.5)
+    assert "computed" in changed.output
+
+
+def test_editing_the_label_table_invalidates_cached_results(project, tmp_path) -> None:
+    """`F72`, for periodicity and context-bias alike."""
+    from smftools.tools.read_periodicity import run_periodicity
+    from smftools.tools.site_context_bias import load_or_count
+
+    out = tmp_path / "out"
+    plan = _labelled_plan(project, {1: "low", 2: "high"})
+    first = run_periodicity(
+        plan, "reads", out, project_dir=project, group_by="group", figures=False
+    )
+    assert first["groups"] == ["high", "low"] and not first["results_reused"]
+    assert run_periodicity(
+        plan, "reads", out, project_dir=project, group_by="group", figures=False
+    )["results_reused"]
+    _, reused = load_or_count(
+        plan, "reads", tmp_path / "counts", project_dir=project, group_by="group"
+    )
+    assert not reused
+
+    plan = _labelled_plan(project, {1: "dose_a", 2: "dose_b"})  # same plan hash, new labels
+    second = run_periodicity(
+        plan, "reads", out, project_dir=project, group_by="group", figures=False
+    )
+    assert not second["results_reused"] and second["groups"] == ["dose_a", "dose_b"]
+    counts, reused = load_or_count(
+        plan, "reads", tmp_path / "counts", project_dir=project, group_by="group"
+    )
+    assert not reused and set(counts.sites["group"]) == {"dose_a", "dose_b"}
+
+
+def test_cache_key_hashes_referenced_files(project) -> None:
+    from smftools.tools.analysis_cache import cache_key, referenced_files
+
+    plan = _labelled_plan(project, {1: "low", 2: "high"})
+    files = referenced_files(plan, "reads", project)
+    assert list(files) == ["labels.parquet"] and files["labels.parquet"] != "missing"
+    assert referenced_files(plan, "reads", project / "elsewhere") == {"labels.parquet": "missing"}
+    a = cache_key(plan, "reads", base_dir=project, parameters={"x": 1})
+    assert a == cache_key(plan, "reads", base_dir=project, parameters={"x": 1})
+    assert a != cache_key(plan, "reads", base_dir=project, parameters={"x": 2})

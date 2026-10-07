@@ -115,3 +115,13 @@ def test_a_region_too_short_marks_every_read():
     power, stats = read_periodograms(positions, calls, observed, design, period_grid(0, 300))
     assert power.shape == (3, 0)
     assert (stats["status"] == REGION_TOO_SHORT).all()
+
+
+def test_peak_at_edge_marks_unresolved_peaks():
+    """A short region narrows the band to 150-200 bp; a 230 bp period pins the peak at 200."""
+    positions, calls, observed, design = _reads(period=230.0, length=600)
+    _, stats = read_periodograms(positions, calls, observed, design, period_grid(0, 600))
+    assert (stats["peak_period_bp"] == 200).all() and stats["peak_at_edge"].all()
+    positions, calls, observed, design = _reads()  # 190 bp over 1.6 kb: resolved
+    _, stats = read_periodograms(positions, calls, observed, design, period_grid(0, 1600))
+    assert not stats["peak_at_edge"].any()

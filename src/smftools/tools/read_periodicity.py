@@ -46,6 +46,9 @@ class ReadPeriodicity:
     channel: str
     frame_reference: str
     parameters: dict = field(default_factory=dict)
+    # Input values kept for plotting (`keep_per_group`): per region,
+    # (molecule_uids, positions, values reads x positions, NaN unobserved).
+    plot_values: dict[str, tuple[list, np.ndarray, np.ndarray]] = field(default_factory=dict)
 
     @property
     def regions(self) -> pd.DataFrame:
@@ -61,6 +64,21 @@ def windows(coordinates: Sequence[int]) -> list[tuple[int, int]]:
     starts = np.r_[coordinates[0], coordinates[breaks + 1]]
     ends = np.r_[coordinates[breaks], coordinates[-1]] + 1
     return [(int(s), int(e)) for s, e in zip(starts, ends, strict=True)]
+
+
+def plot_selection(identity: pd.DataFrame, group_by: str | None, per_group: int, seed: int) -> set:
+    """Up to ``per_group`` molecules of each group, chosen deterministically.
+
+    Every worker computes the same set from the same identity table.
+    """
+    groups = identity[group_by].astype(str) if group_by else pd.Series(ALL, index=identity.index)
+    chosen = set()
+    for _, uids in identity["molecule_uid"].astype(str).groupby(groups.to_numpy(), sort=True):
+        uids = np.sort(uids.to_numpy())
+        if uids.size > per_group:
+            uids = np.sort(np.random.default_rng(seed).choice(uids, size=per_group, replace=False))
+        chosen.update(uids.tolist())
+    return chosen
 
 
 def _bind(document, dataset_name, scope, group_by):
@@ -108,9 +126,26 @@ def _shard(document, dataset_name, scope, group_by, channel, regions, options, w
         if workers > 1
         else bound.iter_batches()
     )
+    keep = (
+        plot_selection(bound.identity, group_by, options["keep_per_group"], options["seed"])
+        if options["keep_per_group"]
+        else set()
+    )
+    inside = {
+        name: (coordinates >= grid.start) & (coordinates < grid.end) for name, grid in grids.items()
+    }
     uids, stats, power = [], [], {name: [] for name in grids}
+    kept = {name: ([], []) for name in grids}
     for batch in batches:
         uids.extend(batch.molecule_uids)
+        rows = [i for i, uid in enumerate(batch.molecule_uids) if uid in keep]
+        if rows:
+            signal = np.where(
+                batch.observed_mask[rows, :, index], batch.values[rows, :, index], np.nan
+            ).astype(np.float32)
+            for name in grids:
+                kept[name][0].extend(batch.molecule_uids[i] for i in rows)
+                kept[name][1].append(signal[:, inside[name]])
         for name, grid in grids.items():
             block, table = read_periodograms(
                 batch.coordinates,
@@ -125,7 +160,8 @@ def _shard(document, dataset_name, scope, group_by, channel, regions, options, w
             stats.append(table.assign(molecule_uid=list(batch.molecule_uids)))
             power[name].append(block)
     frame = str(plan.dataset.input_schema.reference)
-    return uids, stats, power, grids, frame, bound.identity
+    positions = {name: coordinates[mask] for name, mask in inside.items()}
+    return uids, stats, power, grids, frame, bound.identity, kept, positions
 
 
 def compute_read_periodicity(
@@ -143,6 +179,8 @@ def compute_read_periodicity(
     poly_degree: int = LS_POLY_DEGREE,
     min_sites: int = MIN_SITES_PER_READ,
     min_coverage: float = MIN_COVERAGE,
+    keep_per_group: int = 0,
+    seed: int = 0,
     workers: int = 1,
 ) -> ReadPeriodicity:
     """Periodograms of every molecule of a plan dataset over each region.
@@ -152,6 +190,8 @@ def compute_read_periodicity(
     ``channel`` defaults to the dataset's first; ``group_by`` adds an identity
     or label-table column to the statistics. Regions too short for the period
     range are narrowed, or skipped (`analysis.compute.read_periodicity`).
+    ``keep_per_group`` > 0 also keeps the input values of up to that many
+    molecules per group (chosen with ``seed``) for figures.
     """
     declared = [item.name for item in plan.datasets[dataset_name].channels]
     channel = channel or declared[0]
@@ -165,6 +205,8 @@ def compute_read_periodicity(
         "poly_degree": int(poly_degree),
         "min_sites": int(min_sites),
         "min_coverage": float(min_coverage),
+        "keep_per_group": int(keep_per_group),
+        "seed": int(seed),
     }
     for start, end in regions or []:
         period_grid(
@@ -184,10 +226,10 @@ def compute_read_periodicity(
     else:
         shards = [_shard(*jobs[0])]
 
-    _, _, _, grids, frame, identity = shards[0]
+    _, _, _, grids, frame, identity, _, positions = shards[0]
     # The dataset's molecule order, whatever the worker split.
     order = {uid: rank for rank, uid in enumerate(identity["molecule_uid"])}
-    stats_parts, power = [], {}
+    stats_parts, power, plot_values = [], {}, {}
     for name in grids:
         tables = [t for shard in shards for t in shard[1] if t["region"].iat[0] == name]
         blocks = [b for shard in shards for b in shard[2][name]]
@@ -199,6 +241,15 @@ def compute_read_periodicity(
         sort = np.argsort(ranks, kind="stable")
         stats_parts.append(table.iloc[sort].reset_index(drop=True))
         power[name] = matrix[sort]
+        kept_uids = [uid for shard in shards for uid in shard[6][name][0]]
+        if kept_uids:
+            kept_values = np.concatenate([v for shard in shards for v in shard[6][name][1]])
+            ranks = np.argsort([order[uid] for uid in kept_uids], kind="stable")
+            plot_values[name] = (
+                [kept_uids[i] for i in ranks],
+                positions[name],
+                kept_values[ranks],
+            )
     stats = pd.concat(stats_parts, ignore_index=True)
     columns = [c for c in ("read_id", "experiment_id", "physical_reference") if c in identity]
     extra = identity.set_index("molecule_uid")[columns]
@@ -216,4 +267,240 @@ def compute_read_periodicity(
         channel=channel,
         frame_reference=frame,
         parameters={**options, "regions": [g.name for g in grids.values()]},
+        plot_values=plot_values,
     )
+
+
+RESULT_KEY = "periodicity_key.json"
+STATS_FILE = "read_periodicity.parquet"
+REGIONS_FILE = "regions.parquet"
+
+
+def _safe(name: str) -> str:
+    return "".join(c if c.isalnum() or c in "-._" else "_" for c in str(name)).strip("_") or "x"
+
+
+def save_results(result: ReadPeriodicity, output_dir: Path, key: dict) -> None:
+    import json
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    result.stats.to_parquet(output_dir / STATS_FILE, index=False)
+    result.regions.to_parquet(output_dir / REGIONS_FILE, index=False)
+    for name, grid in result.grids.items():
+        np.save(output_dir / f"power_{name}.npy", result.power[name])
+        np.save(output_dir / f"periods_{name}.npy", grid.periods)
+        if name in result.plot_values:
+            uids, positions, values = result.plot_values[name]
+            np.savez_compressed(
+                output_dir / f"plot_values_{name}.npz",
+                molecule_uids=np.asarray(uids, dtype=str),
+                positions=positions,
+                values=values,
+            )
+    (output_dir / RESULT_KEY).write_text(
+        json.dumps(
+            {
+                "key": key,
+                "channel": result.channel,
+                "frame_reference": result.frame_reference,
+                "parameters": result.parameters,
+            },
+            indent=2,
+            default=str,
+        )
+    )
+
+
+def load_results(output_dir: Path, key: dict) -> ReadPeriodicity | None:
+    """Saved results made under ``key``, or None."""
+    import json
+
+    meta = output_dir / RESULT_KEY
+    if not meta.is_file() or not (output_dir / STATS_FILE).is_file():
+        return None
+    saved = json.loads(meta.read_text())
+    if saved.get("key") != key:
+        return None
+    parameters = saved["parameters"]
+    stats = pd.read_parquet(output_dir / STATS_FILE)
+    grids, power, plot_values = {}, {}, {}
+    for record in pd.read_parquet(output_dir / REGIONS_FILE).to_dict("records"):
+        grid = period_grid(
+            int(record["start"]),
+            int(record["end"]),
+            period_range=tuple(parameters["period_range"]),
+            peak_range=tuple(parameters["peak_range"]),
+            min_cycles=parameters["min_cycles"],
+        )
+        grids[grid.name] = grid
+        power[grid.name] = np.load(output_dir / f"power_{grid.name}.npy")
+        values_path = output_dir / f"plot_values_{grid.name}.npz"
+        if values_path.is_file():
+            with np.load(values_path) as data:
+                plot_values[grid.name] = (
+                    data["molecule_uids"].astype(str).tolist(),
+                    data["positions"],
+                    data["values"],
+                )
+    return ReadPeriodicity(
+        stats=stats,
+        power=power,
+        grids=grids,
+        channel=saved["channel"],
+        frame_reference=saved["frame_reference"],
+        parameters=parameters,
+        plot_values=plot_values,
+    )
+
+
+def draw_figures(
+    result: ReadPeriodicity,
+    output_dir: Path,
+    *,
+    max_reads: int,
+    seed: int = 0,
+    title: str = "",
+) -> list[str]:
+    """Per region: one paired clustermap per group, and all groups binned together."""
+    from smftools.analysis.plot.read_periodicity import plot_read_periodicity_clustermap
+
+    written = []
+    for name, grid in result.grids.items():
+        if grid.status != "ok" or name not in result.plot_values:
+            continue
+        uids, positions, values = result.plot_values[name]
+        region_stats = result.stats.loc[result.stats["region"] == name].reset_index(drop=True)
+        row_of = {uid: i for i, uid in enumerate(region_stats["molecule_uid"])}
+        rows = np.array([row_of[uid] for uid in uids])
+        peaks = region_stats["peak_period_bp"].to_numpy()[rows]
+        groups = region_stats["group"].astype(str).to_numpy()[rows]
+        power = result.power[name][rows]
+        ranges = f"periods {grid.period_range[0]:g}-{grid.period_range[1]:g} bp" + (
+            " (narrowed to the region)" if grid.narrowed else ""
+        )
+        heading = " | ".join(
+            part for part in (title, f"{result.channel}", f"region {name}", ranges) if part
+        )
+        directory = output_dir / "figures" / name
+        directory.mkdir(parents=True, exist_ok=True)
+        selections = [(group, groups == group) for group in dict.fromkeys(groups)]
+        if len(selections) > 1:
+            selections.append(("all_groups", np.ones(groups.size, dtype=bool)))
+        for label, mask in selections:
+            path = directory / f"{_safe(label)}.png"
+            plot_read_periodicity_clustermap(
+                values[mask],
+                positions,
+                power[mask],
+                grid.periods,
+                peaks[mask],
+                path,
+                bins=groups[mask] if label == "all_groups" else None,
+                peak_range=grid.peak_range,
+                max_reads=max_reads if label != "all_groups" else max_reads * 2,
+                seed=seed,
+                input_label=result.channel,
+                title=f"{heading} | {label}",
+            )
+            written.append(str(path.relative_to(output_dir)))
+    return written
+
+
+def run_periodicity(
+    plan,
+    dataset_name: str,
+    output_dir: str | Path,
+    *,
+    project_dir: str | Path | None = None,
+    experiment_dir: str | Path | None = None,
+    regions: Sequence[tuple[int, int]] | None = None,
+    channel: str | None = None,
+    group_by: str | None = None,
+    period_range: tuple[float, float] = PERIOD_RANGE_BP,
+    peak_range: tuple[float, float] = PEAK_RANGE_BP,
+    min_cycles: float = MIN_CYCLES,
+    poly_degree: int = LS_POLY_DEGREE,
+    min_sites: int = MIN_SITES_PER_READ,
+    min_coverage: float = MIN_COVERAGE,
+    max_reads_per_plot: int = 1000,
+    seed: int = 0,
+    workers: int = 1,
+    refresh: bool = False,
+    figures: bool = True,
+) -> dict:
+    """Compute (or reuse) per-read periodograms; write tables, figures and ``run.json``.
+
+    Results are reused when their key -- plan, dataset, the files it references
+    (`F72`), channel, grouping, regions and every parameter -- matches.
+    """
+    import json
+
+    from smftools import __version__
+    from smftools.tools.analysis_cache import cache_key
+
+    output_dir = Path(output_dir)
+    declared = [item.name for item in plan.datasets[dataset_name].channels]
+    channel = channel or declared[0]
+    regions = [(int(s), int(e)) for s, e in regions] if regions else None
+    # Plot values are kept whether or not figures are drawn now, so the
+    # cache key -- and a later run with figures -- does not depend on it.
+    keep = int(np.ceil(max_reads_per_plot * 1.25))
+    parameters = {
+        "channel": channel,
+        "group_by": group_by,
+        "regions": regions,
+        "period_range": list(period_range),
+        "peak_range": list(peak_range),
+        "min_cycles": min_cycles,
+        "poly_degree": poly_degree,
+        "min_sites": min_sites,
+        "min_coverage": min_coverage,
+        "keep_per_group": keep,
+        "seed": seed,
+    }
+    key = cache_key(
+        plan, dataset_name, base_dir=project_dir or experiment_dir, parameters=parameters
+    )
+    result = None if refresh else load_results(output_dir, key)
+    reused = result is not None
+    if result is None:
+        result = compute_read_periodicity(
+            plan,
+            dataset_name,
+            project_dir=project_dir,
+            experiment_dir=experiment_dir,
+            regions=regions,
+            channel=channel,
+            group_by=group_by,
+            period_range=period_range,
+            peak_range=peak_range,
+            min_cycles=min_cycles,
+            poly_degree=poly_degree,
+            min_sites=min_sites,
+            min_coverage=min_coverage,
+            keep_per_group=keep,
+            seed=seed,
+            workers=workers,
+        )
+        save_results(result, output_dir, key)
+    written = (
+        draw_figures(
+            result, output_dir, max_reads=max_reads_per_plot, seed=seed, title=dataset_name
+        )
+        if figures
+        else []
+    )
+    status = result.stats.groupby(["region", "status"]).size()
+    record = {
+        "key": key,
+        "results_reused": reused,
+        "frame_reference": result.frame_reference,
+        "regions": result.regions.to_dict("records"),
+        "status_counts": {f"{r}|{s}": int(n) for (r, s), n in status.items()},
+        "groups": sorted(result.stats["group"].astype(str).unique()),
+        "molecules": int(result.stats["molecule_uid"].nunique()),
+        "figures": written,
+        "smftools_version": __version__,
+    }
+    (output_dir / "run.json").write_text(json.dumps(record, indent=2, default=str))
+    return record
