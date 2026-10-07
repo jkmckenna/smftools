@@ -1,6 +1,6 @@
 # Sequence-context-aware HMM emissions (`HCE`)
 
-**Status:** in progress. `HCE-01`, `HCE-02` implemented. One PR per item, in order. The
+**Status:** in progress. `HCE-01`–`HCE-03` implemented. One PR per item, in order. The
 default stays `none` unless `HCE-05` qualifies a mode.
 
 ## Question
@@ -81,7 +81,7 @@ hmm_context_weight_bounds: [0.1, 10]
 |---|---|---|
 | `HCE-01` context indices and weight tables | implemented, not merged | per-position context index for a reference and strand; the weight-table format; `context-bias` exports it |
 | `HCE-02` context emissions, `table` mode | implemented, not merged | a context-aware Bernoulli emission with fixed weights; EM fits the per-state level |
-| `HCE-03` `learned` mode | proposed | per-(state, context) emissions in the M-step with shrinkage; CpG handling; the fitted weights saved as a table |
+| `HCE-03` `learned` mode | implemented, not merged | per-(state, context) emissions in the M-step with shrinkage; CpG handling; the fitted weights saved as a table |
 | `HCE-04` pipeline integration | proposed | config, partitioned fit/apply, model artifacts, fingerprint |
 | `HCE-05` qualification | proposed | on a panel of several enzymes applied to the same cells |
 
@@ -151,6 +151,17 @@ be reused as `table` elsewhere.
 Tests: on simulated data the learned weights converge to the planted ones;
 shrinkage holds a context with few sites at the state rate; with no context
 effect the fit matches `none`; CpG `separate` keeps CpG apart.
+
+As built: `ContextBernoulliHMM(learn=True, shrinkage=m, weight_bounds=...,
+cpg_codes=..., cpg=...)`, modified state only. Each EM iteration: closed-form
+state levels, then per-context emissions of the modified state shrunk toward
+its level, stored as bounded log weights on the odds. Learned weights are
+relative to the state's overall rate, which already averages over contexts,
+so they are identified up to a constant the level absorbs: compare centred
+weights (a simulation recovers the centred planted weights within 0.2 on the
+log scale, correlation > 0.95). `cpg="exclude"` drops CpG sites from the
+model's input; `separate`/`none` learn them as any context, flagged `cpg` in
+`weight_table(group, k)` (the `HCE-01` format, source `learned`).
 
 ### `HCE-04` — pipeline integration
 

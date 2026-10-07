@@ -126,3 +126,97 @@ def test_set_contexts_validates():
         model.set_contexts(log_weights=[np.inf], position_codes=[0])
     with pytest.raises(ValueError, match="context_states"):
         ContextBernoulliHMM(context_states="some")
+
+
+def _learned(codes, **kwargs):
+    return ContextBernoulliHMM(
+        init_emission=[0.1, 0.6],
+        log_weights=np.zeros(N_CONTEXTS),
+        position_codes=codes,
+        learn=True,
+        **kwargs,
+    )
+
+
+def test_learned_weights_converge_to_the_planted_ones():
+    """`HCE-03`."""
+    calls, _, codes, weights = _simulate(n_reads=120, length=1200, seed=1)
+    model = _fit(_learned(codes), calls)
+    # Weights are relative to the state's overall rate, which averages over the
+    # contexts: they are identified up to a constant the level absorbs.
+    learned = model.log_weights.numpy()
+    truth = np.log(weights)
+    learned, truth = learned - learned.mean(), truth - truth.mean()
+    assert np.corrcoef(learned, truth)[0, 1] > 0.95
+    assert np.abs(learned - truth).max() < 0.2
+    assert np.array_equal(learned < 0, truth < 0)  # the split, on every context
+
+
+def test_shrinkage_holds_a_rare_context_at_the_state_rate():
+    calls, _, codes, _ = _simulate(n_reads=60, length=900, seed=2)
+    codes = codes.copy()
+    codes[codes == 3] = 0
+    codes[:2] = 3  # context 3 now sits at two positions only
+    model = _fit(_learned(codes, shrinkage=1e6), calls)
+    assert np.abs(model.log_weights.numpy()).max() < 0.05  # everything pinned to the level
+    loose = _fit(_learned(codes, shrinkage=0.0), calls)
+    assert np.abs(loose.log_weights.numpy()).max() > 0.5
+
+
+def test_no_context_effect_learns_no_weights():
+    rng = np.random.default_rng(3)
+    calls, states, codes, _ = _simulate(n_reads=60, length=900, seed=3)
+    p = np.where(states == 1, 0.55, 0.04)
+    calls = np.where(np.isnan(calls), np.nan, (rng.random(p.shape) < p).astype(float))
+    model = _fit(_learned(codes), calls)
+    assert np.abs(model.log_weights.numpy()).max() < 0.25
+
+
+def test_cpg_exclude_ignores_cpg_sites():
+    calls, _, codes, weights = _simulate(n_reads=20, length=400, seed=4)
+    cpg_codes = [1, 5]
+    model = ContextBernoulliHMM(
+        init_emission=[0.1, 0.6],
+        log_weights=np.log(weights),
+        position_codes=codes,
+        cpg_codes=cpg_codes,
+        cpg="exclude",
+    )
+    masked = calls.copy()
+    masked[:, np.isin(codes, cpg_codes)] = np.nan
+    reference = ContextBernoulliHMM(
+        init_emission=[0.1, 0.6], log_weights=np.log(weights), position_codes=codes
+    )
+    coords = np.arange(calls.shape[1])
+    np.testing.assert_allclose(
+        model.decode(calls, coords, device="cpu")[1],
+        reference.decode(masked, coords, device="cpu")[1],
+    )
+
+
+def test_learned_weights_export_as_a_table(tmp_path):
+    from smftools.analysis.compute.site_context_bias import (
+        read_weight_table,
+        weights_for,
+        write_weight_table,
+    )
+
+    calls, _, codes, _ = _simulate(n_reads=30, length=600, seed=5)
+    model = _fit(_learned(codes), calls)
+    table = model.weight_table("CseDa01", k=3)
+    assert (table["source"] == "learned").all() and len(table) == 16
+    assert table["cpg"].sum() == 4  # N-C-G
+    write_weight_table(table, tmp_path / "learned.parquet")
+    weights = weights_for(read_weight_table(tmp_path / "learned.parquet"), "CseDa01", 3)
+    np.testing.assert_allclose(np.log(weights), model.log_weights.numpy())
+    with pytest.raises(ValueError, match="do not match"):
+        model.weight_table("x", k=5)
+
+
+def test_learned_mode_validation():
+    with pytest.raises(ValueError, match="modified state only"):
+        ContextBernoulliHMM(learn=True, context_states="all")
+    with pytest.raises(ValueError, match="cpg"):
+        ContextBernoulliHMM(cpg="maybe")
+    with pytest.raises(ValueError, match="bracket"):
+        ContextBernoulliHMM(weight_bounds=(2.0, 10.0))
