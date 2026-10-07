@@ -25,6 +25,9 @@ pytestmark = pytest.mark.integration
 N_POSITIONS = 30
 READS = 12
 EXPERIMENTS = ("exp_a", "exp_b")
+# C sites at every other position, so site-restricted and every-position
+# reads differ (`RPG-01`).
+C_SITES = np.arange(N_POSITIONS) % 2 == 0
 
 
 def _store_source(read_ids, barcodes, x, layers=None) -> ad.AnnData:
@@ -37,7 +40,7 @@ def _store_source(read_ids, barcodes, x, layers=None) -> ad.AnnData:
     )
     source = ad.AnnData(X=x, obs=obs, layers=layers or {})
     source.var_names = [str(position) for position in range(N_POSITIONS)]
-    source.var["chr1+_C_site"] = True
+    source.var["chr1+_C_site"] = C_SITES
     return source
 
 
@@ -67,6 +70,10 @@ def _write_experiment(root: Path, experiment_id: str, rng: np.random.Generator) 
     pd.DataFrame(
         {"task_id": ["t"], "reference": ["chr1+"], "layers": [[]], "has_x": [True]}
     ).to_parquet(preprocess / "catalog.parquet", index=False)
+    # QC flags live only in preprocess obs; one read per barcode fails.
+    pd.DataFrame(
+        {"read_id": read_ids, "passes_qc": [i % READS != 0 for i in range(len(read_ids))]}
+    ).to_parquet(preprocess / "stage_obs.parquet", index=False)
 
     # The HMM stage as the pipeline publishes it: everything inside a
     # generation, a canonical spine at the stage root.
@@ -160,13 +167,13 @@ def project(tmp_path: Path):
     return root, calls, footprint
 
 
-def _plan():
-    def channel(name, stage, layer):
+def _plan(footprint_context: str = "C", calls_context: str = "C"):
+    def channel(name, stage, layer, context="C"):
         return {
             "name": name,
             "biological_role": "accessibility",
             "sources": [
-                {"modality": "deaminase", "stage": stage, "layer": layer, "site_context": "C"}
+                {"modality": "deaminase", "stage": stage, "layer": layer, "site_context": context}
             ],
         }
 
@@ -180,8 +187,8 @@ def _plan():
                     "modalities": ["deaminase"],
                     "references": ["locus"],
                     "channels": [
-                        channel("C", "preprocess", "X"),
-                        channel("footprint", "hmm", "C_all_footprint_features"),
+                        channel("C", "preprocess", "X", calls_context),
+                        channel("footprint", "hmm", "C_all_footprint_features", footprint_context),
                     ],
                 }
             },
@@ -242,3 +249,42 @@ def test_whole_dataset_reads_split_across_workers(project) -> None:
         for read_id in batch.read_ids
     ]
     assert sorted(shards) == sorted(calls)
+
+
+def test_every_position_channel_observes_the_dense_layer(project) -> None:
+    """`RPG-01`: site_context "all" observes every covered position of an HMM layer."""
+    root, _, footprint = project
+    dense = bind_ml_dataset(_plan(footprint_context="all"), "reads", project_dir=root)
+    sites = bind_ml_dataset(_plan(), "reads", project_dir=root)
+    for every, at_sites in zip(dense.iter_batches(), sites.iter_batches(), strict=True):
+        assert list(every.molecule_uids) == list(at_sites.molecule_uids)
+        np.testing.assert_array_equal(every.values, at_sites.values)
+        for row, read_id in enumerate(every.read_ids):
+            covered = np.isfinite(footprint[read_id])
+            np.testing.assert_array_equal(every.observed_mask[row, :, 1], covered)
+            np.testing.assert_array_equal(at_sites.observed_mask[row, :, 1], covered & C_SITES)
+            # The site-call channel is unchanged.
+            np.testing.assert_array_equal(
+                every.observed_mask[row, :, 0], at_sites.observed_mask[row, :, 0]
+            )
+
+
+def test_every_position_is_refused_for_site_calls(project) -> None:
+    from smftools.machine_learning.selection import MLSelectionError
+
+    root, _, _ = project
+    with pytest.raises(MLSelectionError, match="holds site calls"):
+        bind_ml_dataset(_plan(calls_context="all"), "reads", project_dir=root)
+
+
+def test_qc_filters_apply_to_a_dataset_reading_only_derived_stages(project) -> None:
+    """`F73`: QC flags come from preprocess obs even when no channel reads preprocess."""
+    root, calls, _ = project
+    document = _plan(footprint_context="all").to_dict()
+    dataset = document["datasets"]["reads"]
+    dataset["channels"] = [c for c in dataset["channels"] if c["name"] == "footprint"]
+    dataset["filters"] = {"passes_qc": True}
+    bound = bind_ml_dataset(parse_ml_plan(document), "reads", project_dir=root)
+    kept = set(bound.identity["read_id"])
+    failing = {read_id for read_id in calls if read_id.endswith("_0")}
+    assert kept == set(calls) - failing and failing

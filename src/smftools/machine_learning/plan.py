@@ -19,6 +19,10 @@ from typing import Any
 ML_PLAN_SCHEMA_VERSION = 1
 SUPPORTED_MODALITIES = frozenset({"conversion", "deaminase", "direct"})
 SUPPORTED_JOB_ACTIONS = frozenset({"apply", "evaluate", "explain", "plot", "train"})
+# A channel's site_context naming every position of its layer rather than one
+# kind of site (`RPG-01`); site calls (raw/preprocess) cannot be read that way.
+ALL_POSITIONS = "all"
+SITE_CALL_STAGES = frozenset({"raw", "preprocess"})
 
 
 class MLPlanValidationError(ValueError):
