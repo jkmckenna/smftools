@@ -1,5 +1,6 @@
 """Sequence-context QC of a preprocess generation (`SCQ-01`)."""
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -176,3 +177,94 @@ def test_no_passing_calls_give_empty_tables():
     )
     sites, enrichment, rates = context_statistics(empty, {}, flank=3, kmers=[1, 3])
     assert sites.empty and enrichment.empty and rates.empty
+
+
+# --- SCQ-03: backfill for finished stages ---------------------------------------
+
+
+def _tables(directory: Path) -> dict:
+    return {
+        "counts": pd.read_parquet(directory / "site_counts.parquet"),
+        "sites": pd.read_parquet(directory / "sites.parquet"),
+        "rates": pd.read_csv(directory / "kmer_rates.csv"),
+    }
+
+
+def _assert_backfill_matches(monkeypatch, generation: Path, stage: str, cfg):
+    from smftools.tools import context_qc_backfill
+
+    written = _tables(generation / "context_qc")
+    plots_before = sorted(p.name for p in (generation / "plots").rglob("*"))
+    monkeypatch.setattr(context_qc_backfill, "current_generation", lambda *_: generation)
+
+    result = context_qc_backfill.backfill_context_qc(generation.parent, stage, cfg)
+    assert result["status"] == "exists"  # present: left alone without refresh
+    result = context_qc_backfill.backfill_context_qc(generation.parent, stage, cfg, refresh=True)
+    assert result["status"] == "written"
+
+    backfilled = _tables(generation / "context_qc")
+    for name, frame in written.items():
+        pd.testing.assert_frame_equal(backfilled[name], frame, check_dtype=False)
+    run = json.loads((generation / "context_qc" / "run.json").read_text())
+    assert run["backfilled"] is True
+    # The generation's own (checksummed) plot tree is untouched.
+    assert sorted(p.name for p in (generation / "plots").rglob("*")) == plots_before
+    assert (generation / "context_qc" / "plots" / "catalog.parquet").exists()
+
+
+def test_preprocess_backfill_equals_the_stage_outputs(tmp_path, monkeypatch):
+    from smftools.informatics.raw_store import write_raw_store
+    from smftools.preprocessing.partitioned_executor import execute_partitioned_preprocessing
+
+    from .test_partitioned_preprocess_executor import _cfg, _frame
+
+    raw = write_raw_store(
+        _frame(),
+        tmp_path / "raw_outputs",
+        reference_lengths={"ref_top": 12},
+        analysis_mode="locus",
+        extra_uns={"References": {"ref_FASTA_sequence": "ACGCGTACGTAC"}},
+    )
+    cfg = _cfg()
+    cfg.smf_modality = "deaminase"
+    cfg.bypass_label_deaminase_pcr_chimeras = True
+    generation = tmp_path / "preprocess_outputs"
+    execute_partitioned_preprocessing(raw["spine"], cfg, generation)
+    _assert_backfill_matches(monkeypatch, generation, "preprocess", cfg)
+
+
+def test_hmm_backfill_equals_the_stage_outputs(tmp_path, monkeypatch):
+    from .test_hmm_partitioned_cli import _context_run
+
+    cfg, outputs, _ = _context_run(
+        tmp_path, hmm_variants={"learned": {"hmm_context_model": "learned"}}
+    )
+    _assert_backfill_matches(monkeypatch, outputs["task_catalog"].parent, "hmm", cfg)
+
+
+def test_backfill_config_comes_from_the_experiment_manifest(tmp_path):
+    from smftools.tools.context_qc_backfill import backfill_context_qc, experiment_config
+
+    (tmp_path / "experiment_manifest.json").write_text(
+        json.dumps({"config": {"smf_modality": "deaminase", "hmm_methbases": ["C"]}})
+    )
+    cfg = experiment_config(tmp_path)
+    assert cfg.smf_modality == "deaminase"
+    # No published generation: reported, nothing written.
+    assert backfill_context_qc(tmp_path, "hmm", cfg)["status"] == "no_generation"
+    with pytest.raises(FileNotFoundError):
+        experiment_config(tmp_path / "missing")
+
+
+def test_context_qc_commands_report_per_stage(tmp_path):
+    from click.testing import CliRunner
+
+    from smftools.cli_entry import cli
+
+    (tmp_path / "experiment_manifest.json").write_text(
+        json.dumps({"config": {"smf_modality": "deaminase"}})
+    )
+    result = CliRunner().invoke(cli, ["experiment", "context-qc", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert f"{tmp_path.name} preprocess: no_generation" in result.output
+    assert f"{tmp_path.name} hmm: no_generation" in result.output
