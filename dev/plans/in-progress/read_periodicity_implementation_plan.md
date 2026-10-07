@@ -1,6 +1,6 @@
 # Per-read periodicity over regions (`RPG`)
 
-**Status:** in progress. `RPG-01`, `RPG-02` merged; `RPG-03` implemented. One PR per item, in order.
+**Status:** in progress. `RPG-01`–`RPG-03` merged; `RPG-04` implemented. One PR per item, in order.
 
 ## Question
 
@@ -74,8 +74,8 @@ the independent readout.
 |---|---|---|
 | `RPG-01` dense channels | merged | `site_context: all` in ML plans |
 | `RPG-02` compute | merged | streamed per-(read, region) periodograms and statistics |
-| `RPG-03` figures | implemented, not merged | paired input / periodogram clustermaps in one row order |
-| `RPG-04` CLI | proposed | `smftools project periodicity`, `smftools experiment periodicity` |
+| `RPG-03` figures | merged | paired input / periodogram clustermaps in one row order |
+| `RPG-04` CLI | implemented, not merged | `smftools project periodicity`, `smftools experiment periodicity` |
 | `RPG-05` qualification | proposed | agreement with stored spatial periodograms; timings |
 
 ### `RPG-01` — `site_context: all`
@@ -176,6 +176,18 @@ of a label table reuses stale counts (`F72`).
 
 Tests: CLI on a fixture project writes every output; a re-run reuses the
 cache; editing the label table invalidates it (both commands).
+
+As built: figures per region in `figures/<region>/`, one per group plus
+`all_groups.png` (binned by group); the input values of up to
+1.25 x `--max-reads-per-plot` molecules per group are kept during the one
+pass (each worker picks the same molecules from the identity table) and saved
+(`plot_values_<region>.npz`), so a re-run redraws without reading. Plot values
+are kept with or without figures, so `--no-figures` does not change the key.
+Per-read `peak_at_edge` marks a peak on a bound of the peak-search range: on a
+real panel 0.1% of reads over the full amplicon, 31% in a 600 bp region whose
+range narrowed to 80-200 bp (peaks pile up at the 200 bp ceiling). A real
+run (4,121 molecules, two regions, six groups, 8 workers): 48 s; cached
+re-run with figures 3 s.
 
 ### `RPG-05` — qualification
 

@@ -2018,6 +2018,208 @@ def experiment_context_bias_cmd(experiment_dir, **options):
     _run_context_bias({"experiment_dir": experiment_dir}, **options)
 
 
+def _parse_region(text: str) -> tuple[int, int]:
+    import re
+
+    match = re.fullmatch(r"\s*(\d+)\s*-\s*(\d+)\s*", text)
+    if not match:
+        raise click.BadParameter(f"region {text!r} must be START-END")
+    return int(match.group(1)), int(match.group(2))
+
+
+def _read_regions_file(path: Path) -> list[tuple[int, int]]:
+    """BED-like: ``start end`` or ``name start end`` per line; ``#`` comments."""
+    regions = []
+    for number, line in enumerate(path.read_text().splitlines(), start=1):
+        fields = line.split("#", 1)[0].split()
+        if not fields:
+            continue
+        try:
+            start, end = (int(v) for v in (fields[-2:] if len(fields) >= 3 else fields[:2]))
+        except ValueError as exc:
+            raise click.BadParameter(f"{path}:{number}: expected [name] start end") from exc
+        regions.append((start, end))
+    return regions
+
+
+def _periodicity_options(command):
+    """Options shared by the project and experiment ``periodicity`` commands."""
+    options = [
+        click.option(
+            "--plan",
+            "plan_path",
+            type=click.Path(exists=True, dir_okay=False, path_type=Path),
+            required=True,
+            help="ML plan (.json/.yaml) whose dataset selects the molecules.",
+        ),
+        click.option("--dataset", required=True, help="Dataset name in the plan."),
+        click.option(
+            "--output",
+            "-o",
+            "output_dir",
+            type=click.Path(file_okay=False, path_type=Path),
+            required=True,
+            help="Output directory (results are cached here and reused).",
+        ),
+        click.option(
+            "--channel",
+            default=None,
+            help="Dataset channel (its layer and site context, or 'all' positions). Default: first.",
+        ),
+        click.option(
+            "--group-by",
+            default=None,
+            help="Identity or label-table column to group molecules by. Default: one group.",
+        ),
+        click.option(
+            "--region",
+            "region_texts",
+            multiple=True,
+            help="START-END in the dataset's frame coordinates (repeatable). "
+            "Default: the plan's position windows.",
+        ),
+        click.option(
+            "--regions-file",
+            type=click.Path(exists=True, dir_okay=False, path_type=Path),
+            default=None,
+            help="BED-like file: [name] start end per line.",
+        ),
+        click.option(
+            "--period-range",
+            nargs=2,
+            type=float,
+            default=(80.0, 400.0),
+            show_default=True,
+            help="Requested period range (bp); narrowed for short regions.",
+        ),
+        click.option(
+            "--peak-range",
+            nargs=2,
+            type=float,
+            default=(150.0, 250.0),
+            show_default=True,
+            help="Peak-search range (bp).",
+        ),
+        click.option(
+            "--min-cycles",
+            type=click.FloatRange(min=0.5),
+            default=3.0,
+            show_default=True,
+            help="Cycles of the longest period a region must hold.",
+        ),
+        click.option("--poly-degree", type=click.IntRange(min=0), default=2, show_default=True),
+        click.option("--min-sites", type=click.IntRange(min=1), default=40, show_default=True),
+        click.option(
+            "--min-coverage",
+            type=click.FloatRange(min=0.0, max=1.0),
+            default=0.8,
+            show_default=True,
+            help="Fraction of the region's design positions a read must cover.",
+        ),
+        click.option(
+            "--max-reads-per-plot", type=click.IntRange(min=1), default=1000, show_default=True
+        ),
+        click.option(
+            "--workers",
+            type=click.IntRange(min=1),
+            default=1,
+            show_default=True,
+            help="Reader processes.",
+        ),
+        click.option("--refresh", is_flag=True, help="Recompute even when cached results match."),
+        click.option("--no-figures", is_flag=True, help="Write tables only."),
+    ]
+    for option in reversed(options):
+        command = option(command)
+    return command
+
+
+def _run_periodicity(
+    scope: dict,
+    plan_path,
+    dataset,
+    output_dir,
+    channel,
+    group_by,
+    region_texts,
+    regions_file,
+    period_range,
+    peak_range,
+    min_cycles,
+    poly_degree,
+    min_sites,
+    min_coverage,
+    max_reads_per_plot,
+    workers,
+    refresh,
+    no_figures,
+):
+    from .machine_learning.plan import load_ml_plan
+    from .tools.read_periodicity import run_periodicity
+
+    regions = [_parse_region(text) for text in region_texts]
+    if regions_file is not None:
+        regions += _read_regions_file(regions_file)
+    try:
+        record = run_periodicity(
+            load_ml_plan(plan_path),
+            dataset,
+            output_dir,
+            **scope,
+            regions=regions or None,
+            channel=channel,
+            group_by=group_by,
+            period_range=tuple(period_range),
+            peak_range=tuple(peak_range),
+            min_cycles=min_cycles,
+            poly_degree=poly_degree,
+            min_sites=min_sites,
+            min_coverage=min_coverage,
+            max_reads_per_plot=max_reads_per_plot,
+            workers=workers,
+            refresh=refresh,
+            figures=not no_figures,
+        )
+    except (KeyError, ValueError) as exc:
+        raise click.ClickException(str(exc.args[0] if exc.args else exc)) from exc
+    state = "reused cached results" if record["results_reused"] else "computed"
+    skipped = [r["region"] for r in record["regions"] if r["status"] != "ok"]
+    narrowed = [r["region"] for r in record["regions"] if r["narrowed"] and r["status"] == "ok"]
+    click.echo(
+        f"{state}: {record['molecules']} molecules, {len(record['regions'])} region(s), "
+        f"{len(record['groups'])} group(s); wrote {output_dir}"
+    )
+    if narrowed:
+        click.echo(f"  period range narrowed for: {', '.join(narrowed)}")
+    if skipped:
+        click.echo(f"  skipped (too short for the period range): {', '.join(skipped)}", err=True)
+
+
+@project_group.command("periodicity")
+@click.argument("project_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@_periodicity_options
+def project_periodicity_cmd(project_dir, **options):
+    """Per-read Lomb-Scargle periodograms over regions of a plan dataset.
+
+    Any channel: site calls, or a derived layer at sites or at every position
+    (site_context 'all'). The period range narrows to regions too short for
+    it. Writes per-read statistics, power matrices and paired input /
+    periodogram clustermaps sorted by peak period.
+    """
+    _run_periodicity({"project_dir": project_dir}, **options)
+
+
+@experiment_group.command("periodicity")
+@click.argument("experiment_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@_periodicity_options
+def experiment_periodicity_cmd(experiment_dir, **options):
+    """Per-read periodograms over regions of one experiment's plan dataset.
+
+    As ``project periodicity``, for an experiment-scope plan.
+    """
+    _run_periodicity({"experiment_dir": experiment_dir}, **options)
+
+
 @project_group.command("validate")
 @click.argument("project_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
 @click.argument("output_root", type=click.Path(exists=True, file_okay=False, path_type=Path))

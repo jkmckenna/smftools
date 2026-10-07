@@ -134,7 +134,8 @@ def read_periodograms(
     ``design`` are reads x columns. Only columns inside the region are used.
     A read needs ``min_coverage`` of the region's design positions observed and
     ``min_sites`` observed values. Returns power (reads x periods, NaN where
-    not scored) and per-read statistics with a ``status``.
+    not scored) and per-read statistics with a ``status``; ``peak_at_edge``
+    marks a peak on a bound of the peak-search range.
     """
     positions = np.asarray(positions)
     inside = (positions >= grid.start) & (positions < grid.end)
@@ -183,4 +184,10 @@ def read_periodograms(
             **stats,
         }
     )
+    # A peak on a bound of the search range is the largest power there, not a
+    # resolved period -- common when a short region narrows the range.
+    peaks = table["peak_period_bp"]
+    table["peak_at_edge"] = (
+        (np.abs(peaks - grid.peak_range[0]) <= 1) | (np.abs(peaks - grid.peak_range[1]) <= 1)
+    ) & peaks.notna()
     return power, table

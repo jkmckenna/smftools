@@ -168,13 +168,22 @@ COUNTS_FILE = "site_counts.parquet"
 COUNTS_META = "site_counts.json"
 
 
-def _counts_key(plan, dataset_name: str, channel: str | None, group_by: str | None) -> dict:
-    return {
-        "plan_hash": plan.plan_hash,
-        "dataset": dataset_name,
-        "channel": channel,
-        "group_by": group_by,
-    }
+def _counts_key(
+    plan,
+    dataset_name: str,
+    channel: str | None,
+    group_by: str | None,
+    base_dir: str | Path | None,
+) -> dict:
+    """Plan, dataset, referenced files' contents (`F72`), channel and grouping."""
+    from smftools.tools.analysis_cache import cache_key
+
+    return cache_key(
+        plan,
+        dataset_name,
+        base_dir=base_dir,
+        parameters={"channel": channel, "group_by": group_by},
+    )
 
 
 def load_or_count(
@@ -186,12 +195,19 @@ def load_or_count(
     **kwargs,
 ) -> tuple[SiteCounts, bool]:
     """Counts from ``output_dir`` when they were made from the same plan, dataset,
-    channel and grouping; otherwise count and save them. Returns ``(counts, reused)``.
+    referenced files (label table, coordinate maps: `F72`), channel and
+    grouping; otherwise count and save them. Returns ``(counts, reused)``.
     """
     import json
 
     output_dir = Path(output_dir)
-    key = _counts_key(plan, dataset_name, kwargs.get("channel"), kwargs.get("group_by"))
+    key = _counts_key(
+        plan,
+        dataset_name,
+        kwargs.get("channel"),
+        kwargs.get("group_by"),
+        kwargs.get("project_dir") or kwargs.get("experiment_dir"),
+    )
     table, meta = output_dir / COUNTS_FILE, output_dir / COUNTS_META
     if not refresh and table.exists() and meta.exists():
         saved = json.loads(meta.read_text())
@@ -319,7 +335,7 @@ def run_context_bias(
     from smftools import __version__
 
     record = {
-        **_counts_key(plan, dataset_name, counts.channel, group_by),
+        **_counts_key(plan, dataset_name, counts.channel, group_by, project_dir or experiment_dir),
         "counts_reused": reused,
         "frame_reference": counts.frame_reference,
         "flank": flank,
