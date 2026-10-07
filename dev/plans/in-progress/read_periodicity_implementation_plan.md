@@ -1,6 +1,6 @@
 # Per-read periodicity over regions (`RPG`)
 
-**Status:** in progress. `RPG-01` merged; `RPG-02` implemented. One PR per item, in order.
+**Status:** in progress. `RPG-01`, `RPG-02` merged; `RPG-03` implemented. One PR per item, in order.
 
 ## Question
 
@@ -73,8 +73,8 @@ the independent readout.
 | item | status | scope |
 |---|---|---|
 | `RPG-01` dense channels | merged | `site_context: all` in ML plans |
-| `RPG-02` compute | implemented, not merged | streamed per-(read, region) periodograms and statistics |
-| `RPG-03` figures | proposed | paired input / periodogram clustermaps in one row order |
+| `RPG-02` compute | merged | streamed per-(read, region) periodograms and statistics |
+| `RPG-03` figures | implemented, not merged | paired input / periodogram clustermaps in one row order |
 | `RPG-04` CLI | proposed | `smftools project periodicity`, `smftools experiment periodicity` |
 | `RPG-05` qualification | proposed | agreement with stored spatial periodograms; timings |
 
@@ -145,6 +145,13 @@ one figure per (group, region):
 
 Smoke tests write the figure for site-restricted and dense inputs, an
 explicit order, and a region with every read filtered out.
+
+As built: input colours follow the HMM clustermaps (zero `#eee6d9`, no data
+`#D0D0D0`, signal `#2E7D32`; binary inputs in two colours, continuous ones as
+a ramp); columns no shown read observed are dropped by default
+(`observed_columns_only`), so a site-restricted input shows its sites
+side by side with true positions on the ticks; periods ascend left to right;
+the counts of reads shown and left out go in the title.
 
 ### `RPG-04` — CLI
 
