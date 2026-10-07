@@ -39,6 +39,7 @@ Every tracked item merged to `main` and verified against the code.
 | `experiment_project_partitioned_pipeline_implementation_plan.md` | `PR-00`–`PR-14` |
 | `materialize_read_cost_implementation_plan.md` | `MRC-01`–`MRC-05` `materialize` read cost (`F70`, `F71`): index-directed partition reads, spine cache, overlay of owning stores only, skip `X` for derived-only requests; one call ~16 s -> under 1 s |
 | `read_periodicity_implementation_plan.md` | `RPG-01`–`RPG-05` per-read periodograms over regions for any plan channel (`site_context: all` for dense layers, `F73`), range narrowed to short regions, paired clustermaps, `smftools project/experiment periodicity`, shared cache key (`F72`), a block per worker (`F74`); equal to the spatial stage's periodograms |
+| `read_periodicity_figures_implementation_plan.md` | `RPF-01`–`RPF-04` periodicity figures after first use: descending order, display coordinates, several groupings per run, grid figures, mean spectra with bootstrap bands and per-group summaries |
 | `site_context_bias_implementation_plan.md` | `SCB-01`–`SCB-04` modification-site sequence-context bias: strand-oriented contexts, per-offset enrichment, k-mer rates, group differences, figures; `smftools project/experiment context-bias` |
 | `project_and_latent_partitioned_pipeline_implementation_plan.md` | `PL-15`–`PL-23` (PR #414) |
 | `semantic_dag_variant_preprocessing_implementation_plan.md` | `SDV-01`–`SDV-14` |
@@ -59,14 +60,13 @@ An active branch, some items merged and others open.
 | document | scope |
 |---|---|
 | `alignment_rescue_sequence_implementation_plan.md` | `ARS` rescued reads keep their SEQ (minimap2 omits it on secondaries, so every rescued read was dropped at extraction, `F64`), repair of committed alignments, raw re-extraction |
-| `read_periodicity_figures_implementation_plan.md` | `RPF-01`–`RPF-04` periodicity figures after first use: descending order, display coordinates, several groupings per run, grid figures, mean spectra with bootstrap bands and per-group summaries |
-| `hmm_context_emissions_implementation_plan.md` | `HCE` (`HCE-01`–`HCE-04` merged, `HCE-05` qualified: default `none`, `learned` opt-in; `HCE-06` variants implemented, `HCE-07` proposed) sequence-context-aware HMM emissions: per-(state, context) modification probabilities as relative weights on the log-odds scale; `table` (e.g. naked-DNA calibration) or `learned` in EM with shrinkage; CpG kept separate; qualified on a multi-enzyme panel before any default changes |
-| `ml_project_labels_masks_coordinate_maps_plan.md` | `MLX` project-scope (`MLX-01` implemented) ML studies: external label table (`labels.source: table`), multi-window position masks, cross-reference coordinate maps with a leakage guard |
+| `hmm_context_emissions_implementation_plan.md` | `HCE` (`HCE-01`–`HCE-04`, `HCE-06`, `HCE-08`, `HCE-09` merged; `HCE-05` qualified: default `none`, `learned` opt-in; `HCE-07` proposed) sequence-context-aware HMM emissions: per-(state, context) modification probabilities as relative weights on the log-odds scale; `table` (e.g. naked-DNA calibration) or `learned` in EM with shrinkage; CpG kept separate; qualified on a multi-enzyme panel before any default changes |
+| `ml_project_labels_masks_coordinate_maps_plan.md` | `MLX` project-scope (`MLX-01`–`MLX-03`, `MLX-05`–`MLX-07`, `MLX-09`–`MLX-11` merged) ML studies: external label table (`labels.source: table`), multi-window position masks, cross-reference coordinate maps with a leakage guard |
 | `barcode_allowlist_implementation_plan.md` | `BAL` -- `barcodes_to_include`, so a run carrying several experiments (e.g. two modalities on one flow cell) keeps each to its own barcodes |
 | `selective_pod5_rebasecalling_implementation_plan.md` | `SRB` |
 | `duplicate_detection_span_agnostic_implementation_plan.md` | `DSA` span-agnostic duplicate detection; drafted, `DSA-05` real-data qualification open |
 | `transfer_time_analysis_bundling_plan.md` | `TAB` bundle a run's analysis-tree generations into few large files before moving them between drives; `TAB-01` implemented, `TAB-02`/`TAB-03` open; zarr v3 sharding and coarser source-side partitioning both ruled out first, on real data |
-| `stage_context_qc_implementation_plan.md` | `SCQ-01`–`SCQ-04` (`SCQ-01`, `SCQ-02` merged, `SCQ-03` implemented) sequence-context QC in every run: modification bias per barcode x reference in preprocess, residual context bias and accessible-conditioned rates per HMM variant, backfill for finished stages; plot/QC settings, no stage invalidation |
+| `stage_context_qc_implementation_plan.md` | `SCQ-01`–`SCQ-04` (`SCQ-01`–`SCQ-03` merged, `SCQ-04` open) sequence-context QC in every run: modification bias per barcode x reference in preprocess, residual context bias and accessible-conditioned rates per HMM variant, backfill for finished stages; plot/QC settings, no stage invalidation |
 
 ## `proposed/`
 

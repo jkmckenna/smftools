@@ -1,6 +1,6 @@
 # Sequence-context QC in the preprocess and HMM stages (`SCQ`)
 
-**Status:** in progress. `SCQ-01`, `SCQ-02` merged, `SCQ-03` implemented. One PR per item, in order.
+**Status:** in progress. `SCQ-01`–`SCQ-03` merged; `SCQ-04` (qualification) open. One PR per item, in order.
 `SCQ-02` follows `HCE-06` (HMM variants).
 
 ## Why
@@ -44,7 +44,7 @@ barcode.
 |---|---|---|
 | `SCQ-01` preprocess context QC | merged | modification bias per barcode x reference from passing reads; tables and figures |
 | `SCQ-02` HMM context QC | merged | per variant: residual context bias of state calls; modification rate within accessible-called sites |
-| `SCQ-03` backfill for finished stages | implemented, not merged | the same outputs from a finished stage, without re-running it |
+| `SCQ-03` backfill for finished stages | merged | the same outputs from a finished stage, without re-running it |
 | `SCQ-04` qualification | proposed | a real run: counts equal `context-bias` on the same reads; run time |
 
 ### `SCQ-01` — preprocess context QC

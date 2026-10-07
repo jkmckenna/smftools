@@ -1,7 +1,6 @@
 # ML project labels, position masks and coordinate maps (`MLX`)
 
-**Status:** in progress. `MLX-01`–`MLX-03`, `MLX-05`–`MLX-07`, `MLX-09`, `MLX-10` merged; `MLX-11`
-implemented on `feature/mlx-11-parallel-block-reads`, not merged; `MLX-04`, `MLX-08` proposed.
+**Status:** in progress. `MLX-01`–`MLX-03`, `MLX-05`–`MLX-07`, `MLX-09`–`MLX-11` merged (`MLX-11`: #652); `MLX-04`, `MLX-08` proposed.
 
 ## Problem
 
@@ -41,7 +40,7 @@ an ML plan today, for three independent reasons found while designing it:
 | `MLX-08` published fold runs | proposed | run `MLX-06` folds through the job service as immutable run artifacts |
 | `MLX-09` partition-major reads | merged | open each store partition once per pass instead of once per batch (`F67`) |
 | `MLX-10` whole-dataset reads, HMM-stage channels | merged | read a dataset's rows without a split (for embeddings), and resolve HMM/spatial stage read indexes |
-| `MLX-11` block-sharded workers | implemented, not merged | let N processes split the read by whole blocks (`F69`) |
+| `MLX-11` block-sharded workers | merged | let N processes split the read by whole blocks (`F69`) |
 
 Order: `MLX-01`, `MLX-05`, `MLX-06` (together they unblock a single-reference,
 full-span pilot), then `MLX-02`, then `MLX-03`, which builds on `MLX-02`'s
