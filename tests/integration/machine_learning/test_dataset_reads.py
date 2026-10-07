@@ -288,3 +288,22 @@ def test_qc_filters_apply_to_a_dataset_reading_only_derived_stages(project) -> N
     kept = set(bound.identity["read_id"])
     failing = {read_id for read_id in calls if read_id.endswith("_0")}
     assert kept == set(calls) - failing and failing
+
+
+def test_a_small_dataset_still_reaches_every_worker(project) -> None:
+    """`F74`: a dataset that fits one memory-sized block is split across workers."""
+    from smftools.machine_learning.data.partition_dataset import PartitionReadPolicy
+
+    root, calls, _ = project
+    bound = bind_ml_dataset(
+        _plan(), "reads", project_dir=root, policy=PartitionReadPolicy(batch_size=4)
+    )
+    single = [batch.read_ids for batch in bound.iter_batches()]
+    per_worker = [
+        [batch.read_ids for batch in bound.iter_batches(worker_id=worker, num_workers=4)]
+        for worker in range(4)
+    ]
+    assert all(per_worker), "every worker gets at least one block"
+    # Same batches, only distributed: blocks stay whole batches.
+    assert sorted(b for shard in per_worker for b in shard) == sorted(single)
+    assert sorted(r for batch in single for r in batch) == sorted(calls)

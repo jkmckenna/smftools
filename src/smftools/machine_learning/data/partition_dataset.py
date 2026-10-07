@@ -643,6 +643,12 @@ class PartitionDataset:
         batches_per_block = max(
             1, self.plan.policy.max_block_bytes // (self.plan.bytes_per_row * batch_size)
         )
+        # With several workers, at least one block each: a dataset that fits one
+        # memory-sized block would otherwise go to a single worker (`F74`).
+        # Blocks stay whole batches, so batches are the same either way.
+        if num_workers > 1:
+            batches_total = -(-len(entries) // batch_size)
+            batches_per_block = max(1, min(batches_per_block, -(-batches_total // num_workers)))
         block_rows = batch_size * batches_per_block
         for block_index, block_offset in enumerate(range(0, len(entries), block_rows)):
             if block_index % num_workers != worker_id:
