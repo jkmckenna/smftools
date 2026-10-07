@@ -199,3 +199,76 @@ def test_kmer_relative_rates():
     # The centre base alone is every site: relative rate 0.
     centre = kmer_rates(_planted(), flank=1, k=1)
     assert centre["log2_relative_rate"].iloc[0] == pytest.approx(0.0)
+
+
+def test_context_index_codes_and_cpg():
+    from smftools.analysis.compute.site_context_bias import (
+        NOT_A_CONTEXT,
+        context_index,
+        context_kmers,
+    )
+
+    kmers = context_kmers(3)
+    assert len(kmers) == 16 and all(kmer[1] == "C" for kmer in kmers)
+    #            0123456789
+    sequence = "AACGGCAAAC"
+    codes, cpg = context_index(sequence, "top", range(10), k=3)
+    assert kmers[codes[2]] == "ACG" and cpg[2]  # C at 2, G at +1: CpG
+    assert kmers[codes[5]] == "GCA" and not cpg[5]
+    assert codes[0] == NOT_A_CONTEXT  # not a C
+    assert codes[9] == NOT_A_CONTEXT  # C at the end: window touches N
+    # Bottom strand: a forward G is a C on the modified strand.
+    codes, cpg = context_index(sequence, "bottom", [3, 4], k=3)
+    assert kmers[codes[0]] == "CCG" and cpg[0]  # forward 2-4 "CGG", reverse complement
+    assert kmers[codes[1]] == "GCC" and not cpg[1]
+    with pytest.raises(ValueError):
+        context_kmers(2)
+
+
+def test_context_codes_match_site_contexts():
+    from smftools.analysis.compute.site_context_bias import context_index, context_kmers
+
+    rng = np.random.default_rng(0)
+    sequence = "".join(rng.choice(list("ACGT"), 200))
+    for strand in ("top", "bottom"):
+        positions = np.arange(1, 199)
+        codes, _ = context_index(sequence, strand, positions, k=3)
+        sites = _sites([("g", f"ref_{strand}", int(p), 1, 0) for p in positions])
+        contexts = site_contexts(sites, {"ref": sequence}, flank=1)["context"].to_numpy()
+        for code, context in zip(codes, contexts, strict=True):
+            if context[1] == "C":
+                assert context_kmers(3)[code] == context
+            else:
+                assert code == -1
+
+
+def test_weight_table_round_trip(tmp_path):
+    from smftools.analysis.compute.site_context_bias import (
+        context_kmers,
+        read_weight_table,
+        weight_table,
+        weights_for,
+        write_weight_table,
+    )
+
+    rates = kmer_rates(_planted(rate_with_t=0.8, rate_without=0.2), flank=1, k=3)
+    table = weight_table(rates, k=3, source="naked_dna")
+    assert set(table["kmer"]) <= set(context_kmers(3)) and (table["source"] == "naked_dna").all()
+    act = table.set_index("kmer").loc["ACT", "weight"]
+    overall = rates["modified"].sum() / rates["observed"].sum()
+    assert act == pytest.approx((80 + 0.5) / (100 + 1) / overall)
+    never = weight_table(kmer_rates(_planted(1.0, 0.0), flank=1, k=3), k=3, source="cells")
+    assert (never["weight"] > 0).all()  # never modified: unlikely, not impossible
+    for suffix in ("parquet", "csv"):
+        path = tmp_path / f"w.{suffix}"
+        write_weight_table(table, path)
+        pd.testing.assert_frame_equal(read_weight_table(path), table, check_dtype=False)
+    weights = weights_for(table, "g", 3)
+    assert weights.shape == (16,) and weights[context_kmers(3).index("ACT")] == pytest.approx(act)
+    assert weights[context_kmers(3).index("TCG")] == 1.0  # absent: neutral
+    with pytest.raises(KeyError):
+        weights_for(table, "other", 3)
+    with pytest.raises(ValueError, match="source"):
+        weight_table(rates, k=3, source="guess")
+    with pytest.raises(ValueError, match="positive"):
+        write_weight_table(table.assign(weight=0.0), tmp_path / "bad.csv")
