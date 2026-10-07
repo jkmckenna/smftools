@@ -1,6 +1,6 @@
 # Sequence-context-aware HMM emissions (`HCE`)
 
-**Status:** in progress. `HCE-01`–`HCE-03` merged; `HCE-04` implemented. One PR per item, in order. The
+**Status:** in progress. `HCE-01`–`HCE-04` merged; `HCE-05` qualified (not adopted as the default); `HCE-06` proposed. One PR per item, in order. The
 default stays `none` unless `HCE-05` qualifies a mode.
 
 ## Question
@@ -82,8 +82,10 @@ hmm_context_weight_bounds: [0.1, 10]
 | `HCE-01` context indices and weight tables | merged | per-position context index for a reference and strand; the weight-table format; `context-bias` exports it |
 | `HCE-02` context emissions, `table` mode | merged | a context-aware Bernoulli emission with fixed weights; EM fits the per-state level |
 | `HCE-03` `learned` mode | merged | per-(state, context) emissions in the M-step with shrinkage; CpG handling; the fitted weights saved as a table |
-| `HCE-04` pipeline integration | implemented, not merged | config, partitioned fit/apply, model artifacts, fingerprint |
-| `HCE-05` qualification | proposed | on a panel of several enzymes applied to the same cells |
+| `HCE-04` pipeline integration | merged | config, partitioned fit/apply, model artifacts, fingerprint |
+| `HCE-05` qualification | qualified: default stays `none`, `learned` opt-in | on a panel of several enzymes applied to the same cells |
+| `HCE-06` HMM variants | proposed | several emission models in one HMM stage: namespaced layers, plots comparing them |
+| `HCE-07` context weights for every state (learned) | proposed | the protected state's background modification follows the enzyme's preference too |
 
 ### `HCE-01` — context indices and weight tables
 
@@ -194,20 +196,93 @@ keep their hashes -- and with `table` the table's content hash joins both.
 ### `HCE-05` — qualification
 
 On cells treated with several enzymes (same chromatin, different
-preferences), `none` vs `learned` (and `table` when calibration data exist):
+preferences): one enzyme panel, 18 samples (six deaminase preparations x three
+doses), each of two alleles, 8,291 QC/dedup-passing molecules. Every arm fits
+and decodes the same reads with the experiment's own HMM settings (the
+stage's input preparation, `context_setup`, `create_hmm`; 1,000-read fits),
+differing only in emissions: `none`, `learned` (0.1-10x), a table from
+`context-bias` on the same cells (negative control), and two learned bound
+variants. Pre-re-extraction stores: valid between arms on identical reads,
+absolute values will move. The enzyme with ~4 reads per dose is left out of
+between-enzyme summaries.
 
-1. Agreement between enzymes -- per-position mean accessibility, footprint
-   length distributions, Leiden composition -- should rise with correction.
-2. Footprint calls against local context: before correction, footprint
-   frequency should rise with the local density of disfavoured contexts;
-   after, that dependence should largely vanish.
-3. Periodicity (`RPG`): nucleosome periodograms on the corrected accessible
-   layer should be sharper (SNR, FWHM).
-4. Transfer: weights learned on one allele (or half the reads) applied to the
-   other; learned vs naked-DNA weights when available.
-5. Dose: the learned shape across doses of one enzyme.
+| arm (allele 1 / allele 2) | between-enzyme r (worst pair) | footprint-length JS | context gap | per-read SNR |
+|---|---|---|---|---|
+| `none` | 0.597 / 0.629 (0.34 / 0.43) | 0.199 / 0.184 | 0.063 / 0.059 | 13.1 / 11.2 |
+| `learned` | 0.626 / 0.654 (0.50 / 0.55) | 0.302 / 0.290 | 0.018 / 0.016 | 14.8 / 13.3 |
+| cell table | 0.620 / 0.647 (0.45 / 0.50) | 0.312 / 0.296 | 0.035 / 0.033 | 14.7 / 13.4 |
+| `learned`, 0.25-2x | 0.611 / 0.641 (0.47 / 0.52) | 0.353 / 0.328 | 0.017 / 0.015 | 14.6 / 13.7 |
+| `learned`, <= 1x | 0.275 / 0.352 (-0.24 / -0.15) | 0.462 / 0.436 | 0.014 / 0.017 | 14.0 / 12.4 |
 
-A mode becomes recommended only if 1-3 improve without 4 degrading.
+Learned weights transfer between alleles (median centred r 0.98) and doses
+(0.98-0.99). Diagnostics on the same fits:
+
+- Residual context bias of accessible calls (RMS log2 over C-centred 3-mers):
+  raw modification 0.93 / 0.76, `none` 0.32 / 0.28, `learned` 0.15 / 0.17,
+  cell table 0.18 / 0.18. Part of what `learned` flattens is xCG -- likely
+  CpG methylation resisting deamination in cells, which `cpg: separate`
+  absorbs into the weights.
+- Footprint-length classes (share of sites): with `learned`, large protected
+  stretches (200+ bp) fall from 25-27% to 18% and accessible sites rise from
+  26% to 31-32%; nucleosome-sized footprints barely change (39-41% -> 38%).
+  In clustermaps, `none`'s long stretches split into nucleosome-sized blocks
+  separated by short accessible gaps: adjacent nucleosomes merged across
+  linkers whose few C sites sit in contexts the enzyme modifies poorly.
+- Periodicity: every input peaks at 189 bp, same width (~8 bp). The plain HMM
+  often lowers per-read SNR below the raw calls; `learned` raises it, most for
+  the enzyme with the strongest preference (+2.5 SNR, above the raw calls).
+
+The lower between-enzyme footprint-length agreement under `learned` looks
+like the loss of a shared artefact (every enzyme's `none` merges nucleosomes
+alike), not a defect -- an inference, without ground truth for footprint
+lengths. The one-sided bound is ill-posed as built: weights are relative to
+the average context, so a cap of 1 under-predicts every favoured context.
+
+**Decision:** the default stays `none`; `learned` is an opt-in (`HCE-06`
+lets a project carry it alongside). Open before reconsidering the default:
+a `learned` + `cpg: exclude` arm; the re-extracted stores; naked DNA, where
+no site is protected and merged-nucleosome artefacts cannot arise.
+
+### `HCE-06` — HMM variants
+
+Several emission configurations in one HMM stage run, so downstream analyses
+can choose any of them:
+
+```yaml
+hmm_context_model: none   # the default variant: layer names and hashes unchanged
+hmm_variants:
+  learned: {hmm_context_model: learned}
+  cells:   {hmm_context_model: table, hmm_context_table: <path>, hmm_context_table_group: enzyme}
+```
+
+- Each variant overrides `hmm_context_*` settings; every variant fits and
+  decodes the same reads in the same run (same generation).
+- Layers: the default variant keeps today's names; each other variant writes
+  namespaced layers, `<label>_<variant>_<feature>` (e.g.
+  `C_learned_all_accessible_features`, `..._lengths`, merged layers). The
+  stage catalog lists them, so ML plans, latent and periodicity sets select a
+  variant by layer name.
+- Model artifacts keyed by variant; the stage fingerprint and fit-config hash
+  carry the variants (none configured: unchanged).
+- Plots compare the variants in the existing figures rather than repeating
+  them: clustermaps gain columns for each variant's feature layers, one read
+  order across all columns; feature count and size histograms overlay one
+  colour per variant, translucent fills with solid outlines so overlapping
+  distributions stay distinguishable, the legend naming each variant.
+- Not a default: a project turns variants on in its configs (best with a
+  re-run it needs anyway); runtime and layer storage grow per variant.
+
+Tests: no variants -> identical layers, artifacts and hashes; two variants ->
+both layer sets, artifacts per variant, catalog lists both; clustermap columns
+and histogram overlays per variant.
+
+### `HCE-07` — context weights for every state (learned)
+
+Learned mode weights the modified state only; the protected state's
+background modification follows the same enzyme chemistry. Learn a weight
+vector per state (shrunk, bounded), so a stray modification inside a
+nucleosome at a favoured context is not read as accessibility. Qualify as
+`HCE-05`, against `learned`.
 
 ## Out of scope
 
