@@ -339,3 +339,28 @@ def test_several_groupings_in_one_pass_equal_separate_runs(project, tmp_path) ->
 def test_a_grouping_may_not_shadow_a_statistic(project) -> None:
     with pytest.raises(ValueError, match="clash"):
         compute_read_periodicity(_plan(), "reads", project_dir=project, group_by="status")
+
+
+def test_saved_results_feed_a_grid(project, tmp_path) -> None:
+    """`RPF-03`: read_results and group_cells from a finished run."""
+    from smftools.analysis.plot.read_periodicity import plot_read_periodicity_grid
+    from smftools.tools.read_periodicity import group_cells, read_results, run_periodicity
+
+    out = tmp_path / "out"
+    run_periodicity(
+        _plan(),
+        "reads",
+        out,
+        project_dir=project,
+        group_by="Barcode",
+        max_reads_per_plot=4,
+        figures=False,
+    )
+    result = read_results(out)
+    cells = group_cells(result, f"0-{LENGTH}", "Barcode")
+    assert set(cells) == {"barcode01", "barcode02"}
+    assert cells["barcode01"]["power"].shape[1] == result.grids[f"0-{LENGTH}"].periods.size
+    plot_read_periodicity_grid(cells, [["barcode01", "barcode02"]], tmp_path / "grid.png")
+    assert (tmp_path / "grid.png").stat().st_size > 0
+    with pytest.raises(FileNotFoundError):
+        read_results(tmp_path / "nothing")
