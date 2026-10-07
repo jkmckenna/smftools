@@ -1515,6 +1515,15 @@ class SingleBernoulliHMM(BaseHMM):
             self.emission.data = payload["emission"].to(device=device, dtype=self.dtype)
         self._normalize_emission()
 
+    def _emission_m_step(self, gamma: torch.Tensor, obs: torch.Tensor, mask: torch.Tensor) -> None:
+        """Closed-form Bernoulli emission update from posteriors (in place)."""
+        eps = float(self.eps)
+        mask_f = mask.float().unsqueeze(-1)  # (N,L,1)
+        emit_num = (gamma * obs.unsqueeze(-1) * mask_f).sum(dim=(0, 1))  # (K,)
+        emit_den = (gamma * mask_f).sum(dim=(0, 1))  # (K,)
+        new_em = (emit_num + eps) / (emit_den + 2.0 * eps)
+        self.emission.data = new_em.clamp(min=eps, max=1.0 - eps)
+
     def fit_em(
         self,
         X: np.ndarray,
@@ -1590,11 +1599,6 @@ class SingleBernoulliHMM(BaseHMM):
                 xi = (log_xi - log_norm).exp() * valid_t
                 trans_acc += xi.sum(dim=0)
 
-            # emission update
-            mask_f = mask.float().unsqueeze(-1)  # (N,L,1)
-            emit_num = (gamma * obs.unsqueeze(-1) * mask_f).sum(dim=(0, 1))  # (K,)
-            emit_den = (gamma * mask_f).sum(dim=(0, 1))  # (K,)
-
             with torch.no_grad():
                 if update_start:
                     new_start = start_acc + eps
@@ -1607,8 +1611,7 @@ class SingleBernoulliHMM(BaseHMM):
                     self.trans.data = new_trans / rs
 
                 if update_emission:
-                    new_em = (emit_num + eps) / (emit_den + 2.0 * eps)
-                    self.emission.data = new_em.clamp(min=eps, max=1.0 - eps)
+                    self._emission_m_step(gamma, obs, mask)
 
             self._normalize_params()
             self._normalize_emission()
@@ -1663,6 +1666,173 @@ class SingleBernoulliHMM(BaseHMM):
             device=device,
             verbose=verbose,
         )
+
+
+# =============================================================================
+# Sequence-context-aware single-channel Bernoulli HMM (`HCE-02`)
+# =============================================================================
+
+
+@register_hmm("context_single")
+class ContextBernoulliHMM(SingleBernoulliHMM):
+    """Bernoulli emissions shifted by each site's sequence context.
+
+        logit P(obs==1 | state k, site i) = logit emission[k] + s_k * log w[c(i)]
+
+    ``c(i)`` is the site's context code (`analysis.compute.site_context_bias.
+    context_index`), looked up from the coordinates the model is fitted or
+    decoded on through ``position_codes`` (code per reference position; -1 =
+    no context, weight 1). ``w`` are relative weights (1 = average); ``s_k``
+    is 1 for weighted states -- the modified state (``context_states=
+    "modified"``) or all of them (``"all"``) -- else 0. EM fits the per-state
+    levels ``emission[k]``; with every weight 1 the model is
+    `SingleBernoulliHMM` exactly.
+    """
+
+    NEWTON_STEPS = 25
+
+    def __init__(
+        self,
+        n_states: int = 2,
+        init_emission: Optional[Sequence[float]] = None,
+        eps: float = 1e-8,
+        dtype: torch.dtype = torch.float64,
+        *,
+        log_weights: Optional[Sequence[float]] = None,
+        position_codes: Optional[Sequence[int]] = None,
+        context_states: str = "modified",
+    ):
+        super().__init__(n_states=n_states, init_emission=init_emission, eps=eps, dtype=dtype)
+        if context_states not in ("modified", "all"):
+            raise ValueError("context_states must be 'modified' or 'all'")
+        self.context_states = context_states
+        self.log_weights = torch.tensor(
+            np.asarray(log_weights if log_weights is not None else [0.0], dtype=float),
+            dtype=self.dtype,
+        )
+        self.position_codes = np.asarray(
+            position_codes if position_codes is not None else [], dtype=np.int64
+        )
+        self._active_coords: Optional[np.ndarray] = None
+
+    def set_contexts(self, *, log_weights: Sequence[float], position_codes: Sequence[int]) -> None:
+        """Weights per context code and the context code of every reference position."""
+        log_weights = np.asarray(log_weights, dtype=float)
+        if not np.isfinite(log_weights).all():
+            raise ValueError("log weights must be finite")
+        codes = np.asarray(position_codes, dtype=np.int64)
+        if codes.size and codes.max() >= log_weights.size:
+            raise ValueError("a position code has no weight")
+        self.log_weights = torch.tensor(log_weights, dtype=self.dtype, device=self.emission.device)
+        self.position_codes = codes
+
+    def _state_scale(self) -> torch.Tensor:
+        """``s_k``: 1 for weighted states."""
+        scale = torch.zeros(self.n_states, dtype=self.dtype, device=self.emission.device)
+        if self.context_states == "all":
+            scale[:] = 1.0
+        else:
+            scale[self.modified_state_index()] = 1.0
+        return scale
+
+    def _column_log_weights(self, n_columns: int) -> torch.Tensor:
+        """``log w[c(i)]`` per column of the current call (0 where no context)."""
+        coords = (
+            self._active_coords
+            if self._active_coords is not None and len(self._active_coords) == n_columns
+            else np.arange(n_columns)
+        )
+        coords = np.asarray(coords, dtype=np.int64)
+        codes = np.full(n_columns, -1, dtype=np.int64)
+        inside = (coords >= 0) & (coords < self.position_codes.size)
+        codes[inside] = self.position_codes[coords[inside]]
+        weights = self.log_weights.to(self.emission.device)
+        column = torch.zeros(n_columns, dtype=self.dtype, device=self.emission.device)
+        has = torch.as_tensor(codes >= 0, device=self.emission.device)
+        if bool(has.any()):
+            column[has] = weights[torch.as_tensor(codes[codes >= 0], device=self.emission.device)]
+        return column
+
+    def _site_probabilities(self, n_columns: int) -> torch.Tensor:
+        """(L, K) modification probability per column and state."""
+        eps = float(self.eps)
+        p = self.emission.clamp(min=eps, max=1.0 - eps)
+        base = torch.log(p) - torch.log1p(-p)  # logit, (K,)
+        shift = self._column_log_weights(n_columns).unsqueeze(1) * self._state_scale().unsqueeze(0)
+        return torch.sigmoid(base.unsqueeze(0) + shift).clamp(min=eps, max=1.0 - eps)
+
+    def _log_emission(self, obs: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        """obs: (N,L), mask: (N,L) -> logB: (N,L,K)."""
+        if not bool((self._column_log_weights(obs.shape[1]) != 0).any()):
+            return super()._log_emission(obs, mask)  # every weight 1: the plain model, exactly
+        p = self._site_probabilities(obs.shape[1]).unsqueeze(0)  # (1,L,K)
+        o = obs.unsqueeze(-1)
+        logB = o * torch.log(p) + (1.0 - o) * torch.log1p(-p)
+        return torch.where(mask.unsqueeze(-1), logB, torch.zeros_like(logB))
+
+    def _alpha_beta(self, obs, mask, *, coords=None):
+        if coords is not None:
+            self._active_coords = np.asarray(coords)
+        return super()._alpha_beta(obs, mask, coords=coords)
+
+    def _viterbi(self, obs, mask, *, coords=None):
+        if coords is not None:
+            self._active_coords = np.asarray(coords)
+        return super()._viterbi(obs, mask, coords=coords)
+
+    def fit_em(self, X, coords, **kwargs):
+        self._active_coords = np.asarray(coords) if coords is not None else None
+        return super().fit_em(X, coords, **kwargs)
+
+    def _emission_m_step(self, gamma: torch.Tensor, obs: torch.Tensor, mask: torch.Tensor) -> None:
+        """Per-state level under fixed context weights (`HCE-02`).
+
+        Unweighted states (``s_k`` = 0) use the closed form; weighted states
+        solve sum_i gamma_ik (o_i - p_ik) = 0 for logit emission[k] by Newton
+        steps on the log-odds.
+        """
+        eps = float(self.eps)
+        shift = self._column_log_weights(obs.shape[1])  # (L,)
+        scale = self._state_scale()
+        if not bool((shift != 0).any()):
+            return super()._emission_m_step(gamma, obs, mask)
+        super()._emission_m_step(gamma, obs, mask)  # closed form: unweighted states, start point
+        weight = gamma * mask.float().unsqueeze(-1)  # (N,L,K)
+        o = obs.unsqueeze(-1)
+        for k in range(self.n_states):
+            if float(scale[k]) == 0.0:
+                continue
+            p0 = self.emission.data[k].clamp(min=eps, max=1.0 - eps)
+            theta = torch.log(p0) - torch.log1p(-p0)
+            g = weight[:, :, k]
+            for _ in range(self.NEWTON_STEPS):
+                p = torch.sigmoid(theta + shift).unsqueeze(0)  # (1,L)
+                gradient = (g * (o[:, :, 0] - p)).sum()
+                curvature = (g * p * (1.0 - p)).sum()
+                if float(curvature) <= 0:
+                    break
+                step = gradient / curvature
+                theta = theta + step
+                if abs(float(step)) < 1e-10:
+                    break
+            self.emission.data[k] = torch.sigmoid(theta).clamp(min=eps, max=1.0 - eps)
+
+    def _extra_save_payload(self) -> dict:
+        payload = super()._extra_save_payload()
+        payload.update(
+            {
+                "log_weights": self.log_weights.detach().cpu(),
+                "position_codes": torch.as_tensor(self.position_codes),
+                "context_states": self.context_states,
+            }
+        )
+        return payload
+
+    def _load_extra_payload(self, payload: dict, *, device: torch.device):
+        super()._load_extra_payload(payload, device=device)
+        self.context_states = payload.get("context_states", "modified")
+        self.log_weights = payload["log_weights"].to(device=device, dtype=self.dtype)
+        self.position_codes = np.asarray(payload["position_codes"], dtype=np.int64)
 
 
 # =============================================================================

@@ -1,6 +1,6 @@
 # Sequence-context-aware HMM emissions (`HCE`)
 
-**Status:** in progress. `HCE-01` implemented. One PR per item, in order. The
+**Status:** in progress. `HCE-01`, `HCE-02` implemented. One PR per item, in order. The
 default stays `none` unless `HCE-05` qualifies a mode.
 
 ## Question
@@ -80,7 +80,7 @@ hmm_context_weight_bounds: [0.1, 10]
 | item | status | scope |
 |---|---|---|
 | `HCE-01` context indices and weight tables | implemented, not merged | per-position context index for a reference and strand; the weight-table format; `context-bias` exports it |
-| `HCE-02` context emissions, `table` mode | proposed | a context-aware Bernoulli emission with fixed weights; EM fits the per-state level |
+| `HCE-02` context emissions, `table` mode | implemented, not merged | a context-aware Bernoulli emission with fixed weights; EM fits the per-state level |
 | `HCE-03` `learned` mode | proposed | per-(state, context) emissions in the M-step with shrinkage; CpG handling; the fitted weights saved as a table |
 | `HCE-04` pipeline integration | proposed | config, partitioned fit/apply, model artifacts, fingerprint |
 | `HCE-05` qualification | proposed | on a panel of several enzymes applied to the same cells |
@@ -122,6 +122,21 @@ Tests: all-ones weights reproduce `SingleBernoulliHMM` exactly (fit and
 posteriors); on simulated reads with a planted context preference and known
 states, posteriors with the true weights recover the states better than
 without (fewer spurious protected calls at disfavoured contexts).
+
+As built: `ContextBernoulliHMM` (registered `context_single`) takes
+`log_weights` per context code and `position_codes` per reference position
+(`set_contexts`); columns map to codes through the coordinates of the fit or
+decode call. `SingleBernoulliHMM.fit_em`'s emission update moved to
+`_emission_m_step` (closed form, unchanged); the context model solves
+weighted states by Newton steps on the log-odds. With every weight 1 it
+delegates to the plain emission, so fits and posteriors are identical.
+Weights act on the odds, not the rate: a table holds rate ratios, which match
+odds ratios for modest rates and keep probabilities in (0, 1) where they
+diverge. On a simulation (60 reads, 900 bp, half the contexts at 0.2x, half
+at 1.6x) sites called correctly rose 95.8% -> 96.4%, accessible sites in
+disfavoured contexts 93.8% -> 95.2%: long, site-dense blocks are largely
+recovered by the HMM's smoothing already; short patches are `HCE-05`'s to
+measure.
 
 ### `HCE-03` — `learned` mode
 
