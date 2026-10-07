@@ -2068,8 +2068,9 @@ def _periodicity_options(command):
         ),
         click.option(
             "--group-by",
-            default=None,
-            help="Identity or label-table column to group molecules by. Default: one group.",
+            multiple=True,
+            help="Identity or label-table column to group molecules by (repeatable: every "
+            "grouping from one pass). Default: one group.",
         ),
         click.option(
             "--region",
@@ -2186,7 +2187,7 @@ def _run_periodicity(
             **scope,
             regions=regions or None,
             channel=channel,
-            group_by=group_by,
+            group_by=list(group_by) or None,
             period_range=tuple(period_range),
             peak_range=tuple(peak_range),
             min_cycles=min_cycles,
@@ -2208,7 +2209,8 @@ def _run_periodicity(
     narrowed = [r["region"] for r in record["regions"] if r["narrowed"] and r["status"] == "ok"]
     click.echo(
         f"{state}: {record['molecules']} molecules, {len(record['regions'])} region(s), "
-        f"{len(record['groups'])} group(s); wrote {output_dir}"
+        + ", ".join(f"{len(groups)} {name} group(s)" for name, groups in record["groups"].items())
+        + f"; wrote {output_dir}"
     )
     if narrowed:
         click.echo(f"  period range narrowed for: {', '.join(narrowed)}")

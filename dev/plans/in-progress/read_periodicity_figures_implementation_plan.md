@@ -1,6 +1,6 @@
 # Periodicity figures: orientation, groupings, grids, spectra (`RPF`)
 
-**Status:** in progress. `RPF-01` implemented. Follows `RPG` (completed). One PR
+**Status:** in progress. `RPF-01`, `RPF-02` implemented. Follows `RPG` (completed). One PR
 per item, in order.
 
 ## Why
@@ -24,7 +24,7 @@ First use of `smftools project periodicity` on real projects asked for:
 | item | status | scope |
 |---|---|---|
 | `RPF-01` clustermap presentation | implemented, not merged | descending order, no input colour bar, display coordinates |
-| `RPF-02` several groupings per run | proposed | `--group-by` repeatable; one pass; figures per grouping |
+| `RPF-02` several groupings per run | implemented, not merged | `--group-by` repeatable; one pass; figures per grouping |
 | `RPF-03` grid figure | proposed | groups laid out by two labels, each cell input + periodogram |
 | `RPF-04` mean spectra and summaries | proposed | mean power per period with bootstrap bands; per-group summary table |
 
@@ -53,6 +53,11 @@ instead of four).
 
 Tests: two groupings in one run equal two single-grouping runs (statistics and
 power); figures per grouping; the plot sample covers every group of each.
+
+As built: statistics carry a column per grouping; `group` names the first
+grouping unless a grouping is itself called `group` (a plan's label column);
+groupings may not be named after a statistics column. `run.json` reports
+groups per grouping.
 
 ### `RPF-03` — grid figure
 
