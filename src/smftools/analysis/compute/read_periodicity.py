@@ -14,6 +14,7 @@ peak range is skipped (status ``region_too_short``).
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from dataclasses import dataclass
 
 import numpy as np
@@ -117,6 +118,43 @@ def period_grid(
     )
 
 
+def _one_thread():
+    """Single-threaded BLAS for the per-read loop (`F75`).
+
+    Each read's detrend is a tiny least-squares fit: a multi-threaded BLAS
+    only adds overhead (3-5x slower), and with several worker processes its
+    threads oversubscribe the machine (runs 10-20x slower).
+    """
+    try:
+        from threadpoolctl import threadpool_limits
+    except ImportError:  # pragma: no cover - a scikit-learn dependency
+        return nullcontext()
+    return threadpool_limits(limits=1)
+
+
+def _score_rows(values, observed, x, grid, status, power, stats, poly_degree, min_sites) -> None:
+    """Score every read still ``OK``, in place."""
+    for row in np.flatnonzero(status == OK):
+        signal = np.where(observed[row], values[row], np.nan)
+        result = analyze_ls_periodicity_direct(
+            x,
+            signal,
+            nrl_search_bp=grid.peak_range,
+            period_range_bp=grid.period_range,
+            poly_degree=poly_degree,
+            min_sites=min_sites,
+        )
+        if result is None:
+            status[row] = NO_SIGNAL
+            continue
+        power[row] = np.asarray(result["ls_power"], dtype=np.float32)
+        stats["peak_period_bp"][row] = float(result["ls_nrl_bp"])
+        stats["snr"][row] = float(result["ls_snr"])
+        stats["peak_power"][row] = float(result["ls_peak_power"])
+        stats["peak_power_raw"][row] = float(result["ls_peak_power_raw"])
+        stats["fwhm_bp"][row] = float(result["ls_fwhm_bp"])
+
+
 def read_periodograms(
     positions: np.ndarray,
     values: np.ndarray,
@@ -156,25 +194,8 @@ def read_periodograms(
     else:
         status[coverage < min_coverage] = LOW_COVERAGE
         status[(status == OK) & (n_sites < min_sites)] = TOO_FEW_SITES
-        for row in np.flatnonzero(status == OK):
-            signal = np.where(observed[row], values[row], np.nan)
-            result = analyze_ls_periodicity_direct(
-                x,
-                signal,
-                nrl_search_bp=grid.peak_range,
-                period_range_bp=grid.period_range,
-                poly_degree=poly_degree,
-                min_sites=min_sites,
-            )
-            if result is None:
-                status[row] = NO_SIGNAL
-                continue
-            power[row] = np.asarray(result["ls_power"], dtype=np.float32)
-            stats["peak_period_bp"][row] = float(result["ls_nrl_bp"])
-            stats["snr"][row] = float(result["ls_snr"])
-            stats["peak_power"][row] = float(result["ls_peak_power"])
-            stats["peak_power_raw"][row] = float(result["ls_peak_power_raw"])
-            stats["fwhm_bp"][row] = float(result["ls_fwhm_bp"])
+        with _one_thread():
+            _score_rows(values, observed, x, grid, status, power, stats, poly_degree, min_sites)
     table = pd.DataFrame(
         {
             "region": grid.name,

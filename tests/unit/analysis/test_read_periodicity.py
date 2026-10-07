@@ -125,3 +125,24 @@ def test_peak_at_edge_marks_unresolved_peaks():
     positions, calls, observed, design = _reads()  # 190 bp over 1.6 kb: resolved
     _, stats = read_periodograms(positions, calls, observed, design, period_grid(0, 1600))
     assert not stats["peak_at_edge"].any()
+
+
+def test_reads_are_scored_with_single_threaded_blas(monkeypatch):
+    """`F75`: a multi-threaded BLAS oversubscribes worker processes."""
+    from threadpoolctl import threadpool_info
+
+    from smftools.analysis.compute import read_periodicity as module
+
+    seen = []
+    original = module.analyze_ls_periodicity_direct
+
+    def recording(*args, **kwargs):
+        seen.append(
+            {pool["num_threads"] for pool in threadpool_info() if pool["user_api"] == "blas"}
+        )
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(module, "analyze_ls_periodicity_direct", recording)
+    positions, calls, observed, design = _reads(n_reads=2)
+    read_periodograms(positions, calls, observed, design, period_grid(0, 1600))
+    assert seen and all(threads <= {1} for threads in seen)
