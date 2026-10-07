@@ -1608,3 +1608,88 @@ def test_scatter_without_fraction_columns_draws_nothing(tmp_path, monkeypatch):
     ]
     partitioned_hmm._plot_hmm_vs_raw_scatter(records, tmp_path, layout, specs=specs)
     assert not list(layout.categories["features"].glob("*.png"))
+
+
+# --- HCE-09: HMM fractions at the model's observed sites ----------------------
+
+
+def test_site_fractions_count_the_hmm_call_at_observed_sites(tmp_path):
+    from smftools.informatics.partition_read import materialize
+    from smftools.tools.partitioned_hmm import _configured_model_specs, _prepare_model_input
+
+    cfg, outputs, _ = _context_run(
+        tmp_path, hmm_variants={"learned": {"hmm_context_model": "learned"}}
+    )
+    record = pd.read_parquet(outputs["task_catalog"]).iloc[0]
+    task, _ = safe_read_zarr(outputs["task_catalog"].parent / record["group_path"])
+    for layer in (
+        "C_all_accessible_features",
+        "C_learned_all_accessible_features",
+        "C_all_footprint_features",
+        "C_learned_all_footprint_features",
+    ):
+        assert f"{layer}_site_fraction" in task.obs, layer
+    adata = materialize(
+        outputs["task_catalog"].parent / "spine.h5ad",
+        references=record["reference"],
+        read_ids=list(task.obs_names),
+        start=int(record["core_start"]),
+        end=int(record["core_end"]),
+    )
+    values, coords, _ = _prepare_model_input(
+        adata, record["reference"], _configured_model_specs(cfg)[0], cfg
+    )
+    observed = ~np.isnan(np.asarray(values, dtype=float))
+    columns = np.searchsorted(np.asarray(task.var_names, dtype=np.int64), np.asarray(coords))
+    state = np.asarray(task.layers["C_all_accessible_features"], dtype=float)[:, columns] > 0
+    np.testing.assert_allclose(
+        task.obs["C_all_accessible_features_site_fraction"].to_numpy(dtype=float),
+        (observed & state).sum(1) / observed.sum(1),
+    )
+
+
+def test_violins_put_raw_beside_the_hmm_at_sites(tmp_path, monkeypatch):
+    import matplotlib.axes
+
+    from smftools.cli.stage_artifacts import prepare_analysis_plot_layout
+    from smftools.tools import partitioned_hmm
+
+    specs = partitioned_hmm._configured_model_specs(
+        _hmm_cfg(hmm_methbases=["C"], hmm_variants={"learned": {"hmm_context_model": "learned"}})
+    )
+    rng = np.random.default_rng(0)
+    layers = [
+        f"C{v}_all_{f}_features" for v in ("", "_learned") for f in ("accessible", "footprint")
+    ]
+    columns = {"C_site_modified_fraction": rng.random(30)}
+    for layer in layers:
+        columns[f"{layer}_fraction"] = rng.random(30)
+        columns[f"{layer}_site_fraction"] = rng.random(30)
+    obs = pd.DataFrame(columns)
+    monkeypatch.setattr(
+        partitioned_hmm, "_read_task_obs", lambda path, wanted: obs[[c for c in wanted if c in obs]]
+    )
+    drawn = []
+    original = matplotlib.axes.Axes.violinplot
+
+    def violinplot(self, data, **kwargs):
+        drawn.append((self.get_ylabel(), kwargs["positions"][0]))
+        return original(self, data, **kwargs)
+
+    monkeypatch.setattr(matplotlib.axes.Axes, "violinplot", violinplot)
+    layout = prepare_analysis_plot_layout(tmp_path, stage="hmm")
+    records = [
+        {
+            "reference": "r",
+            "core_start": 0,
+            "core_end": 9,
+            "barcode": "b",
+            "group_path": "b",
+            "layers": layers,
+        }
+    ]
+    partitioned_hmm._plot_molecule_fractions(records, tmp_path, layout, specs=specs)
+    figure = layout.categories["features"] / "r__0_9__molecule_fractions.png"
+    assert figure.exists()
+    # 4 panels (accessible/footprint x span/sites) x 2 variants + raw in one panel.
+    assert len(drawn) == 9

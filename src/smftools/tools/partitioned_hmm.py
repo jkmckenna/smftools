@@ -309,27 +309,56 @@ def molecule_fractions(adata, layers, core_mask) -> dict[str, np.ndarray]:
 SITE_FRACTION_SUFFIX = "_site_modified_fraction"
 
 
-def molecule_site_fractions(adata, reference: str, core_mask, cfg, specs) -> dict[str, np.ndarray]:
-    """Per read: modified / observed calls of each model's input over the core (`HCE-08`).
+SITE_FEATURE_SUFFIX = "_site_fraction"
+RAW_COLOR = "#757575"
 
-    One column per model (variants share their input): the raw counterpart of
-    the HMM's ``<layer>_fraction``.
+
+def molecule_site_fractions(adata, reference: str, core_mask, cfg, specs) -> dict[str, np.ndarray]:
+    """Per read, over the model's observed sites in the core (`HCE-08`, `HCE-09`).
+
+    ``<model>_site_modified_fraction``: modified / observed calls of the HMM
+    input (one per model; variants share their input). ``<layer>_site_fraction``
+    for each accessible / footprint layer of every variant: the share of the
+    same observed sites inside the feature -- the HMM call at exactly the sites
+    the raw fraction counts, where ``<layer>_fraction`` counts every position
+    of the read's span (as the periodicity inputs ``accessible`` vs
+    ``accessible_all``).
     """
     import warnings
 
     positions = np.asarray(adata.var_names, dtype=np.int64)
     core = positions[np.asarray(core_mask, dtype=bool)]
+    inputs: dict[str, tuple[np.ndarray, np.ndarray]] = {}
     fractions = {}
-    for spec in specs:
-        if spec.variant or len(spec.signals) != 1:
-            continue
-        values, coords, _ = _prepare_model_input(adata, reference, spec, cfg)
-        values = np.asarray(values, dtype=float)[:, np.isin(np.asarray(coords), core)]
-        with warnings.catch_warnings():  # a read with no observed site: NaN
-            warnings.simplefilter("ignore", RuntimeWarning)
-            fractions[f"{spec.label}{SITE_FRACTION_SUFFIX}"] = np.nanmean(
-                np.where(np.isnan(values), np.nan, values >= 0.5), axis=1
-            )
+    with warnings.catch_warnings():  # a read with no observed site: NaN
+        warnings.simplefilter("ignore", RuntimeWarning)
+        for spec in specs:
+            if len(spec.signals) != 1:
+                continue
+            base = spec.base_label or spec.label
+            if base not in inputs:
+                values, coords, _ = _prepare_model_input(adata, reference, spec, cfg)
+                coords = np.asarray(coords, dtype=np.int64)
+                inside = np.isin(coords, core)
+                inputs[base] = (
+                    np.asarray(values, dtype=float)[:, inside],
+                    np.searchsorted(positions, coords[inside]),
+                )
+            values, columns = inputs[base]
+            observed = ~np.isnan(values)
+            n_observed = np.where(observed.sum(axis=1) > 0, observed.sum(axis=1), np.nan)
+            if not spec.variant:
+                fractions[f"{spec.label}{SITE_FRACTION_SUFFIX}"] = np.nanmean(
+                    np.where(observed, values >= 0.5, np.nan), axis=1
+                )
+            for suffix in FRACTION_LAYER_SUFFIXES:
+                layer = f"{spec.label}{suffix}"
+                if layer not in adata.layers:
+                    continue
+                state = np.nan_to_num(np.asarray(adata.layers[layer], dtype=float)[:, columns]) > 0
+                fractions[f"{layer}{SITE_FEATURE_SUFFIX}"] = (observed & state).sum(
+                    axis=1
+                ) / n_observed
     return fractions
 
 
@@ -956,28 +985,38 @@ def _plot_molecule_fractions(records, output_dir: Path, layout, specs=()) -> Non
     import matplotlib.pyplot as plt
     from matplotlib.patches import Patch
 
-    rows = []
+    # Panels: each feature over the read's span (``<layer>_fraction``) and at
+    # the model's observed sites (``<layer>_site_fraction`` -> ``<layer>_sites``),
+    # the latter for accessible beside the raw modified-site fraction (`HCE-09`).
+    raw_panels = {
+        f"{spec.label}{SITE_FRACTION_SUFFIX}": f"{spec.label}_all_accessible_features_sites"
+        for spec in specs
+        if not spec.variant and len(spec.signals) == 1
+    }
+    rows, raw_rows = [], []
     for record in records:
-        names = [
-            f"{layer}_fraction"
+        layers = [
+            str(layer)
             for layer in record.get("layers", [])
             if str(layer).endswith(FRACTION_LAYER_SUFFIXES)
         ]
-        if not names:
+        if not layers:
             continue
-        obs = _read_task_obs(output_dir / record["group_path"], names)
+        names = {f"{layer}_fraction": layer for layer in layers}
+        names.update({f"{layer}{SITE_FEATURE_SUFFIX}": f"{layer}_sites" for layer in layers})
+        obs = _read_task_obs(output_dir / record["group_path"], [*names, *raw_panels])
+        key = (
+            str(record["reference"]),
+            int(record["core_start"]),
+            int(record["core_end"]),
+            str(record["barcode"]),
+        )
         for name in obs.columns:
             values = pd.to_numeric(obs[name], errors="coerce").dropna().to_numpy()
-            rows.append(
-                (
-                    str(record["reference"]),
-                    int(record["core_start"]),
-                    int(record["core_end"]),
-                    str(record["barcode"]),
-                    name[: -len("_fraction")],
-                    values,
-                )
-            )
+            if name in raw_panels:
+                raw_rows.append((*key, raw_panels[name], values))
+            else:
+                rows.append((*key, names[name], values))
     if not rows:
         return
     variant_of = {
@@ -990,10 +1029,30 @@ def _plot_molecule_fractions(records, output_dir: Path, layout, specs=()) -> Non
         base, variant = variant_of.get(layer, (layer, ""))
         cell = windows.setdefault((reference, core_start, core_end), {}).setdefault(base, {})
         cell.setdefault(variant, {}).setdefault(barcode, []).append(values)
+    for reference, core_start, core_end, barcode, panel, values in raw_rows:
+        cell = windows.get((reference, core_start, core_end), {}).get(panel)
+        if cell is not None:
+            cell.setdefault("raw", {}).setdefault(barcode, []).append(values)
+    from smftools.preprocessing.stage_context_qc import _short_names
+
     rng = np.random.default_rng(0)
+    short = _short_names(
+        {
+            b
+            for by_feature in windows.values()
+            for cell in by_feature.values()
+            for by_barcode in cell.values()
+            for b in by_barcode
+        }
+    )
     for (reference, core_start, core_end), by_feature in sorted(windows.items()):
         features = sorted(by_feature)
         variants = list(dict.fromkeys(v for feature in features for v in by_feature[feature]))
+        # Raw first, in grey; the HMM variants keep their colours.
+        hmm_variants = [v for v in variants if v != "raw"]
+        variants = (["raw"] if "raw" in variants else []) + hmm_variants
+        colors = {v: VARIANT_COLORS[i % len(VARIANT_COLORS)] for i, v in enumerate(hmm_variants)}
+        colors["raw"] = RAW_COLOR
         barcodes = sorted(
             {b for feature in features for v in by_feature[feature].values() for b in v}
         )
@@ -1005,9 +1064,10 @@ def _plot_molecule_fractions(records, output_dir: Path, layout, specs=()) -> Non
         )
         width = 0.8 / max(1, len(variants))
         for axis, feature in zip(axes[:, 0], features, strict=True):
-            for v_index, variant in enumerate(variants):
-                color = VARIANT_COLORS[v_index % len(VARIANT_COLORS)]
-                offset = (v_index - (len(variants) - 1) / 2) * width
+            present = [v for v in variants if v in by_feature[feature]]
+            for v_index, variant in enumerate(present):
+                color = colors[variant]
+                offset = (v_index - (len(present) - 1) / 2) * width
                 for b_index, barcode in enumerate(barcodes, start=1):
                     parts = by_feature[feature].get(variant, {}).get(barcode)
                     if not parts:
@@ -1041,20 +1101,26 @@ def _plot_molecule_fractions(records, output_dir: Path, layout, specs=()) -> Non
                         edgecolors="none",
                         rasterized=True,
                     )
-            axis.set_xticks(range(1, len(barcodes) + 1), barcodes, rotation=90, fontsize=6)
+            axis.set_xticks(
+                range(1, len(barcodes) + 1), [short[b] for b in barcodes], rotation=90, fontsize=6
+            )
             axis.set_xlim(0.4, len(barcodes) + 0.6)
             axis.set_ylim(-0.02, 1.02)
-            axis.set_ylabel(f"{feature}\nfraction of read", fontsize=8)
+            if feature.endswith("_sites"):
+                label = f"{feature.removesuffix('_sites')}\nfraction of observed sites"
+            else:
+                label = f"{feature}\nfraction of read span"
+            axis.set_ylabel(label, fontsize=7)
             axis.grid(axis="y", alpha=0.2)
         if len(variants) > 1:
             handles = [
                 Patch(
-                    facecolor=VARIANT_COLORS[i % len(VARIANT_COLORS)],
+                    facecolor=colors[v],
                     alpha=0.5,
-                    edgecolor=VARIANT_COLORS[i % len(VARIANT_COLORS)],
-                    label=_variant_label(v),
+                    edgecolor=colors[v],
+                    label="raw (modified sites)" if v == "raw" else _variant_label(v),
                 )
-                for i, v in enumerate(variants)
+                for v in variants
             ]
             figure.legend(handles=handles, loc="upper right", fontsize=8, title="HMM")
         figure.suptitle(

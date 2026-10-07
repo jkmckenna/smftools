@@ -87,6 +87,7 @@ hmm_context_weight_bounds: [0.1, 10]
 | `HCE-06` HMM variants | implemented, not merged | several emission models in one HMM stage: namespaced layers, plots comparing them |
 | `HCE-07` context weights for every state (learned) | proposed | the protected state's background modification follows the enzyme's preference too |
 | `HCE-08` HMM vs raw per-molecule scatter | implemented, not merged | per read: HMM accessible fraction against the raw modified-site fraction, per barcode, variants overlaid |
+| `HCE-09` HMM fractions at observed sites | implemented, not merged | per read: the share of the model's observed sites inside each feature, beside the raw modified-site fraction |
 
 ### `HCE-01` — context indices and weight tables
 
@@ -333,4 +334,19 @@ each variant's Pearson r in the legend.
 Tests: the raw fraction equals modified / observed of the model input over
 the core; one figure per reference window, a panel per barcode, every variant
 drawn; no `_fraction` columns -> no figure.
+
+### `HCE-09` — HMM fractions at observed sites
+
+`<layer>_fraction` (`HCE-06`) counts every position of a read's span, the
+gaps between sites included; the raw modified-site fraction (`HCE-08`)
+counts observed sites. `<layer>_site_fraction` -- for each accessible and
+footprint layer of every variant -- is the share of the read's observed
+model sites (in the core) inside the feature: the HMM's call at exactly the
+sites the raw fraction counts, so the two differ only in the call (as the
+periodicity inputs `accessible` vs `accessible_all`). The per-molecule violin
+figure gains a panel per feature at sites; the accessible one carries the
+raw modified-site fraction as a grey violin beside the variants.
+
+Tests: equals observed-and-in-feature / observed from the model input and
+the stored layer; raw drawn only in the accessible-at-sites panel.
 
