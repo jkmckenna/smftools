@@ -28,6 +28,7 @@ from ..contracts import (
     validate_mask_relationships,
 )
 from ..manifests import DatasetSnapshotManifest, SplitManifest
+from ..plan import ALL_POSITIONS
 
 DEFAULT_BATCH_SIZE = 64
 DEFAULT_BATCH_MEMORY_BYTES = 64 * 1024**2
@@ -601,6 +602,8 @@ def _mapped_position_columns(
 
 
 def _design_columns(var, reference: str, site_context: str) -> np.ndarray | None:
+    if site_context.lower() == ALL_POSITIONS:
+        return np.ones(len(var), dtype=bool)  # every position (`RPG-01`)
     candidates = (
         f"{reference}_{site_context}_site",
         f"{reference}_{site_context}_site_valid_coverage",

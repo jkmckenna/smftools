@@ -38,7 +38,15 @@ from smftools.project.reference_registry import (
 )
 from smftools.project.registry import list_experiments, resolve_set_membership
 
-from .plan import CoordinateFrame, DatasetSpec, LabelSpec, MLPlan, PhysicalChannelSource
+from .plan import (
+    ALL_POSITIONS,
+    SITE_CALL_STAGES,
+    CoordinateFrame,
+    DatasetSpec,
+    LabelSpec,
+    MLPlan,
+    PhysicalChannelSource,
+)
 
 ML_SELECTION_PLAN_VERSION = 1
 _STAGE_DIRS = {
@@ -416,6 +424,7 @@ def _source_for_modality(
             modality=modality,
             site_context=source.site_context,
             biological_role=channel.biological_role,
+            stage=source.stage,
         )
         result.append((channel.name, channel.biological_role, source))
     if not result:
@@ -428,9 +437,21 @@ def _validate_channel_semantics(
     modality: str,
     site_context: str,
     biological_role: str,
+    stage: str = "",
 ) -> None:
     context = site_context.lower()
     role = biological_role.lower()
+    if context == ALL_POSITIONS:
+        # Every position (`RPG-01`): for derived layers defined between sites
+        # (e.g. HMM features), never for site calls read off their sites.
+        if stage.lower() in SITE_CALL_STAGES:
+            raise MLSelectionError(
+                f"site_context {ALL_POSITIONS!r} reads every position; {stage!r} holds site "
+                "calls -- use the site context they were called at"
+            )
+        if modality == "deaminase" and role != "accessibility":
+            raise MLSelectionError("deaminase input must be declared as accessibility")
+        return
     # GpC is a subset of a deaminase's C sites -- still accessibility.
     if modality == "deaminase" and (context not in {"c", "gpc"} or role != "accessibility"):
         raise MLSelectionError("deaminase input must be C or GpC sites, declared as accessibility")
@@ -833,9 +854,13 @@ def _read_identity_metadata(
                 if obs["read_id"].astype(str).duplicated().any():
                     raise MLSelectionError(f"raw obs sidecar has duplicate read IDs: {obs_path}")
                 frame = frame.merge(obs, on="read_id", how="left", validate="one_to_one")
-    # Then the obs of each stage the dataset reads: preprocess QC and dedup
-    # flags (`passes_qc`, `passes_dedup`, ...) exist nowhere else (`F66`).
-    for stage in sorted(set(stages).difference({"raw"})):
+    # Then the obs of each stage the dataset reads, and preprocess's in any
+    # case: QC and dedup flags (`passes_qc`, `passes_dedup`, ...) exist only
+    # there (`F66`), also for a dataset that reads only derived stages (`F73`).
+    obs_stages = sorted(set(stages).difference({"raw"}))
+    if "preprocess" not in obs_stages and "preprocess" in metadata.spines:
+        obs_stages.append("preprocess")
+    for stage in obs_stages:
         missing = required_columns.difference(frame.columns)
         if not missing:
             break

@@ -1,6 +1,6 @@
 # Per-read periodicity over regions (`RPG`)
 
-**Status:** proposed. Nothing implemented. One PR per item, in order.
+**Status:** in progress. `RPG-01` implemented. One PR per item, in order.
 
 ## Question
 
@@ -72,7 +72,7 @@ the independent readout.
 
 | item | status | scope |
 |---|---|---|
-| `RPG-01` dense channels | proposed | `site_context: all` in ML plans |
+| `RPG-01` dense channels | implemented, not merged | `site_context: all` in ML plans |
 | `RPG-02` compute | proposed | streamed per-(read, region) periodograms and statistics |
 | `RPG-03` figures | proposed | paired input / periodogram clustermaps in one row order |
 | `RPG-04` CLI | proposed | `smftools project periodicity`, `smftools experiment periodicity` |
@@ -81,10 +81,13 @@ the independent readout.
 ### `RPG-01` — `site_context: all`
 
 Every position of the source layer is a design position; observed where the
-value is finite and the read covers it. Accepted only for non-raw-call layers
-(stages other than `preprocess`/`raw` `X`), so raw modification calls are never
-read off their sites. Selection validation accepts it for both modalities
-with any biological role a derived layer may carry.
+value is finite and the read covers it. Refused on the `raw` and `preprocess`
+stages, which hold site calls, so modification calls are never read off their
+sites; a deaminase channel must still be declared accessibility.
+
+Also here (`F73`): QC/dedup filter columns live only in preprocess obs, and
+were looked up only in the stages a dataset's channels read, so a dataset
+reading only the HMM stage failed. Preprocess obs is now always searched.
 
 Tests: design mask is all positions within coverage; refused on preprocess
 `X`; an HMM layer read with `all` equals the dense layer, with `C` equals it at
