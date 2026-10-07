@@ -65,6 +65,8 @@ STAGE_PLOT_CATEGORIES = {
         "features",
         "clustermaps",
         "diagnostics",
+        # Sequence context of state calls per emission variant (`SCQ-02`).
+        "context_qc",
     ),
     "latent": ("embeddings", "loadings", "clusters", "diagnostics"),
     "chimeric": ("segments", "classifications", "clustermaps", "diagnostics"),

@@ -262,7 +262,8 @@ def group_differences(enrichment: pd.DataFrame, *, reference_group: str) -> pd.D
 
 NOT_A_CONTEXT = -1  # not a C on the modified strand, or a window touching N
 WEIGHT_COLUMNS = ["group", "k", "kmer", "weight", "n_sites", "observed", "source"]
-WEIGHT_SOURCES = frozenset({"naked_dna", "learned", "cells"})
+# accessible: modification within HMM accessible-called sites (`SCQ-02`).
+WEIGHT_SOURCES = frozenset({"naked_dna", "learned", "cells", "accessible"})
 
 
 def context_kmers(k: int) -> list[str]:

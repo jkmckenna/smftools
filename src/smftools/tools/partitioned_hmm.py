@@ -573,6 +573,27 @@ def execute_hmm_task(
     core_mask = (positions >= task.core_start) & (positions < task.core_end)
     core_obs = adata.obs.copy()
     core_obs = core_obs.assign(**molecule_fractions(adata, appended_layers, core_mask))
+    context_qc_partial = ""
+    if bool(getattr(cfg, "stage_context_qc", True)):
+        # Sequence-context QC of the state calls (`SCQ-02`), while the
+        # decoded layers and input calls are both at hand.
+        from .hmm_context_qc import tally_hmm_task, write_task_partial
+
+        try:
+            context_qc_partial = write_task_partial(
+                Path(output_dir),
+                task.task_id,
+                tally_hmm_task(
+                    adata,
+                    task.reference,
+                    task.barcode,
+                    core_mask,
+                    cfg,
+                    _configured_model_specs(cfg),
+                ),
+            )
+        except Exception:
+            logger.exception("HMM context QC tally failed for task %s", task.task_id)
     core_var = adata.var.loc[core_mask].copy()
     n_positions = int(core_mask.sum())
 
@@ -647,6 +668,7 @@ def execute_hmm_task(
             layer_model_map, sort_keys=True, separators=(",", ":")
         ),
         "read_index_path": read_index_path.relative_to(output_dir).as_posix(),
+        "context_qc_partial": context_qc_partial,
     }
 
 
@@ -1726,6 +1748,13 @@ def execute_partitioned_hmm(spine_path, cfg, output_dir) -> dict[str, Path]:
     _plot_molecule_fractions(records, output_dir, layout, specs=_configured_model_specs(cfg))
     _plot_hmm_parameters_across_barcodes(records, models_dir, cfg, layout)
     _plot_hmm_fit_history(models_dir, layout)
+    from .hmm_context_qc import write_hmm_context_qc
+
+    try:
+        context_qc_dir = write_hmm_context_qc(output_dir, records, spine.uns, cfg, layout=layout)
+    except Exception:
+        context_qc_dir = None
+        logger.exception("HMM context QC failed; generation still published")
 
     output_spine = output_dir / HMM_SPINE_FILENAME
     hmm_spine = spine.copy()
@@ -1769,6 +1798,8 @@ def execute_partitioned_hmm(spine_path, cfg, output_dir) -> dict[str, Path]:
     register_sidecar(manifest, "hmm_fit_catalog", fit_catalog_path)
     register_sidecar(manifest, "hmm_fit_selection", fit_selection_path)
     register_sidecar(manifest, "hmm_plot_catalog", layout.catalog)
+    if context_qc_dir is not None:
+        register_sidecar(manifest, "hmm_context_qc", context_qc_dir)
     logger.info("Wrote partitioned HMM stage with %d task(s)", len(tasks))
     return {
         "spine": output_spine,
