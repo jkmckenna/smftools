@@ -306,6 +306,33 @@ def molecule_fractions(adata, layers, core_mask) -> dict[str, np.ndarray]:
     return fractions
 
 
+SITE_FRACTION_SUFFIX = "_site_modified_fraction"
+
+
+def molecule_site_fractions(adata, reference: str, core_mask, cfg, specs) -> dict[str, np.ndarray]:
+    """Per read: modified / observed calls of each model's input over the core (`HCE-08`).
+
+    One column per model (variants share their input): the raw counterpart of
+    the HMM's ``<layer>_fraction``.
+    """
+    import warnings
+
+    positions = np.asarray(adata.var_names, dtype=np.int64)
+    core = positions[np.asarray(core_mask, dtype=bool)]
+    fractions = {}
+    for spec in specs:
+        if spec.variant or len(spec.signals) != 1:
+            continue
+        values, coords, _ = _prepare_model_input(adata, reference, spec, cfg)
+        values = np.asarray(values, dtype=float)[:, np.isin(np.asarray(coords), core)]
+        with warnings.catch_warnings():  # a read with no observed site: NaN
+            warnings.simplefilter("ignore", RuntimeWarning)
+            fractions[f"{spec.label}{SITE_FRACTION_SUFFIX}"] = np.nanmean(
+                np.where(np.isnan(values), np.nan, values >= 0.5), axis=1
+            )
+    return fractions
+
+
 def _mask_uncovered_model_input(adata, values: np.ndarray, coordinates: np.ndarray) -> np.ndarray:
     """Keep paired insert gaps missing in HMM training and inference matrices."""
     if COVERED_BASE_MASK not in adata.layers:
@@ -573,6 +600,14 @@ def execute_hmm_task(
     core_mask = (positions >= task.core_start) & (positions < task.core_end)
     core_obs = adata.obs.copy()
     core_obs = core_obs.assign(**molecule_fractions(adata, appended_layers, core_mask))
+    try:
+        core_obs = core_obs.assign(
+            **molecule_site_fractions(
+                adata, task.reference, core_mask, cfg, _configured_model_specs(cfg)
+            )
+        )
+    except Exception:
+        logger.exception("Raw site fractions failed for task %s", task.task_id)
     context_qc_partial = ""
     if bool(getattr(cfg, "stage_context_qc", True)):
         # Sequence-context QC of the state calls (`SCQ-02`), while the
@@ -1041,6 +1076,121 @@ def _plot_molecule_fractions(records, output_dir: Path, layout, specs=()) -> Non
             core_start=int(core_start),
             core_end=int(core_end),
         )
+
+
+def _plot_hmm_vs_raw_scatter(records, output_dir: Path, layout, specs=()) -> None:
+    """Per reference window and model: each read's HMM accessible fraction
+    against its raw modified-site fraction, a panel per barcode, every
+    variant overlaid (`HCE-08`)."""
+    import matplotlib.pyplot as plt
+    from matplotlib.lines import Line2D
+
+    models = {}
+    for spec in specs:
+        if len(spec.signals) == 1:
+            base = spec.base_label or spec.label
+            models.setdefault(base, []).append(
+                (_variant_label(spec.variant), f"{spec.label}_all_accessible_features_fraction")
+            )
+    if not models:
+        return
+    windows: dict = {}
+    for record in records:
+        wanted = [
+            column
+            for base, members in models.items()
+            for column in [f"{base}{SITE_FRACTION_SUFFIX}", *(c for _, c in members)]
+        ]
+        obs = _read_task_obs(output_dir / record["group_path"], wanted)
+        if obs.empty:
+            continue
+        key = (str(record["reference"]), int(record["core_start"]), int(record["core_end"]))
+        windows.setdefault(key, {}).setdefault(str(record["barcode"]), []).append(obs)
+    from smftools.preprocessing.stage_context_qc import _short_names
+
+    rng = np.random.default_rng(0)
+    short = _short_names({b for by_barcode in windows.values() for b in by_barcode})
+    for (reference, core_start, core_end), by_barcode in sorted(windows.items()):
+        frames = {barcode: pd.concat(parts) for barcode, parts in by_barcode.items()}
+        for base, members in models.items():
+            raw = f"{base}{SITE_FRACTION_SUFFIX}"
+            barcodes = sorted(b for b, frame in frames.items() if raw in frame)
+            if not barcodes:
+                continue
+            n_cols = min(4, len(barcodes))
+            n_rows = -(-len(barcodes) // n_cols)
+            figure, axes = plt.subplots(
+                n_rows,
+                n_cols,
+                figsize=(3.0 * n_cols, 3.0 * n_rows),
+                squeeze=False,
+                sharex=True,
+                sharey=True,
+            )
+            for index, barcode in enumerate(barcodes):
+                axis = axes[index // n_cols][index % n_cols]
+                frame = frames[barcode]
+                handles = []
+                for v_index, (variant, column) in enumerate(members):
+                    if column not in frame:
+                        continue
+                    pair = frame[[raw, column]].apply(pd.to_numeric, errors="coerce").dropna()
+                    if pair.empty:
+                        continue
+                    shown = pair if len(pair) <= 2000 else pair.sample(2000, random_state=rng)
+                    color = VARIANT_COLORS[v_index % len(VARIANT_COLORS)]
+                    axis.scatter(
+                        shown[raw],
+                        shown[column],
+                        s=3,
+                        alpha=0.3,
+                        color=color,
+                        edgecolors="none",
+                        rasterized=True,
+                    )
+                    r = pair[raw].corr(pair[column]) if len(pair) > 2 else np.nan
+                    handles.append(
+                        Line2D(
+                            [],
+                            [],
+                            marker="o",
+                            linestyle="",
+                            color=color,
+                            label=f"{variant} r={r:.2f} (n={len(pair)})",
+                        )
+                    )
+                axis.plot([0, 1], [0, 1], color="0.5", linewidth=0.8, linestyle="--")
+                axis.set_xlim(-0.02, 1.02)
+                axis.set_ylim(-0.02, 1.02)
+                axis.set_title(short[barcode], fontsize=8)
+                axis.tick_params(labelsize=6)
+                if handles:
+                    axis.legend(handles=handles, fontsize=5, loc="upper left", frameon=False)
+            for index in range(len(barcodes), n_rows * n_cols):
+                axes[index // n_cols][index % n_cols].set_visible(False)
+            figure.supxlabel(f"raw modified-site fraction ({base} sites)", fontsize=8)
+            figure.supylabel("HMM accessible fraction", fontsize=8)
+            figure.suptitle(
+                f"{reference}:{core_start}-{core_end} [{base}] HMM vs raw per molecule",
+                fontsize=10,
+            )
+            figure.tight_layout(rect=(0, 0, 1, 0.96))
+            path = layout.categories["features"] / (
+                f"{_component(reference)}__{core_start}_{core_end}__{_component(base)}"
+                "__hmm_vs_raw_scatter.png"
+            )
+            figure.savefig(path, dpi=150)
+            plt.close(figure)
+            register_plot_artifact(
+                layout,
+                path,
+                stage="hmm",
+                category="features",
+                plot_type="hmm_vs_raw_molecule_scatter",
+                reference=str(reference),
+                core_start=int(core_start),
+                core_end=int(core_end),
+            )
 
 
 def _grouped_bar_plot(axis, group_labels, series: dict, *, ylabel: str, title: str) -> None:
@@ -1746,6 +1896,7 @@ def execute_partitioned_hmm(spine_path, cfg, output_dir) -> dict[str, Path]:
         records, output_dir, layout, specs=_configured_model_specs(cfg)
     )
     _plot_molecule_fractions(records, output_dir, layout, specs=_configured_model_specs(cfg))
+    _plot_hmm_vs_raw_scatter(records, output_dir, layout, specs=_configured_model_specs(cfg))
     _plot_hmm_parameters_across_barcodes(records, models_dir, cfg, layout)
     _plot_hmm_fit_history(models_dir, layout)
     from .hmm_context_qc import write_hmm_context_qc
