@@ -1,6 +1,6 @@
 # Sequence-context QC in the preprocess and HMM stages (`SCQ`)
 
-**Status:** in progress. `SCQ-01` merged, `SCQ-02` implemented. One PR per item, in order.
+**Status:** in progress. `SCQ-01`, `SCQ-02` merged, `SCQ-03` implemented. One PR per item, in order.
 `SCQ-02` follows `HCE-06` (HMM variants).
 
 ## Why
@@ -43,8 +43,8 @@ barcode.
 | item | status | scope |
 |---|---|---|
 | `SCQ-01` preprocess context QC | merged | modification bias per barcode x reference from passing reads; tables and figures |
-| `SCQ-02` HMM context QC | implemented, not merged | per variant: residual context bias of state calls; modification rate within accessible-called sites |
-| `SCQ-03` backfill for finished stages | proposed | the same outputs from a finished stage, without re-running it |
+| `SCQ-02` HMM context QC | merged | per variant: residual context bias of state calls; modification rate within accessible-called sites |
+| `SCQ-03` backfill for finished stages | implemented, not merged | the same outputs from a finished stage, without re-running it |
 | `SCQ-04` qualification | proposed | a real run: counts equal `context-bias` on the same reads; run time |
 
 ### `SCQ-01` — preprocess context QC
@@ -138,6 +138,26 @@ from its current generation without re-running it -- for runs made before
 `SCQ`, until they are regenerated.
 
 Tests: backfilled outputs equal those the stage writes itself on a fixture.
+
+As built (`tools/context_qc_backfill.py`; `smftools experiment context-qc
+EXPERIMENT_DIR [--stage ...] [--config CSV]`, `smftools project context-qc
+PROJECT_DIR [--experiment ID ...]`, both with `--workers`, `--refresh`,
+`--no-figures`): the config is the one recorded in `experiment_manifest.json`
+unless a file is given; the generation is the stage's `current.json`
+selection. Preprocess reuses `write_stage_context_qc` on the generation's
+spine obs and task stores; HMM re-materializes each task's reads over its
+core from the generation spine (decoded layers and input calls), tallies,
+then reduces as the stage does -- in worker processes, as it is the slow
+part. Existing outputs are kept unless `--refresh`; `run.json` gains
+`backfilled: true`.
+
+A published generation is otherwise left as it was: a preprocess
+generation's manifest checksums `plots/`, `plots/catalog.parquet` and
+`sidecar_manifest.json`, and is re-validated on reuse, so writing there would
+make a finished stage read as corrupt and re-run. Backfilled figures go to
+`<generation>/context_qc/plots/context_qc/` with their own catalog, and no
+sidecar is registered (the stage-written outputs keep their places in
+`plots/context_qc/` and the sidecar manifest).
 
 ### `SCQ-04` — qualification
 

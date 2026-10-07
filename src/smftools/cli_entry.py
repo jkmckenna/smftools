@@ -2036,6 +2036,97 @@ def experiment_context_bias_cmd(experiment_dir, **options):
     _run_context_bias({"experiment_dir": experiment_dir}, **options)
 
 
+def _context_qc_options(command):
+    """Options shared by the project and experiment ``context-qc`` commands."""
+    options = [
+        click.option(
+            "--stage",
+            "stages",
+            type=click.Choice(["preprocess", "hmm"]),
+            multiple=True,
+            help="Stage(s) to backfill (repeatable; default both).",
+        ),
+        click.option("--workers", type=int, default=1, show_default=True),
+        click.option("--refresh", is_flag=True, help="Replace existing context-QC outputs."),
+        click.option("--no-figures", is_flag=True, help="Tables only."),
+    ]
+    for option in reversed(options):
+        command = option(command)
+    return command
+
+
+def _run_context_qc(experiments, *, stages, workers, refresh, no_figures, config_path=None):
+    from smftools.tools.context_qc_backfill import STAGES, backfill_context_qc, experiment_config
+
+    for label, experiment_dir in experiments:
+        try:
+            cfg = experiment_config(experiment_dir, config_path)
+        except (FileNotFoundError, ValueError) as exc:
+            click.echo(f"{label}: skipped ({exc})")
+            continue
+        for stage in stages or STAGES:
+            result = backfill_context_qc(
+                experiment_dir,
+                stage,
+                cfg,
+                workers=workers,
+                refresh=refresh,
+                figures=not no_figures,
+            )
+            detail = f", {result['figures']} figure(s)" if "figures" in result else ""
+            click.echo(f"{label} {stage}: {result['status']}{detail}")
+
+
+@experiment_group.command("context-qc")
+@click.argument("experiment_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.option(
+    "--config",
+    "config_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help="Experiment config (default: the one in experiment_manifest.json).",
+)
+@_context_qc_options
+def experiment_context_qc_cmd(experiment_dir, config_path, **options):
+    """Sequence-context QC for an experiment's finished stages (no re-run).
+
+    Writes what the preprocess and HMM stages now write themselves -- per
+    barcode x reference context tables and figures -- from each stage's current
+    generation, under <generation>/context_qc/. Nothing else in the generation
+    changes.
+    """
+    _run_context_qc([(experiment_dir.name, experiment_dir)], config_path=config_path, **options)
+
+
+@project_group.command("context-qc")
+@click.argument("project_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.option(
+    "--experiment",
+    "experiment_ids",
+    multiple=True,
+    help="Experiment ID(s) to backfill (repeatable; default every active one).",
+)
+@_context_qc_options
+def project_context_qc_cmd(project_dir, experiment_ids, **options):
+    """Sequence-context QC for every registered experiment's finished stages.
+
+    As ``experiment context-qc``, over the project registry.
+    """
+    from smftools.project.registry import load_registry
+
+    registry = load_registry(project_dir).get("experiments", {})
+    unknown = sorted(set(experiment_ids) - set(registry))
+    if unknown:
+        raise click.BadParameter(f"unknown experiment(s): {', '.join(unknown)}")
+    experiments = [
+        (experiment_id, (project_dir / entry["path"]).resolve())
+        for experiment_id, entry in sorted(registry.items())
+        if (experiment_id in experiment_ids)
+        or (not experiment_ids and entry.get("status", "active") == "active")
+    ]
+    _run_context_qc(experiments, **options)
+
+
 def _parse_region(text: str) -> tuple[int, int]:
     import re
 
