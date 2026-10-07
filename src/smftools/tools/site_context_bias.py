@@ -137,30 +137,39 @@ def count_site_calls(
 
 
 def reference_sequences(spine_paths) -> dict[str, str]:
-    """Forward sequences by reference name, from spines' ``References``.
+    """Forward sequences by reference name, from spines' ``References``."""
+    from smftools.informatics.partition_read import load_spine
+
+    sequences: dict[str, str] = {}
+    for path in spine_paths:
+        for name, sequence in sequences_from_uns(load_spine(path, verbose=False).uns).items():
+            sequences.setdefault(name, sequence)
+    return sequences
+
+
+def sequences_from_uns(uns) -> dict[str, str]:
+    """Forward sequences by reference name from a spine's or materialization's ``uns``.
 
     Stored sequences are padded with ``N`` to the longest reference; each is cut
     back to its recorded length (either strand's), or, without one, stripped
     of trailing ``N`` -- padding must not read as bases in a context window.
     """
     from smftools.analysis.compute.site_context_bias import strand_of
-    from smftools.informatics.partition_read import REFERENCE_LENGTHS_KEY, load_spine
+    from smftools.informatics.partition_read import REFERENCE_LENGTHS_KEY
 
+    lengths: dict[str, int] = {}
+    for reference, length in dict(uns.get(REFERENCE_LENGTHS_KEY, {}) or {}).items():
+        lengths.setdefault(strand_of(str(reference))[0], int(length))
+    references = dict(uns.get("References", {}) or {})
     sequences: dict[str, str] = {}
-    for path in spine_paths:
-        spine = load_spine(path, verbose=False)
-        lengths: dict[str, int] = {}
-        for reference, length in dict(spine.uns.get(REFERENCE_LENGTHS_KEY, {}) or {}).items():
-            lengths.setdefault(strand_of(str(reference))[0], int(length))
-        references = dict(spine.uns.get("References", {}) or {})
-        for key, value in {**references, **dict(spine.uns)}.items():
-            if not (isinstance(key, str) and key.endswith("_FASTA_sequence")):
-                continue
-            if not isinstance(value, str):
-                continue
-            name = key[: -len("_FASTA_sequence")]
-            sequence = value[: lengths[name]] if name in lengths else value.rstrip("Nn")
-            sequences.setdefault(name, sequence)
+    for key, value in {**references, **dict(uns)}.items():
+        if not (isinstance(key, str) and key.endswith("_FASTA_sequence")):
+            continue
+        if not isinstance(value, str):
+            continue
+        name = key[: -len("_FASTA_sequence")]
+        sequence = value[: lengths[name]] if name in lengths else value.rstrip("Nn")
+        sequences.setdefault(name, sequence)
     return sequences
 
 

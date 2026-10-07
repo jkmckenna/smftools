@@ -1721,17 +1721,96 @@ class ContextBernoulliHMM(SingleBernoulliHMM):
         self.shrinkage = float(shrinkage)
         self.weight_bounds = (float(weight_bounds[0]), float(weight_bounds[1]))
         self.cpg = cpg
-        self.cpg_codes = np.asarray(cpg_codes if cpg_codes is not None else [], dtype=np.int64)
-        self.log_weights = torch.tensor(
-            np.asarray(log_weights if log_weights is not None else [0.0], dtype=float),
-            dtype=self.dtype,
-        )
-        self.position_codes = np.asarray(
-            position_codes if position_codes is not None else [], dtype=np.int64
-        )
+        # Buffers, so trainer checkpoints (state_dict) carry them (`HCE-04`).
+        self.register_buffer("context_log_weights", torch.zeros(1, dtype=self.dtype))
+        self.register_buffer("context_position_codes", torch.zeros(0, dtype=torch.int64))
+        self.register_buffer("context_cpg_codes", torch.zeros(0, dtype=torch.int64))
+        self.cpg_codes = cpg_codes if cpg_codes is not None else []
+        self.log_weights = log_weights if log_weights is not None else [0.0]
+        self.position_codes = position_codes if position_codes is not None else []
         self._active_coords: Optional[np.ndarray] = None
 
-    def set_contexts(self, *, log_weights: Sequence[float], position_codes: Sequence[int]) -> None:
+    @property
+    def log_weights(self) -> torch.Tensor:
+        return self.context_log_weights
+
+    @log_weights.setter
+    def log_weights(self, value) -> None:
+        self.context_log_weights = torch.as_tensor(
+            np.asarray(value, dtype=float) if not torch.is_tensor(value) else value,
+            dtype=self.dtype,
+        ).to(self.emission.device)
+
+    @property
+    def position_codes(self) -> np.ndarray:
+        return self.context_position_codes.detach().cpu().numpy()
+
+    @position_codes.setter
+    def position_codes(self, value) -> None:
+        self.context_position_codes = torch.as_tensor(
+            np.asarray(value, dtype=np.int64), device=self.emission.device
+        )
+
+    @property
+    def cpg_codes(self) -> np.ndarray:
+        return self.context_cpg_codes.detach().cpu().numpy()
+
+    @cpg_codes.setter
+    def cpg_codes(self, value) -> None:
+        self.context_cpg_codes = torch.as_tensor(
+            np.asarray(value, dtype=np.int64), device=self.emission.device
+        )
+
+    def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs):
+        # A checkpoint's context buffers have the shapes of its reference and
+        # k: resize ours to match before torch copies them in.
+        for name in ("context_log_weights", "context_position_codes", "context_cpg_codes"):
+            key = prefix + name
+            if key in state_dict:
+                setattr(self, name, torch.empty_like(state_dict[key]))
+        super()._load_from_state_dict(state_dict, prefix, *args, **kwargs)
+
+    @classmethod
+    def from_config(cls, cfg, *, override=None, device=None):
+        """A context model from config (``hmm_context_*``); contexts are set later."""
+        merged = cls._cfg_to_dict(cfg)
+        if override:
+            merged.update(override)
+        dtype = _coerce_dtype_for_device(_resolve_dtype(merged.get("hmm_dtype", None)), device)
+        bounds = merged.get("hmm_context_weight_bounds") or (0.1, 10.0)
+        model = cls(
+            n_states=int(merged.get("hmm_n_states", 2)),
+            init_emission=merged.get("hmm_init_emission_probs", merged.get("hmm_init_emission")),
+            eps=float(merged.get("hmm_eps", 1e-8)),
+            dtype=dtype,
+            context_states=str(merged.get("hmm_context_states", "modified")),
+            learn=str(merged.get("hmm_context_model", "table")) == "learned",
+            shrinkage=float(merged.get("hmm_context_shrinkage", 50.0)),
+            weight_bounds=(float(bounds[0]), float(bounds[1])),
+            cpg=str(merged.get("hmm_context_cpg", "separate")),
+        )
+        if device is not None:
+            model.to(torch.device(device) if isinstance(device, str) else device)
+        model._persisted_cfg = merged
+        return model
+
+    def context_config(self) -> dict:
+        """The settings `from_config` needs to rebuild this model (trainer override)."""
+        return {
+            "hmm_context_states": self.context_states,
+            "hmm_context_model": "learned" if self.learn else "table",
+            "hmm_context_shrinkage": self.shrinkage,
+            "hmm_context_weight_bounds": list(self.weight_bounds),
+            "hmm_context_cpg": self.cpg,
+        }
+
+    def set_contexts(
+        self,
+        *,
+        log_weights: Sequence[float],
+        position_codes: Sequence[int],
+        cpg_codes: Optional[Sequence[int]] = None,
+    ) -> None:
         """Weights per context code and the context code of every reference position."""
         log_weights = np.asarray(log_weights, dtype=float)
         if not np.isfinite(log_weights).all():
@@ -1739,8 +1818,10 @@ class ContextBernoulliHMM(SingleBernoulliHMM):
         codes = np.asarray(position_codes, dtype=np.int64)
         if codes.size and codes.max() >= log_weights.size:
             raise ValueError("a position code has no weight")
-        self.log_weights = torch.tensor(log_weights, dtype=self.dtype, device=self.emission.device)
+        self.log_weights = log_weights
         self.position_codes = codes
+        if cpg_codes is not None:
+            self.cpg_codes = cpg_codes
 
     def _state_scale(self) -> torch.Tensor:
         """``s_k``: 1 for weighted states."""
