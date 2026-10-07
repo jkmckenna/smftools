@@ -73,6 +73,7 @@ A plan with no implementation branch yet.
 |---|---|
 | `agent_files_plan.md` | restructuring the repo's `AGENTS.md`/`CLAUDE.md` files; explicitly not deployed |
 | `hmm_context_emissions_implementation_plan.md` | `HCE-01`–`HCE-05` sequence-context-aware HMM emissions: per-(state, context) modification probabilities as relative weights on the log-odds scale; `table` (e.g. naked-DNA calibration) or `learned` in EM with shrinkage; CpG kept separate; qualified on a multi-enzyme panel before any default changes |
+| `read_periodicity_figures_implementation_plan.md` | `RPF-01`–`RPF-04` periodicity figures after first use: descending order, display coordinates, several groupings per run, grid figures, mean spectra with bootstrap bands and per-group summaries |
 | `pipeline_throughput_implementation_plan.md` | `THR-01`–`THR-06` -- single-threaded, pool-collapse and redundant-scan bottlenecks found running `experiment batch full` (`F53`–`F57`, `F59`): alignment rescue, duplicate-detection group sizing, latent, raw extraction |
 
 ## `logs/` — not tracked
