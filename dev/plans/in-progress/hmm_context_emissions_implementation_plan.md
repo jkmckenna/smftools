@@ -86,6 +86,8 @@ hmm_context_weight_bounds: [0.1, 10]
 | `HCE-05` qualification | qualified: default stays `none`, `learned` opt-in | on a panel of several enzymes applied to the same cells |
 | `HCE-06` HMM variants | implemented, not merged | several emission models in one HMM stage: namespaced layers, plots comparing them |
 | `HCE-07` context weights for every state (learned) | proposed | the protected state's background modification follows the enzyme's preference too |
+| `HCE-08` HMM vs raw per-molecule scatter | implemented, not merged | per read: HMM accessible fraction against the raw modified-site fraction, per barcode, variants overlaid |
+| `HCE-09` HMM fractions at observed sites | implemented, not merged | per read: the share of the model's observed sites inside each feature, beside the raw modified-site fraction |
 
 ### `HCE-01` — context indices and weight tables
 
@@ -315,3 +317,36 @@ Naked-DNA calibration data (none yet; the `table` mode and format are ready
 for it). Methylation modelling beyond keeping CpG contexts separate. Contexts
 for other emission models (multi-channel, distance-binned) until the single
 Bernoulli case qualifies.
+
+### `HCE-08` — HMM vs raw per-molecule scatter
+
+How far does each HMM (variant) move a molecule away from its raw signal? In
+the same core window the stage already reports each read's accessible and
+footprint fractions (`HCE-06`, `<layer>_fraction`). Beside them it stores the
+read's raw modified-site fraction at the model's own sites --
+`<model>_site_modified_fraction`, modified / observed calls of the HMM input
+(one per model; variants share their input) -- and plots, per reference
+window, a grid with one panel per barcode: x the raw fraction, y the HMM
+accessible fraction, every variant overlaid in its colour (translucent
+points, at most 2,000 reads per variant and panel), the identity line, and
+each variant's Pearson r in the legend.
+
+Tests: the raw fraction equals modified / observed of the model input over
+the core; one figure per reference window, a panel per barcode, every variant
+drawn; no `_fraction` columns -> no figure.
+
+### `HCE-09` — HMM fractions at observed sites
+
+`<layer>_fraction` (`HCE-06`) counts every position of a read's span, the
+gaps between sites included; the raw modified-site fraction (`HCE-08`)
+counts observed sites. `<layer>_site_fraction` -- for each accessible and
+footprint layer of every variant -- is the share of the read's observed
+model sites (in the core) inside the feature: the HMM's call at exactly the
+sites the raw fraction counts, so the two differ only in the call (as the
+periodicity inputs `accessible` vs `accessible_all`). The per-molecule violin
+figure gains a panel per feature at sites; the accessible one carries the
+raw modified-site fraction as a grey violin beside the variants.
+
+Tests: equals observed-and-in-feature / observed from the model input and
+the stored layer; raw drawn only in the accessible-at-sites panel.
+
