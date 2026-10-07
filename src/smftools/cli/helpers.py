@@ -340,10 +340,32 @@ def resolved_stage_config(cfg, stage: str | None = None) -> dict[str, Any]:
         and not _is_downstream_owned(key, str(stage))
         and not (key in _OMIT_WHEN_UNSET_CONFIG_KEYS and _is_unset(value))
     }
+    resolved = _with_hmm_context_identity(resolved)
     selected = _STAGE_SEMANTIC_CONFIG_KEYS.get(str(stage))
     if selected is not None:
         return {key: resolved[key] for key in sorted(selected) if key in resolved}
     return resolved
+
+
+def _with_hmm_context_identity(values: dict[str, Any]) -> dict[str, Any]:
+    """Context-aware HMM settings only while the feature is on (`HCE-04`).
+
+    Off (the default), every ``hmm_context_*`` key is dropped, so configs and
+    stages from before the feature fingerprint exactly as they did. On, a
+    weight table is named by path, so its content hash joins the identity: an
+    edited table invalidates the stage (cf. `F72`).
+    """
+    mode = values.get("hmm_context_model")
+    if mode is None or _is_unset(mode):
+        return {key: value for key, value in values.items() if not key.startswith("hmm_context_")}
+    if str(mode).lower() == "table" and values.get("hmm_context_table"):
+        from ..hmm.model_artifacts import file_sha256_or_missing
+
+        values = {
+            **values,
+            "hmm_context_table_sha256": file_sha256_or_missing(values["hmm_context_table"]),
+        }
+    return values
 
 
 def resolved_stage_plot_config(cfg, stage: str) -> dict[str, Any]:

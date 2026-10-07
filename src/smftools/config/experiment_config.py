@@ -1359,6 +1359,15 @@ class ExperimentConfig:
     hmm_init_transition_probs: List[list] = field(default_factory=lambda: [[0.9, 0.1], [0.1, 0.9]])
     hmm_init_start_probs: List[float] = field(default_factory=lambda: [0.5, 0.5])
     hmm_eps: float = 1e-8
+    # Sequence-context-aware emissions (`HCE`): none | table | learned.
+    hmm_context_model: str = "none"
+    hmm_context_k: int = 3
+    hmm_context_states: str = "modified"
+    hmm_context_table: Optional[str] = None
+    hmm_context_table_group: str = "enzyme"
+    hmm_context_cpg: str = "separate"
+    hmm_context_shrinkage: float = 50.0
+    hmm_context_weight_bounds: List[float] = field(default_factory=lambda: [0.1, 10.0])
     hmm_dtype: str = "float64"
     hmm_annotation_threshold: float = 0.5
     hmm_batch_size: int = 1024
@@ -2720,6 +2729,14 @@ class ExperimentConfig:
             ),
             hmm_init_start_probs=merged.get("hmm_init_start_probs", [0.5, 0.5]),
             hmm_eps=merged.get("hmm_eps", 1e-8),
+            hmm_context_model=str(merged.get("hmm_context_model", "none") or "none"),
+            hmm_context_k=int(merged.get("hmm_context_k", 3)),
+            hmm_context_states=str(merged.get("hmm_context_states", "modified")),
+            hmm_context_table=merged.get("hmm_context_table"),
+            hmm_context_table_group=str(merged.get("hmm_context_table_group", "enzyme")),
+            hmm_context_cpg=str(merged.get("hmm_context_cpg", "separate")),
+            hmm_context_shrinkage=float(merged.get("hmm_context_shrinkage", 50.0)),
+            hmm_context_weight_bounds=list(merged.get("hmm_context_weight_bounds", [0.1, 10.0])),
             hmm_fit_strategy=hmm_fit_strategy,
             hmm_shared_scope=hmm_shared_scope,
             hmm_groupby=hmm_groupby,

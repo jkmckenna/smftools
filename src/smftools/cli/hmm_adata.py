@@ -432,6 +432,10 @@ def resolve_torch_device(device_str: str | None) -> torch.device:
 class HMMTrainer:
     cfg: Any
     models_dir: Path
+    # Sequence contexts for a context model (`HCE-04`): set_contexts keyword
+    # arguments (log_weights, position_codes, cpg_codes) for the reference
+    # being fitted; None for every other architecture.
+    context_setup: Optional[dict[str, Any]] = None
     last_artifact: Optional[dict[str, Any]] = field(init=False, default=None)
     fit_revision: Optional[str] = field(init=False, default=None)
 
@@ -448,6 +452,19 @@ class HMMTrainer:
         if multichannel:
             return "multi"
         return "single_distance_binned" if use_dist else "single"
+
+    def _apply_contexts(self, model, *, adapting: bool = False) -> None:
+        """Give a context model this fit's sequence contexts (`HCE-04`).
+
+        Adapting a learned model keeps the shared fit's weights as the start
+        (the fit re-learns them for the group); table weights are the group's own.
+        """
+        if self.context_setup is None or not hasattr(model, "set_contexts"):
+            return
+        setup = dict(self.context_setup)
+        if adapting and getattr(model, "learn", False):
+            setup["log_weights"] = model.log_weights.detach().cpu().numpy()
+        model.set_contexts(**setup)
 
     def _fit_scope(self) -> str:
         return str(getattr(self.cfg, "hmm_fit_scope", "per_sample")).lower()
@@ -493,6 +510,8 @@ class HMMTrainer:
             override["hmm_distance_bins"] = list(
                 getattr(model, "distance_bins", [1, 5, 10, 25, 50, 100])
             )
+        if hasattr(model, "context_config"):
+            override.update(model.context_config())
 
         payload = {
             "state_dict": model.state_dict(),
@@ -600,6 +619,7 @@ class HMMTrainer:
 
         def fit_adapted():
             adapted = copy.deepcopy(base_model).to(device)
+            self._apply_contexts(adapted, adapting=True)
             history = adapted.fit(
                 X,
                 coords,
@@ -651,6 +671,7 @@ class HMMTrainer:
 
         def fit_new():
             model = create_hmm(self.cfg, arch=arch, device=device)
+            self._apply_contexts(model)
             if arch == "single_distance_binned":
                 history = model.fit(
                     X, coords, device=device, max_iter=max_iter, tol=tol, verbose=verbose
@@ -703,6 +724,7 @@ class HMMTrainer:
 
             def fit_adapted():
                 adapted = copy.deepcopy(base).to(device)
+                self._apply_contexts(adapted, adapting=True)
                 history = adapted.adapt_emissions(
                     X,
                     coords,

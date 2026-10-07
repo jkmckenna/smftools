@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import anndata as ad
 import numpy as np
 import pandas as pd
+import pytest
 
 from smftools.cli.hmm_adata import (
     _feature_ranges_for_merged_layer,
@@ -1155,3 +1156,152 @@ def test_a_descendant_hmm_generation_does_not_take_the_canonical_spine(tmp_path,
     )
     assert manifest["lineage"] == _LINEAGE_PROVENANCE
     assert json.loads((hmm_root / "current.json").read_text(encoding="utf-8")) == parent_pointer
+
+
+# --- HCE-04: sequence-context-aware emissions in the partitioned stage --------
+
+
+def _context_run(tmp_path, **overrides):
+    raw = write_raw_store(
+        _frame(),
+        tmp_path / "raw_outputs",
+        reference_lengths={"ref_top": 12},
+        analysis_mode="locus",
+        extra_uns={"References": {"ref_FASTA_sequence": "ACGCGTACGTAC"}},
+    )
+    preprocess = execute_partitioned_preprocessing(
+        raw["spine"], _preprocess_cfg(), tmp_path / "preprocess_outputs"
+    )
+    cfg = _hmm_cfg(hmm_methbases=["C"], hmm_max_iter=3, target_task_memory_mb=1, **overrides)
+    outputs = execute_partitioned_hmm(preprocess["spine"], cfg, tmp_path / "hmm_outputs")
+    catalog = pd.read_parquet(outputs["task_catalog"])
+    artifacts = json.loads(catalog.iloc[0]["hmm_model_artifacts_json"])
+    return cfg, outputs, artifacts
+
+
+def _load_model(cfg, outputs, artifact):
+    from smftools.cli.hmm_adata import HMMTrainer
+
+    trainer = HMMTrainer(cfg=cfg, models_dir=outputs["task_catalog"].parent / "models")
+    return trainer.load_artifact(artifact, device="cpu")
+
+
+def test_context_learned_mode_runs_end_to_end(tmp_path, monkeypatch):
+    cfg, outputs, artifacts = _context_run(
+        tmp_path, hmm_context_model="learned", hmm_context_k=3, hmm_context_shrinkage=5.0
+    )
+    assert artifacts[0]["model_key"]["architecture"] == "context_single"
+    model = _load_model(cfg, outputs, artifacts[0])
+    assert model.learn and model.position_codes.size == 12
+    # Codes follow the reference: C at 1, 3, 8, 11 (forward, top strand) where windows fit.
+    assert (model.position_codes >= 0).sum() >= 3
+    assert model.log_weights.numel() == 16
+
+
+def test_context_table_mode_reads_the_groups_weights(tmp_path, monkeypatch):
+    from smftools.analysis.compute.site_context_bias import context_kmers, write_weight_table
+
+    table = pd.DataFrame(
+        {
+            "group": "bc1",
+            "k": 3,
+            "kmer": context_kmers(3),
+            "weight": np.linspace(0.5, 2.0, 16),
+            "n_sites": 1,
+            "observed": 10,
+            "source": "naked_dna",
+        }
+    )
+    path = tmp_path / "weights.parquet"
+    write_weight_table(table, path)
+    cfg, outputs, artifacts = _context_run(
+        tmp_path,
+        hmm_context_model="table",
+        hmm_context_table=str(path),
+        hmm_context_table_group="Sample",
+    )
+    model = _load_model(cfg, outputs, artifacts[0])
+    assert not model.learn
+    np.testing.assert_allclose(model.log_weights.numpy(), np.log(np.linspace(0.5, 2.0, 16)))
+
+
+def test_context_model_refuses_distance_aware_hmms():
+    from smftools.tools.partitioned_hmm import _configured_model_specs
+
+    cfg = _hmm_cfg(hmm_methbases=["C"], hmm_context_model="learned", hmm_distance_aware=True)
+    with pytest.raises(ValueError, match="distance_aware"):
+        _configured_model_specs(cfg)
+    plain = _configured_model_specs(_hmm_cfg(hmm_methbases=["C"]))
+    assert {spec.architecture for spec in plain} == {"single"}
+
+
+def test_context_setup_errors():
+    import anndata as ad
+
+    from smftools.tools.partitioned_hmm import context_setup
+
+    adata = ad.AnnData(obs=pd.DataFrame({"Sample": ["a", "b"]}, index=["r1", "r2"]))
+    adata.uns["References"] = {"ref_FASTA_sequence": "ACGCGTACGTAC"}
+    learned = context_setup(adata, "ref_top", _hmm_cfg(hmm_context_model="learned"))
+    assert learned["position_codes"].size == 12 and not learned["log_weights"].any()
+    with pytest.raises(KeyError, match="no reference sequence"):
+        context_setup(adata, "other_top", _hmm_cfg(hmm_context_model="learned"))
+    with pytest.raises(ValueError, match="needs hmm_context_table"):
+        context_setup(adata, "ref_top", _hmm_cfg(hmm_context_model="table"))
+    table_cfg = _hmm_cfg(
+        hmm_context_model="table", hmm_context_table="x.parquet", hmm_context_table_group="Sample"
+    )
+    with pytest.raises(ValueError, match="span"):
+        context_setup(adata, "ref_top", table_cfg)
+    with pytest.raises(KeyError, match="column"):
+        context_setup(
+            adata, "ref_top", _hmm_cfg(hmm_context_model="table", hmm_context_table="x.parquet")
+        )
+
+
+def test_context_checkpoint_round_trips_through_the_trainer(tmp_path):
+    import torch
+
+    from smftools.cli.hmm_adata import HMMTrainer
+    from smftools.hmm.HMM import ContextBernoulliHMM
+
+    model = ContextBernoulliHMM(
+        init_emission=[0.1, 0.6],
+        log_weights=np.log(np.linspace(0.5, 2.0, 16)),
+        position_codes=np.arange(20) % 16,
+        cpg_codes=[1, 5],
+        cpg="exclude",
+        learn=True,
+        shrinkage=7.0,
+    )
+    trainer = HMMTrainer(cfg=_hmm_cfg(), models_dir=tmp_path)
+    path = tmp_path / "model.pt"
+    torch.save(trainer._payload(model), path)
+    loaded = trainer._load(path, arch="context_single", device="cpu")
+    np.testing.assert_array_equal(loaded.position_codes, model.position_codes)
+    np.testing.assert_array_equal(loaded.cpg_codes, [1, 5])
+    torch.testing.assert_close(loaded.log_weights, model.log_weights)
+    assert loaded.learn and loaded.cpg == "exclude" and loaded.shrinkage == 7.0
+
+
+def test_context_settings_leave_fingerprints_alone_until_used(tmp_path):
+    from smftools.cli.helpers import resolved_stage_config
+    from smftools.config.experiment_config import ExperimentConfig
+    from smftools.hmm.model_artifacts import hmm_fit_config, hmm_fit_config_hash
+
+    base = ExperimentConfig()
+    stage = resolved_stage_config(base, "hmm")
+    assert not any(key.startswith("hmm_context_") for key in stage)
+    assert not any(key.startswith("hmm_context_") for key in hmm_fit_config(base))
+    learned = ExperimentConfig(hmm_context_model="learned")
+    assert resolved_stage_config(learned, "hmm")["hmm_context_model"] == "learned"
+    assert hmm_fit_config_hash(learned) != hmm_fit_config_hash(base)
+
+    table = tmp_path / "weights.csv"
+    table.write_text("a")
+    tabled = ExperimentConfig(hmm_context_model="table", hmm_context_table=str(table))
+    before = (resolved_stage_config(tabled, "hmm"), hmm_fit_config_hash(tabled))
+    table.write_text("b")  # edited in place, same path
+    after = (resolved_stage_config(tabled, "hmm"), hmm_fit_config_hash(tabled))
+    assert before[0]["hmm_context_table_sha256"] != after[0]["hmm_context_table_sha256"]
+    assert before[1] != after[1]

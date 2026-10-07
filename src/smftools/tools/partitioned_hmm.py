@@ -126,6 +126,13 @@ def _configured_model_specs(cfg) -> list[HMMModelSpec]:
                 else "single"
             )
         )
+        if context_model(cfg) != "none" and not multichannel:
+            if architecture != "single":
+                raise ValueError(
+                    "hmm_context_model needs the single-channel HMM; "
+                    "it does not combine with hmm_distance_aware"
+                )
+            architecture = "context_single"
         specs.append(
             HMMModelSpec(
                 name=str(task.name),
@@ -136,6 +143,57 @@ def _configured_model_specs(cfg) -> list[HMMModelSpec]:
             )
         )
     return specs
+
+
+def context_model(cfg) -> str:
+    """``hmm_context_model``: none | table | learned (`HCE-04`)."""
+    mode = str(getattr(cfg, "hmm_context_model", "none") or "none").lower()
+    if mode not in ("none", "table", "learned"):
+        raise ValueError(f"hmm_context_model must be none, table or learned, not {mode!r}")
+    return mode
+
+
+def context_setup(adata, reference: str, cfg) -> dict[str, object]:
+    """Sequence contexts of one fit (`HCE-04`): ContextBernoulliHMM.set_contexts arguments.
+
+    Codes cover every position of ``reference`` (strand from its name), read
+    from the materialization's references. Learned mode starts every weight
+    at 1; table mode reads the weights of the fit's group -- the
+    ``hmm_context_table_group`` value its reads share (e.g. their enzyme).
+    """
+    from smftools.analysis.compute.site_context_bias import (
+        context_index,
+        context_kmers,
+        read_weight_table,
+        strand_of,
+        weights_for,
+    )
+    from smftools.tools.site_context_bias import sequences_from_uns
+
+    mode = context_model(cfg)
+    k = int(getattr(cfg, "hmm_context_k", 3))
+    base, strand = strand_of(str(reference))
+    sequences = sequences_from_uns(adata.uns)
+    if base not in sequences:
+        raise KeyError(f"no reference sequence for {base!r} to read contexts from")
+    sequence = sequences[base]
+    codes, _ = context_index(sequence, strand, np.arange(len(sequence)), k=k)
+    kmers = context_kmers(k)
+    cpg_codes = [code for code, kmer in enumerate(kmers) if k > 1 and kmer[k // 2 + 1] == "G"]
+    if mode == "learned":
+        log_weights = np.zeros(len(kmers))
+    else:
+        path = getattr(cfg, "hmm_context_table", None)
+        if not path:
+            raise ValueError("hmm_context_model 'table' needs hmm_context_table")
+        column = str(getattr(cfg, "hmm_context_table_group", "enzyme"))
+        if column not in adata.obs:
+            raise KeyError(f"reads carry no {column!r} column to choose context weights by")
+        groups = sorted(set(adata.obs[column].dropna().astype(str)))
+        if len(groups) != 1:
+            raise ValueError(f"one fit's reads span {column} values {groups}; expected one")
+        log_weights = np.log(weights_for(read_weight_table(path), groups[0], k))
+    return {"log_weights": log_weights, "position_codes": codes, "cpg_codes": cpg_codes}
 
 
 def _prepare_model_input(adata, reference: str, spec: HMMModelSpec, cfg):
@@ -316,6 +374,8 @@ def execute_hmm_fit_task(
         }
 
     trainer = HMMTrainer(cfg=cfg, models_dir=Path(models_dir))
+    if plan.model_spec.architecture == "context_single":
+        trainer.context_setup = context_setup(adata, plan.reference, cfg)
     device = resolve_torch_device(
         getattr(cfg, "hmm_device", None) or getattr(cfg, "device", "auto")
     )

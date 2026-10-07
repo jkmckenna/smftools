@@ -138,14 +138,50 @@ def _config_values(cfg: Any) -> dict[str, Any]:
     return dict(vars(cfg))
 
 
+HMM_CONTEXT_FIT_FIELDS = (
+    "hmm_context_model",
+    "hmm_context_k",
+    "hmm_context_states",
+    "hmm_context_table_group",
+    "hmm_context_cpg",
+    "hmm_context_shrinkage",
+    "hmm_context_weight_bounds",
+)
+
+
+def file_sha256_or_missing(path: Any) -> str:
+    """Content hash of a file, or ``"missing"``."""
+    path = Path(str(path))
+    if not path.is_file():
+        return "missing"
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def hmm_fit_config(cfg: Any) -> dict[str, Any]:
-    """Return only configuration values capable of changing a fitted model."""
+    """Return only configuration values capable of changing a fitted model.
+
+    Context-aware emission settings (`HCE-04`) count only while the feature is
+    on, so models fitted before it keep their hashes; a weight table counts by
+    content.
+    """
     values = _config_values(cfg)
-    return {
+    fitted = {
         name: values[name] if name in values else HMM_FIT_CONFIG_DEFAULTS[name]
         for name in HMM_FIT_CONFIG_FIELDS
         if name in values or name in HMM_FIT_CONFIG_DEFAULTS
     }
+    mode = str(values.get("hmm_context_model") or "none").lower()
+    if mode != "none":
+        fitted.update({name: values.get(name) for name in HMM_CONTEXT_FIT_FIELDS})
+        if mode == "table":
+            fitted["hmm_context_table_sha256"] = file_sha256_or_missing(
+                values.get("hmm_context_table") or ""
+            )
+    return fitted
 
 
 def hmm_fit_config_hash(cfg: Any) -> str:

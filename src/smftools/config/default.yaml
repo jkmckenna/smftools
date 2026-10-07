@@ -433,6 +433,16 @@ hmm_init_start_probs:
   - 0.5
   - 0.5
 hmm_eps: 1e-8
+# Sequence-context-aware emissions (plan HCE): the accessible state's modification
+# probability shifted per site by its centred k-mer's relative weight (on the odds).
+hmm_context_model: none # none | table (weights from hmm_context_table) | learned (estimated in the fit)
+hmm_context_k: 3 # odd; C-centred k-mer
+hmm_context_states: modified # modified (accessible state) | all (table mode only)
+hmm_context_table: null # weight table (smftools context-bias --export-weights); mode table
+hmm_context_table_group: enzyme # sample column choosing the table's group per fit
+hmm_context_cpg: separate # separate | exclude (CpG sites left out of the HMM) | none
+hmm_context_shrinkage: 50 # learned: pseudo-observations at the state's rate per context
+hmm_context_weight_bounds: [0.1, 10.0] # learned: weight clamp
 # Fitting strategy
 hmm_fit_strategy: "per_group"      # "per_group" | "shared_transitions"
 hmm_shared_scope: ["reference", "methbase"]

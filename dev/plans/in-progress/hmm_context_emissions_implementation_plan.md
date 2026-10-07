@@ -1,6 +1,6 @@
 # Sequence-context-aware HMM emissions (`HCE`)
 
-**Status:** in progress. `HCE-01`–`HCE-03` implemented. One PR per item, in order. The
+**Status:** in progress. `HCE-01`–`HCE-03` merged; `HCE-04` implemented. One PR per item, in order. The
 default stays `none` unless `HCE-05` qualifies a mode.
 
 ## Question
@@ -79,10 +79,10 @@ hmm_context_weight_bounds: [0.1, 10]
 
 | item | status | scope |
 |---|---|---|
-| `HCE-01` context indices and weight tables | implemented, not merged | per-position context index for a reference and strand; the weight-table format; `context-bias` exports it |
-| `HCE-02` context emissions, `table` mode | implemented, not merged | a context-aware Bernoulli emission with fixed weights; EM fits the per-state level |
-| `HCE-03` `learned` mode | implemented, not merged | per-(state, context) emissions in the M-step with shrinkage; CpG handling; the fitted weights saved as a table |
-| `HCE-04` pipeline integration | proposed | config, partitioned fit/apply, model artifacts, fingerprint |
+| `HCE-01` context indices and weight tables | merged | per-position context index for a reference and strand; the weight-table format; `context-bias` exports it |
+| `HCE-02` context emissions, `table` mode | merged | a context-aware Bernoulli emission with fixed weights; EM fits the per-state level |
+| `HCE-03` `learned` mode | merged | per-(state, context) emissions in the M-step with shrinkage; CpG handling; the fitted weights saved as a table |
+| `HCE-04` pipeline integration | implemented, not merged | config, partitioned fit/apply, model artifacts, fingerprint |
 | `HCE-05` qualification | proposed | on a panel of several enzymes applied to the same cells |
 
 ### `HCE-01` — context indices and weight tables
@@ -175,6 +175,21 @@ group for a sample: an error, unless `hmm_context_table_group` falls back to
 
 Tests: a fixture HMM run in each mode; changing the table changes the
 fingerprint; `none` leaves existing outputs and fingerprints unchanged.
+
+As built: a single-channel model becomes `context_single` when
+`hmm_context_model` is not `none` (refused with `hmm_distance_aware`). Each fit
+task computes `context_setup` from its materialized reads -- the reference's
+forward sequence (`sequences_from_uns`, padding removed), strand from the
+reference name, codes over every reference position, CpG codes, and either
+unit weights (learned) or the table weights of the one `hmm_context_table_group`
+value the fit's reads share -- and hands it to `HMMTrainer.context_setup`,
+which sets it on new models and on adapted copies (keeping a learned shared
+fit's weights as the start). Weights, position codes and CpG codes are
+module buffers, so trainer checkpoints carry them; the context settings ride
+in the checkpoint's override, so `create_hmm` rebuilds the model as fitted.
+Fingerprints: every `hmm_context_*` key is dropped from the stage config and
+the fit-config hash while the model is `none` -- existing stages and models
+keep their hashes -- and with `table` the table's content hash joins both.
 
 ### `HCE-05` — qualification
 
