@@ -755,6 +755,8 @@ def _hmm_raw_one_group(args: dict) -> dict:
     raw_legend_labels = args.get("raw_legend_labels")
     signal_type: str = args["signal_type"]
     hmm_feature_layer: str = args["hmm_feature_layer"]
+    # Further HMM layers (emission variants, `HCE-06`): extra columns, same rows.
+    extra_hmm_layers: list = list(args.get("extra_hmm_layers") or [])
     gpc_sites: np.ndarray = args["gpc_sites"]
     cpg_sites: np.ndarray = args["cpg_sites"]
     any_c_sites: np.ndarray = args["any_c_sites"]
@@ -803,6 +805,8 @@ def _hmm_raw_one_group(args: dict) -> dict:
     arr_cpg = layer_data.get(layer_cpg)
     arr_c = layer_data.get(layer_c)
     arr_a = layer_data.get(layer_a)
+    arr_extra = {name: layer_data.get(name) for name in extra_hmm_layers}
+    stacked_extra: dict = {name: [] for name in extra_hmm_layers}
 
     stacked_hmm, stacked_hmm_raw = [], []
     stacked_any_c, stacked_any_c_raw = [], []
@@ -859,6 +863,11 @@ def _hmm_raw_one_group(args: dict) -> dict:
         if arr_hmm is not None:
             stacked_hmm.append(_layer_to_numpy_np(arr_hmm[ordered_rows], hmm_sites, **kw))
             stacked_hmm_raw.append(_layer_to_numpy_np(arr_hmm[ordered_rows], hmm_sites, **kw_raw))
+        for name, arr in arr_extra.items():
+            if arr is not None:
+                stacked_extra[name].append(
+                    _layer_to_numpy_np(arr[ordered_rows], hmm_sites, **kw_raw)
+                )
         if any_c_sites.size and arr_c is not None:
             stacked_any_c.append(_layer_to_numpy_np(arr_c[ordered_rows], any_c_sites, **kw))
             stacked_any_c_raw.append(_layer_to_numpy_np(arr_c[ordered_rows], any_c_sites, **kw_raw))
@@ -899,6 +908,14 @@ def _hmm_raw_one_group(args: dict) -> dict:
             n_xticks_hmm,
         )
     ]
+    for name in extra_hmm_layers:
+        if not stacked_extra[name]:
+            continue
+        extra_raw = np.vstack(stacked_extra[name])
+        extra_mean = normalized_mean(extra_raw) if normalize_hmm else np.nanmean(extra_raw, axis=0)
+        panels.append(
+            (f"HMM - {name}", extra_raw, hmm_labels, hmm_plot_cmap, extra_mean, n_xticks_hmm)
+        )
 
     if stacked_any_c:
         _m, m_raw = np.vstack(stacked_any_c), np.vstack(stacked_any_c_raw)
@@ -1071,10 +1088,14 @@ def combined_hmm_raw_clustermap(
     # None (default) adds no legend -- existing callers/plots are unaffected.
     hmm_legend_labels: Optional[Tuple[str, str]] = None,
     raw_legend_labels: Optional[Tuple[str, str]] = None,
+    extra_hmm_layers: Sequence[str] = (),
 ):
     """
     Makes a multi-panel clustermap per (sample, reference):
       HMM panel (always) + optional raw panels for C, GpC, CpG, and A sites.
+
+    extra_hmm_layers: further HMM layers -- e.g. emission variants (`HCE-06`) --
+    drawn as extra columns after the HMM panel, in the same read order.
 
     restrict_to_read_span: if True, crop each reference's plotted x-axis to
     [min(reference_start), max(reference_end)] across all QC-passing reads for
@@ -1262,7 +1283,14 @@ def combined_hmm_raw_clustermap(
 
                     # Extract unique layer arrays
                     layer_data = {}
-                    for lname in {hmm_feature_layer, layer_gpc, layer_cpg, layer_c, layer_a}:
+                    for lname in {
+                        hmm_feature_layer,
+                        *extra_hmm_layers,
+                        layer_gpc,
+                        layer_cpg,
+                        layer_c,
+                        layer_a,
+                    }:
                         if lname in subset.layers:
                             arr = subset.layers[lname]
                             layer_data[lname] = (
@@ -1316,6 +1344,7 @@ def combined_hmm_raw_clustermap(
                         "display_sample": str(display_sample),
                         "signal_type": signal_type,
                         "hmm_feature_layer": hmm_feature_layer,
+                        "extra_hmm_layers": list(extra_hmm_layers),
                         "gpc_sites": gpc_sites,
                         "cpg_sites": cpg_sites,
                         "any_c_sites": any_c_sites,
@@ -1443,6 +1472,8 @@ def _hmm_length_one_group(args: dict) -> dict:
     display_sample: str = args.get("display_sample", sample)
     signal_type: str = args["signal_type"]
     length_layer: str = args["length_layer"]
+    # Further length layers (emission variants, `HCE-06`): extra columns, same rows.
+    extra_length_layers: list = list(args.get("extra_length_layers") or [])
     gpc_sites: np.ndarray = args["gpc_sites"]
     cpg_sites: np.ndarray = args["cpg_sites"]
     any_c_sites: np.ndarray = args["any_c_sites"]
@@ -1491,6 +1522,8 @@ def _hmm_length_one_group(args: dict) -> dict:
     arr_cpg = layer_data.get(layer_cpg)
     arr_c = layer_data.get(layer_c)
     arr_a = layer_data.get(layer_a)
+    arr_extra = {name: layer_data.get(name) for name in extra_length_layers}
+    stacked_extra: dict = {name: [] for name in extra_length_layers}
 
     stacked_lengths, stacked_lengths_raw = [], []
     stacked_any_c, stacked_any_c_raw = [], []
@@ -1551,6 +1584,11 @@ def _hmm_length_one_group(args: dict) -> dict:
             stacked_lengths_raw.append(
                 _layer_to_numpy_np(arr_length[ordered_rows], length_sites, **kw_raw)
             )
+        for name, arr in arr_extra.items():
+            if arr is not None:
+                stacked_extra[name].append(
+                    _layer_to_numpy_np(arr[ordered_rows], length_sites, **kw_raw)
+                )
         if any_c_sites.size and arr_c is not None:
             stacked_any_c.append(_layer_to_numpy_np(arr_c[ordered_rows], any_c_sites, **kw))
             stacked_any_c_raw.append(_layer_to_numpy_np(arr_c[ordered_rows], any_c_sites, **kw_raw))
@@ -1614,6 +1652,26 @@ def _hmm_length_one_group(args: dict) -> dict:
             length_plot_norm,
         ),
     ]
+    for name in extra_length_layers:
+        if not stacked_extra[name]:
+            continue
+        extra_raw = np.vstack(stacked_extra[name])
+        extra_matrix = (
+            _map_length_matrix_to_subclasses(extra_raw, feature_ranges)
+            if feature_ranges
+            else extra_raw
+        )
+        panels.append(
+            (
+                f"HMM - {name}",
+                extra_matrix,
+                length_labels,
+                length_plot_cmap,
+                np.nanmean(np.where(extra_raw > 1, 1.0, extra_raw), axis=0),
+                n_xticks_lengths,
+                length_plot_norm,
+            )
+        )
     cmap_c = _build_nan_aware_cmap(cmap_c)
     cmap_gpc = _build_nan_aware_cmap(cmap_gpc)
     cmap_cpg = _build_nan_aware_cmap(cmap_cpg)
@@ -1788,6 +1846,7 @@ def combined_hmm_length_clustermap(
     restrict_to_read_span: bool = False,
     max_reads_per_plot: int | None = None,
     cfg=None,
+    extra_length_layers: Sequence[str] = (),
 ):
     """
     Plot clustermaps for length-encoded HMM feature layers with optional subclass colors.
@@ -1972,7 +2031,14 @@ def combined_hmm_length_clustermap(
                     )
 
                     layer_data = {}
-                    for lname in {length_layer, layer_gpc, layer_cpg, layer_c, layer_a}:
+                    for lname in {
+                        length_layer,
+                        *extra_length_layers,
+                        layer_gpc,
+                        layer_cpg,
+                        layer_c,
+                        layer_a,
+                    }:
                         if lname in subset.layers:
                             arr = subset.layers[lname]
                             layer_data[lname] = (
@@ -2032,6 +2098,7 @@ def combined_hmm_length_clustermap(
                         "display_sample": str(display_sample),
                         "signal_type": signal_type,
                         "length_layer": length_layer,
+                        "extra_length_layers": list(extra_length_layers),
                         "gpc_sites": gpc_sites,
                         "cpg_sites": cpg_sites,
                         "any_c_sites": any_c_sites,

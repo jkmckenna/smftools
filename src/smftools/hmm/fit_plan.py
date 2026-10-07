@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 from dataclasses import asdict, dataclass
@@ -16,18 +17,36 @@ REQUIRED_HMM_GROUP_FIELDS = frozenset({"reference", "methbase"})
 
 @dataclass(frozen=True)
 class HMMModelSpec:
-    """One configured signal/model definition expanded from HMM task config."""
+    """One configured signal/model definition expanded from HMM task config.
+
+    ``variant`` names an emission variant (`HCE-06`): "" is the default, whose
+    ``label`` -- the prefix of every layer it writes -- is unchanged; another
+    variant's label is ``<base_label>_<variant>``. ``overrides`` are the
+    variant's config settings, as ``(key, value)`` pairs.
+    """
 
     name: str
     label: str
     signals: tuple[str, ...]
     feature_groups: tuple[str, ...]
     architecture: str
+    variant: str = ""
+    base_label: str = ""
+    overrides: tuple[tuple[str, Any], ...] = ()
 
     @property
     def n_channels(self) -> int:
         """Return the number of signal channels materialized for fitting."""
         return max(1, len(self.signals))
+
+    def config(self, cfg: Any) -> Any:
+        """``cfg`` with this variant's settings applied (``cfg`` itself for the default)."""
+        if not self.overrides:
+            return cfg
+        variant = copy.copy(cfg)
+        for key, value in self.overrides:
+            setattr(variant, key, value)
+        return variant
 
 
 @dataclass(frozen=True)
@@ -205,7 +224,7 @@ def _make_plan(
         "core_end": int(first.core_end),
         "label": spec.label,
         "architecture": spec.architecture,
-        "fit_config_hash": hmm_fit_config_hash(cfg),
+        "fit_config_hash": hmm_fit_config_hash(spec.config(cfg)),
         "parent_fit_id": parent_fit_id,
     }
     return HMMFitPlan(

@@ -443,6 +443,10 @@ hmm_context_table_group: enzyme # sample column choosing the table's group per f
 hmm_context_cpg: separate # separate | exclude (CpG sites left out of the HMM) | none
 hmm_context_shrinkage: 50 # learned: pseudo-observations at the state's rate per context
 hmm_context_weight_bounds: [0.1, 10.0] # learned: weight clamp
+# Further emission variants in the same HMM run, each with its own layers
+# (<label>_<variant>_...): name -> hmm_context_* settings, e.g.
+#   {learned: {hmm_context_model: learned}}
+hmm_variants: {}
 # Fitting strategy
 hmm_fit_strategy: "per_group"      # "per_group" | "shared_transitions"
 hmm_shared_scope: ["reference", "methbase"]

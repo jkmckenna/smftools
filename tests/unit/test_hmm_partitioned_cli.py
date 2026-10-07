@@ -412,7 +412,10 @@ def test_partitioned_hmm_fits_once_before_chunk_apply_and_is_order_invariant(tmp
     monkeypatch.setattr(partitioned_hmm, "plan_preprocess_tasks", split_plan)
     monkeypatch.setattr(memory_guard, "run_tasks_parallel", ordered_dispatch)
     monkeypatch.setattr(partitioned_hmm, "_plot_feature_fractions", lambda *args: None)
-    monkeypatch.setattr(partitioned_hmm, "_plot_feature_count_size_histograms", lambda *args: None)
+    monkeypatch.setattr(
+        partitioned_hmm, "_plot_feature_count_size_histograms", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(partitioned_hmm, "_plot_molecule_fractions", lambda *args, **kwargs: None)
     monkeypatch.setattr(partitioned_hmm, "_plot_hmm_parameters_across_barcodes", lambda *args: None)
     monkeypatch.setattr(partitioned_hmm, "_plot_hmm_fit_history", lambda *args: None)
     monkeypatch.setattr(partitioned_hmm, "_plot_feature_clustermaps", lambda *args: None)
@@ -487,7 +490,10 @@ def test_partitioned_hmm_shared_transitions_fit_before_barcode_adaptation(tmp_pa
         raw["spine"], _preprocess_cfg(), tmp_path / "preprocess_outputs"
     )
     monkeypatch.setattr(partitioned_hmm, "_plot_feature_fractions", lambda *args: None)
-    monkeypatch.setattr(partitioned_hmm, "_plot_feature_count_size_histograms", lambda *args: None)
+    monkeypatch.setattr(
+        partitioned_hmm, "_plot_feature_count_size_histograms", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(partitioned_hmm, "_plot_molecule_fractions", lambda *args, **kwargs: None)
     monkeypatch.setattr(partitioned_hmm, "_plot_hmm_parameters_across_barcodes", lambda *args: None)
     monkeypatch.setattr(partitioned_hmm, "_plot_hmm_fit_history", lambda *args: None)
     monkeypatch.setattr(partitioned_hmm, "_plot_feature_clustermaps", lambda *args: None)
@@ -1305,3 +1311,104 @@ def test_context_settings_leave_fingerprints_alone_until_used(tmp_path):
     after = (resolved_stage_config(tabled, "hmm"), hmm_fit_config_hash(tabled))
     assert before[0]["hmm_context_table_sha256"] != after[0]["hmm_context_table_sha256"]
     assert before[1] != after[1]
+
+
+# --- HCE-06: emission variants in one HMM run ----------------------------------
+
+
+def test_variant_config_parses_and_validates():
+    from smftools.config.experiment_config import _parse_hmm_variants
+    from smftools.tools.partitioned_hmm import hmm_variants
+
+    assert _parse_hmm_variants(None) == {} and _parse_hmm_variants("{}") == {}
+    parsed = _parse_hmm_variants('{"learned": {"hmm_context_model": "learned"}}')
+    assert parsed == {"learned": {"hmm_context_model": "learned"}}
+    for variants, message in (
+        ({"all": {}}, "clashes"),
+        ({"small": {}}, "clashes"),  # leading word of small_bound_stretch
+        ({"bad-name": {}}, "identifier"),
+        ({"v": {"hmm_max_iter": 3}}, "may only set"),
+    ):
+        with pytest.raises(ValueError, match=message):
+            hmm_variants(_hmm_cfg(hmm_variants=variants))
+
+
+def test_variants_expand_specs_and_keep_the_default_fit_identity():
+    from smftools.hmm.model_artifacts import hmm_fit_config_hash
+    from smftools.tools.partitioned_hmm import _configured_model_specs
+
+    plain = _configured_model_specs(_hmm_cfg(hmm_methbases=["C"]))
+    cfg = _hmm_cfg(
+        hmm_methbases=["C"],
+        hmm_variants={"learned": {"hmm_context_model": "learned", "hmm_context_shrinkage": 5}},
+    )
+    specs = _configured_model_specs(cfg)
+    assert [(s.label, s.variant, s.architecture) for s in specs] == [
+        ("C", "", "single"),
+        ("C_learned", "learned", "context_single"),
+    ]
+    assert specs[0] == plain[0]  # the default spec is untouched
+    assert hmm_fit_config_hash(specs[0].config(cfg)) == hmm_fit_config_hash(
+        _hmm_cfg(hmm_methbases=["C"])
+    )
+    assert hmm_fit_config_hash(specs[1].config(cfg)) != hmm_fit_config_hash(cfg)
+    assert specs[1].config(cfg).hmm_context_shrinkage == 5 and not hasattr(
+        cfg, "hmm_context_shrinkage"
+    )
+
+
+def test_variant_layer_groups_pair_variant_layers_with_the_default():
+    from smftools.tools.partitioned_hmm import _configured_model_specs, variant_layer_groups
+
+    cfg = _hmm_cfg(hmm_methbases=["C"], hmm_variants={"learned": {"hmm_context_model": "learned"}})
+    groups = dict(
+        variant_layer_groups(
+            [
+                "C_all_accessible_features",
+                "C_learned_all_accessible_features",
+                "C_all_footprint_features_lengths",
+                "C_learned_all_footprint_features_lengths",
+                "unrelated",
+            ],
+            _configured_model_specs(cfg),
+        )
+    )
+    assert groups["C_all_accessible_features"] == [
+        ("", "C_all_accessible_features"),
+        ("learned", "C_learned_all_accessible_features"),
+    ]
+    assert [v for v, _ in groups["C_all_footprint_features_lengths"]] == ["", "learned"]
+    assert groups["unrelated"] == [("", "unrelated")]
+
+
+def test_variants_run_end_to_end_with_comparison_plots(tmp_path, monkeypatch):
+    cfg, outputs, artifacts = _context_run(
+        tmp_path, hmm_variants={"learned": {"hmm_context_model": "learned"}}
+    )
+    catalog = pd.read_parquet(outputs["task_catalog"])
+    layers = set(catalog.iloc[0]["layers"])
+    assert {"C_all_accessible_features", "C_learned_all_accessible_features"} <= layers
+    architectures = {a["model_key"]["architecture"] for a in artifacts}
+    assert architectures == {"single", "context_single"}
+    task, _ = safe_read_zarr(outputs["task_catalog"].parent / catalog.iloc[0]["group_path"])
+    for column in (
+        "C_all_accessible_features_fraction",
+        "C_learned_all_accessible_features_fraction",
+        "C_learned_all_footprint_features_fraction",
+    ):
+        values = task.obs[column].to_numpy(dtype=float)
+        assert np.all((values >= 0) & (values <= 1) | np.isnan(values)), column
+    pngs = [p.as_posix() for p in (tmp_path / "hmm_outputs").rglob("*.png")]
+    assert any(p.endswith("__molecule_fractions.png") for p in pngs)
+    # Comparison, not duplication: no figure directory is named for a variant layer.
+    assert not any("/C_learned_" in p for p in pngs)
+
+
+def test_no_variants_leave_the_stage_hash_alone():
+    from smftools.cli.helpers import resolved_stage_config, stage_config_hash
+    from smftools.config.experiment_config import ExperimentConfig
+
+    base = ExperimentConfig()
+    assert "hmm_variants" not in resolved_stage_config(base, "hmm")
+    learned = ExperimentConfig(hmm_variants={"learned": {"hmm_context_model": "learned"}})
+    assert stage_config_hash(learned, "hmm") != stage_config_hash(base, "hmm")
