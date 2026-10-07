@@ -243,14 +243,15 @@ def test_cli_writes_outputs_and_reuses_them(project, tmp_path) -> None:
         "plot_values_0-1600.npz",
         "periodicity_key.json",
         "run.json",
-        "figures/0-1600/barcode01.png",
-        "figures/0-1600/all_groups.png",
-        "figures/1000-1600/barcode02.png",
+        "figures/Barcode/0-1600/barcode01.png",
+        "figures/Barcode/0-1600/all_groups.png",
+        "figures/Barcode/1000-1600/barcode02.png",
     ):
         assert (out / name).exists(), name
-    assert not (out / "figures" / "0-300").exists()  # too short: no figure
+    assert not (out / "figures" / "Barcode" / "0-300").exists()  # too short: no figure
     record = json.loads((out / "run.json").read_text())
-    assert record["groups"] == ["barcode01", "barcode02"] and record["molecules"] == 2 * READS
+    assert record["groups"] == {"Barcode": ["barcode01", "barcode02"]}
+    assert record["molecules"] == 2 * READS
     again = _invoke(*args, "--no-figures")
     assert "reused cached results" in again.output
     redrawn = _invoke(*args, "--coordinate-origin", 800, "--coordinate-reverse", "--ascending")
@@ -269,7 +270,7 @@ def test_editing_the_label_table_invalidates_cached_results(project, tmp_path) -
     first = run_periodicity(
         plan, "reads", out, project_dir=project, group_by="group", figures=False
     )
-    assert first["groups"] == ["high", "low"] and not first["results_reused"]
+    assert first["groups"] == {"group": ["high", "low"]} and not first["results_reused"]
     assert run_periodicity(
         plan, "reads", out, project_dir=project, group_by="group", figures=False
     )["results_reused"]
@@ -282,7 +283,7 @@ def test_editing_the_label_table_invalidates_cached_results(project, tmp_path) -
     second = run_periodicity(
         plan, "reads", out, project_dir=project, group_by="group", figures=False
     )
-    assert not second["results_reused"] and second["groups"] == ["dose_a", "dose_b"]
+    assert not second["results_reused"] and second["groups"] == {"group": ["dose_a", "dose_b"]}
     counts, reused = load_or_count(
         plan, "reads", tmp_path / "counts", project_dir=project, group_by="group"
     )
@@ -299,3 +300,42 @@ def test_cache_key_hashes_referenced_files(project) -> None:
     a = cache_key(plan, "reads", base_dir=project, parameters={"x": 1})
     assert a == cache_key(plan, "reads", base_dir=project, parameters={"x": 1})
     assert a != cache_key(plan, "reads", base_dir=project, parameters={"x": 2})
+
+
+def test_several_groupings_in_one_pass_equal_separate_runs(project, tmp_path) -> None:
+    """`RPF-02`."""
+    from smftools.tools.read_periodicity import run_periodicity
+
+    plan = _labelled_plan(project, {1: "low", 2: "high"})
+    both = compute_read_periodicity(
+        plan, "reads", project_dir=project, group_by=["Barcode", "group"], keep_per_group=3
+    )
+    for column in ("Barcode", "group"):
+        alone = compute_read_periodicity(plan, "reads", project_dir=project, group_by=column)
+        shared = [c for c in alone.stats.columns if c in both.stats.columns and c != "group"]
+        pd.testing.assert_frame_equal(alone.stats[shared], both.stats[shared])
+        assert (both.stats[column] == alone.stats[column]).all()
+        for name in alone.power:
+            np.testing.assert_array_equal(alone.power[name], both.power[name])
+    # The plot sample covers every group of every grouping.
+    uids, _, _ = both.plot_values[f"0-{LENGTH}"]
+    kept = both.stats.query(f"region == '0-{LENGTH}'").set_index("molecule_uid").loc[uids]
+    assert set(kept["Barcode"]) == {"barcode01", "barcode02"}
+    assert set(kept["group"]) == {"low", "high"}
+
+    record = run_periodicity(
+        plan,
+        "reads",
+        tmp_path / "out",
+        project_dir=project,
+        group_by=["Barcode", "group"],
+        max_reads_per_plot=3,
+    )
+    assert record["groups"] == {"Barcode": ["barcode01", "barcode02"], "group": ["high", "low"]}
+    assert (tmp_path / "out" / "figures" / "group" / f"0-{LENGTH}" / "low.png").exists()
+    assert (tmp_path / "out" / "figures" / "Barcode" / f"0-{LENGTH}" / "all_groups.png").exists()
+
+
+def test_a_grouping_may_not_shadow_a_statistic(project) -> None:
+    with pytest.raises(ValueError, match="clash"):
+        compute_read_periodicity(_plan(), "reads", project_dir=project, group_by="status")

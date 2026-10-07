@@ -31,6 +31,22 @@ from smftools.analysis.compute.read_periodicity import (
 )
 
 ALL = "all"
+# Statistics columns a grouping may not be named after.
+RESERVED_COLUMNS = frozenset(
+    {
+        "molecule_uid",
+        "region",
+        "status",
+        "n_sites",
+        "coverage",
+        "peak_period_bp",
+        "snr",
+        "peak_power",
+        "peak_power_raw",
+        "fwhm_bp",
+        "peak_at_edge",
+    }
+)
 
 
 @dataclass
@@ -66,12 +82,26 @@ def windows(coordinates: Sequence[int]) -> list[tuple[int, int]]:
     return [(int(s), int(e)) for s, e in zip(starts, ends, strict=True)]
 
 
-def plot_selection(identity: pd.DataFrame, group_by: str | None, per_group: int, seed: int) -> set:
-    """Up to ``per_group`` molecules of each group, chosen deterministically.
+def _groupings(group_by) -> list[str]:
+    """``group_by`` as a list: one column, several, or none."""
+    if group_by is None:
+        return []
+    if isinstance(group_by, str):
+        return [group_by]
+    return list(dict.fromkeys(str(column) for column in group_by))
 
+
+def plot_selection(identity: pd.DataFrame, group_by, per_group: int, seed: int) -> set:
+    """Up to ``per_group`` molecules of each combination of groups, chosen deterministically.
+
+    With several groupings every group of every grouping keeps molecules.
     Every worker computes the same set from the same identity table.
     """
-    groups = identity[group_by].astype(str) if group_by else pd.Series(ALL, index=identity.index)
+    groupings = _groupings(group_by)
+    if groupings:
+        groups = identity[groupings].astype(str).agg("\x1f".join, axis=1)
+    else:
+        groups = pd.Series(ALL, index=identity.index)
     chosen = set()
     for _, uids in identity["molecule_uid"].astype(str).groupby(groups.to_numpy(), sort=True):
         uids = np.sort(uids.to_numpy())
@@ -88,7 +118,7 @@ def _bind(document, dataset_name, scope, group_by):
     return bind_ml_dataset(
         parse_ml_plan(document),
         dataset_name,
-        group_by=[group_by] if group_by else [],
+        group_by=_groupings(group_by),
         **scope,
     )
 
@@ -172,7 +202,7 @@ def compute_read_periodicity(
     experiment_dir: str | Path | None = None,
     regions: Sequence[tuple[int, int]] | None = None,
     channel: str | None = None,
-    group_by: str | None = None,
+    group_by: str | Sequence[str] | None = None,
     period_range: tuple[float, float] = PERIOD_RANGE_BP,
     peak_range: tuple[float, float] = PEAK_RANGE_BP,
     min_cycles: float = MIN_CYCLES,
@@ -197,6 +227,10 @@ def compute_read_periodicity(
     channel = channel or declared[0]
     if channel not in declared:
         raise KeyError(f"channel {channel!r} not in dataset channels {declared}")
+    group_by = _groupings(group_by)
+    reserved = sorted(set(group_by) & RESERVED_COLUMNS)
+    if reserved:
+        raise ValueError(f"grouping columns clash with statistics columns: {reserved}")
     regions = [(int(start), int(end)) for start, end in regions] if regions else None
     options = {
         "period_range": tuple(float(v) for v in period_range),
@@ -253,12 +287,15 @@ def compute_read_periodicity(
     stats = pd.concat(stats_parts, ignore_index=True)
     columns = [c for c in ("read_id", "experiment_id", "physical_reference") if c in identity]
     extra = identity.set_index("molecule_uid")[columns]
-    if group_by:
-        extra = extra.assign(group=identity.set_index("molecule_uid")[group_by].astype(str))
+    for column in group_by:
+        extra = extra.assign(**{column: identity.set_index("molecule_uid")[column].astype(str)})
     stats = stats.join(extra, on="molecule_uid")
-    if not group_by:
-        stats["group"] = ALL
-    leading = ["molecule_uid", *columns, "group", "region", "status"]
+    # "group" names the first grouping (or "all") -- unless a grouping is
+    # itself called "group" (a plan's label column), which it then is.
+    if "group" not in group_by:
+        stats["group"] = stats[group_by[0]] if group_by else ALL
+    leading = ["molecule_uid", *columns, *group_by, "group", "region", "status"]
+    leading = list(dict.fromkeys(leading))
     stats = stats[[*leading, *[c for c in stats.columns if c not in leading]]]
     return ReadPeriodicity(
         stats=stats,
@@ -266,7 +303,7 @@ def compute_read_periodicity(
         grids=grids,
         channel=channel,
         frame_reference=frame,
-        parameters={**options, "regions": [g.name for g in grids.values()]},
+        parameters={**options, "regions": [g.name for g in grids.values()], "group_by": group_by},
         plot_values=plot_values,
     )
 
@@ -364,11 +401,18 @@ def draw_figures(
     coordinate_origin: float | None = None,
     coordinate_reverse: bool = False,
 ) -> list[str]:
-    """Per region: one paired clustermap per group, and all groups binned together."""
+    """Per grouping and region: a paired clustermap per group, and all groups binned.
+
+    Figures go to ``figures/<grouping>/<region>/``, or ``figures/<region>/``
+    without a grouping.
+    """
     from smftools.analysis.plot.read_periodicity import plot_read_periodicity_clustermap
 
+    groupings = result.parameters.get("group_by") or [None]
     written = []
-    for name, grid in result.grids.items():
+    for grouping, (name, grid) in (
+        (grouping, item) for grouping in groupings for item in result.grids.items()
+    ):
         if grid.status != "ok" or name not in result.plot_values:
             continue
         uids, positions, values = result.plot_values[name]
@@ -376,7 +420,7 @@ def draw_figures(
         row_of = {uid: i for i, uid in enumerate(region_stats["molecule_uid"])}
         rows = np.array([row_of[uid] for uid in uids])
         peaks = region_stats["peak_period_bp"].to_numpy()[rows]
-        groups = region_stats["group"].astype(str).to_numpy()[rows]
+        groups = region_stats[grouping or "group"].astype(str).to_numpy()[rows]
         power = result.power[name][rows]
         ranges = f"periods {grid.period_range[0]:g}-{grid.period_range[1]:g} bp" + (
             " (narrowed to the region)" if grid.narrowed else ""
@@ -384,7 +428,7 @@ def draw_figures(
         heading = " | ".join(
             part for part in (title, f"{result.channel}", f"region {name}", ranges) if part
         )
-        directory = output_dir / "figures" / name
+        directory = output_dir / "figures" / (_safe(grouping) if grouping else "") / name
         directory.mkdir(parents=True, exist_ok=True)
         selections = [(group, groups == group) for group in dict.fromkeys(groups)]
         if len(selections) > 1:
@@ -406,7 +450,7 @@ def draw_figures(
                 descending=descending,
                 coordinate_origin=coordinate_origin,
                 coordinate_reverse=coordinate_reverse,
-                title=f"{heading} | {label}",
+                title=f"{heading} | {grouping + ': ' if grouping else ''}{label}",
             )
             written.append(str(path.relative_to(output_dir)))
     return written
@@ -421,7 +465,7 @@ def run_periodicity(
     experiment_dir: str | Path | None = None,
     regions: Sequence[tuple[int, int]] | None = None,
     channel: str | None = None,
-    group_by: str | None = None,
+    group_by: str | Sequence[str] | None = None,
     period_range: tuple[float, float] = PERIOD_RANGE_BP,
     peak_range: tuple[float, float] = PEAK_RANGE_BP,
     min_cycles: float = MIN_CYCLES,
@@ -458,7 +502,7 @@ def run_periodicity(
     keep = int(np.ceil(max_reads_per_plot * 1.25))
     parameters = {
         "channel": channel,
-        "group_by": group_by,
+        "group_by": _groupings(group_by),
         "regions": regions,
         "period_range": list(period_range),
         "peak_range": list(peak_range),
@@ -515,7 +559,10 @@ def run_periodicity(
         "frame_reference": result.frame_reference,
         "regions": result.regions.to_dict("records"),
         "status_counts": {f"{r}|{s}": int(n) for (r, s), n in status.items()},
-        "groups": sorted(result.stats["group"].astype(str).unique()),
+        "groups": {
+            grouping: sorted(result.stats[grouping].astype(str).unique())
+            for grouping in (result.parameters.get("group_by") or ["group"])
+        },
         "molecules": int(result.stats["molecule_uid"].nunique()),
         "figures": written,
         "smftools_version": __version__,
