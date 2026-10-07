@@ -1701,11 +1701,27 @@ class ContextBernoulliHMM(SingleBernoulliHMM):
         log_weights: Optional[Sequence[float]] = None,
         position_codes: Optional[Sequence[int]] = None,
         context_states: str = "modified",
+        learn: bool = False,
+        shrinkage: float = 50.0,
+        weight_bounds: Tuple[float, float] = (0.1, 10.0),
+        cpg_codes: Optional[Sequence[int]] = None,
+        cpg: str = "separate",
     ):
         super().__init__(n_states=n_states, init_emission=init_emission, eps=eps, dtype=dtype)
         if context_states not in ("modified", "all"):
             raise ValueError("context_states must be 'modified' or 'all'")
+        if learn and context_states != "modified":
+            raise ValueError("learned contexts weight the modified state only")
+        if cpg not in ("separate", "exclude", "none"):
+            raise ValueError("cpg must be 'separate', 'exclude' or 'none'")
+        if not 0 < weight_bounds[0] <= 1 <= weight_bounds[1]:
+            raise ValueError("weight_bounds must bracket 1")
         self.context_states = context_states
+        self.learn = bool(learn)
+        self.shrinkage = float(shrinkage)
+        self.weight_bounds = (float(weight_bounds[0]), float(weight_bounds[1]))
+        self.cpg = cpg
+        self.cpg_codes = np.asarray(cpg_codes if cpg_codes is not None else [], dtype=np.int64)
         self.log_weights = torch.tensor(
             np.asarray(log_weights if log_weights is not None else [0.0], dtype=float),
             dtype=self.dtype,
@@ -1735,8 +1751,8 @@ class ContextBernoulliHMM(SingleBernoulliHMM):
             scale[self.modified_state_index()] = 1.0
         return scale
 
-    def _column_log_weights(self, n_columns: int) -> torch.Tensor:
-        """``log w[c(i)]`` per column of the current call (0 where no context)."""
+    def _column_codes(self, n_columns: int) -> np.ndarray:
+        """Context code per column of the current call (-1 = no context)."""
         coords = (
             self._active_coords
             if self._active_coords is not None and len(self._active_coords) == n_columns
@@ -1746,6 +1762,18 @@ class ContextBernoulliHMM(SingleBernoulliHMM):
         codes = np.full(n_columns, -1, dtype=np.int64)
         inside = (coords >= 0) & (coords < self.position_codes.size)
         codes[inside] = self.position_codes[coords[inside]]
+        return codes
+
+    def _excluded_columns(self, n_columns: int) -> torch.Tensor:
+        """Columns left out of the model: CpG sites under ``cpg="exclude"``."""
+        if self.cpg != "exclude" or not self.cpg_codes.size:
+            return torch.zeros(n_columns, dtype=torch.bool, device=self.emission.device)
+        excluded = np.isin(self._column_codes(n_columns), self.cpg_codes)
+        return torch.as_tensor(excluded, device=self.emission.device)
+
+    def _column_log_weights(self, n_columns: int) -> torch.Tensor:
+        """``log w[c(i)]`` per column of the current call (0 where no context)."""
+        codes = self._column_codes(n_columns)
         weights = self.log_weights.to(self.emission.device)
         column = torch.zeros(n_columns, dtype=self.dtype, device=self.emission.device)
         has = torch.as_tensor(codes >= 0, device=self.emission.device)
@@ -1763,6 +1791,7 @@ class ContextBernoulliHMM(SingleBernoulliHMM):
 
     def _log_emission(self, obs: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         """obs: (N,L), mask: (N,L) -> logB: (N,L,K)."""
+        mask = mask & ~self._excluded_columns(obs.shape[1]).unsqueeze(0)
         if not bool((self._column_log_weights(obs.shape[1]) != 0).any()):
             return super()._log_emission(obs, mask)  # every weight 1: the plain model, exactly
         p = self._site_probabilities(obs.shape[1]).unsqueeze(0)  # (1,L,K)
@@ -1792,6 +1821,9 @@ class ContextBernoulliHMM(SingleBernoulliHMM):
         steps on the log-odds.
         """
         eps = float(self.eps)
+        mask = mask & ~self._excluded_columns(obs.shape[1]).unsqueeze(0)
+        if self.learn:
+            return self._learned_m_step(gamma, obs, mask)
         shift = self._column_log_weights(obs.shape[1])  # (L,)
         scale = self._state_scale()
         if not bool((shift != 0).any()):
@@ -1817,6 +1849,60 @@ class ContextBernoulliHMM(SingleBernoulliHMM):
                     break
             self.emission.data[k] = torch.sigmoid(theta).clamp(min=eps, max=1.0 - eps)
 
+    def _learned_m_step(self, gamma: torch.Tensor, obs: torch.Tensor, mask: torch.Tensor) -> None:
+        """Per-context emissions of the modified state, shrunk to its overall rate (`HCE-03`).
+
+        The state levels are the closed form over every site; for the modified
+        state each context's emission is
+        ``(sum gamma*obs + m * p) / (sum gamma + m)`` over that context's sites,
+        stored as a log weight on the odds (bounded), so `_log_emission`
+        applies it unchanged.
+        """
+        eps = float(self.eps)
+        SingleBernoulliHMM._emission_m_step(self, gamma, obs, mask)  # per-state levels
+        k = self.modified_state_index()
+        level = self.emission.data[k].clamp(min=eps, max=1.0 - eps)
+        codes = torch.as_tensor(self._column_codes(obs.shape[1]), device=obs.device)
+        has = codes >= 0
+        n_contexts = self.log_weights.numel()
+        g = gamma[:, :, k] * mask.float()  # (N,L)
+        hits = (g * obs).sum(dim=0)[has]  # per column
+        trials = g.sum(dim=0)[has]
+        num = torch.zeros(n_contexts, dtype=self.dtype, device=obs.device)
+        den = torch.zeros(n_contexts, dtype=self.dtype, device=obs.device)
+        num.index_add_(0, codes[has], hits)
+        den.index_add_(0, codes[has], trials)
+        m = self.shrinkage
+        rate = ((num + m * level) / (den + m)).clamp(min=eps, max=1.0 - eps)
+        log_odds = lambda p: torch.log(p) - torch.log1p(-p)  # noqa: E731
+        low, high = (float(np.log(bound)) for bound in self.weight_bounds)
+        self.log_weights = (log_odds(rate) - log_odds(level)).clamp(min=low, max=high)
+        self._learned_support = (den.detach().cpu().numpy(), num.detach().cpu().numpy())
+
+    def weight_table(self, group: str, k: int) -> "pd.DataFrame":
+        """The context weights as a weight table (`HCE-01` format), source ``learned``."""
+        import pandas as pd
+
+        from smftools.analysis.compute.site_context_bias import context_kmers
+
+        kmers = context_kmers(k)
+        if len(kmers) != self.log_weights.numel():
+            raise ValueError(f"{self.log_weights.numel()} weights do not match k={k}")
+        support = getattr(self, "_learned_support", None)
+        sites = np.bincount(self.position_codes[self.position_codes >= 0], minlength=len(kmers))
+        return pd.DataFrame(
+            {
+                "group": str(group),
+                "k": k,
+                "kmer": kmers,
+                "weight": np.exp(self.log_weights.detach().cpu().numpy()),
+                "n_sites": sites,
+                "observed": support[0] if support is not None else np.zeros(len(kmers)),
+                "source": "learned",
+                "cpg": [kmer[k // 2 + 1] == "G" if k > 1 else False for kmer in kmers],
+            }
+        )
+
     def _extra_save_payload(self) -> dict:
         payload = super()._extra_save_payload()
         payload.update(
@@ -1824,6 +1910,11 @@ class ContextBernoulliHMM(SingleBernoulliHMM):
                 "log_weights": self.log_weights.detach().cpu(),
                 "position_codes": torch.as_tensor(self.position_codes),
                 "context_states": self.context_states,
+                "learn": self.learn,
+                "shrinkage": self.shrinkage,
+                "weight_bounds": self.weight_bounds,
+                "cpg": self.cpg,
+                "cpg_codes": torch.as_tensor(self.cpg_codes),
             }
         )
         return payload
@@ -1833,6 +1924,11 @@ class ContextBernoulliHMM(SingleBernoulliHMM):
         self.context_states = payload.get("context_states", "modified")
         self.log_weights = payload["log_weights"].to(device=device, dtype=self.dtype)
         self.position_codes = np.asarray(payload["position_codes"], dtype=np.int64)
+        self.learn = bool(payload.get("learn", False))
+        self.shrinkage = float(payload.get("shrinkage", 50.0))
+        self.weight_bounds = tuple(payload.get("weight_bounds", (0.1, 10.0)))
+        self.cpg = payload.get("cpg", "separate")
+        self.cpg_codes = np.asarray(payload.get("cpg_codes", []), dtype=np.int64)
 
 
 # =============================================================================
