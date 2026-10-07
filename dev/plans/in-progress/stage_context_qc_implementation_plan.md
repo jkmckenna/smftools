@@ -1,6 +1,6 @@
 # Sequence-context QC in the preprocess and HMM stages (`SCQ`)
 
-**Status:** in progress. `SCQ-01` implemented. One PR per item, in order.
+**Status:** in progress. `SCQ-01` merged, `SCQ-02` implemented. One PR per item, in order.
 `SCQ-02` follows `HCE-06` (HMM variants).
 
 ## Why
@@ -42,8 +42,8 @@ barcode.
 
 | item | status | scope |
 |---|---|---|
-| `SCQ-01` preprocess context QC | implemented, not merged | modification bias per barcode x reference from passing reads; tables and figures |
-| `SCQ-02` HMM context QC | proposed | per variant: residual context bias of state calls; modification rate within accessible-called sites |
+| `SCQ-01` preprocess context QC | merged | modification bias per barcode x reference from passing reads; tables and figures |
+| `SCQ-02` HMM context QC | implemented, not merged | per variant: residual context bias of state calls; modification rate within accessible-called sites |
 | `SCQ-03` backfill for finished stages | proposed | the same outputs from a finished stage, without re-running it |
 | `SCQ-04` qualification | proposed | a real run: counts equal `context-bias` on the same reads; run time |
 
@@ -107,6 +107,28 @@ k-mer profiles and accessible-conditioned k-mer rates.
 
 Tests: tallies equal a direct count from decoded layers; one figure carries
 every variant; no variants -> the default alone.
+
+As built (`tools/hmm_context_qc.py`): in `execute_hmm_task`, for every
+single-channel spec (default and variants) whose `<label>_all_accessible_features`
+layer exists, the model input (`_prepare_model_input` with the variant's
+config) and the state layer give per core site: observed, modified,
+accessible (observed and accessible-called) and modified-while-accessible
+reads, saved as a task partial. After all tasks, `write_hmm_context_qc`
+reduces them to `<generation>/context_qc/`: `site_counts.parquet`,
+`sites.parquet`, `kmer_rates.csv` (columns `measure` = `residual_bias` |
+`accessible_rate`, model, variant, CpG flag, per barcode) and per model x
+variant an `accessible_weights_<model>_<variant>_k<k>.parquet` weight table
+(new source `accessible`; references pooled; group = barcode, so it loads
+with `hmm_context_table_group: Barcode`). The partials are removed.
+Figures (`context_qc` category): per reference x model x barcode x measure,
+k-mer rates of the largest k with every variant overlaid (default first),
+non-CpG and CpG panels; residual bias on the relative scale, the
+accessible-conditioned rate on the absolute one; barcodes under 10,000 calls
+left out. A failed tally or reduction is logged and never blocks publication.
+
+260923 panel, current HMM generation (default only, intact top alleles, 42
+tasks): 56 figures; mean |log2 relative rate| over 3-mers (non-CpG, BALB)
+0.18 for the state calls vs 0.36 for modification within accessible sites.
 
 ### `SCQ-03` — backfill for finished stages
 

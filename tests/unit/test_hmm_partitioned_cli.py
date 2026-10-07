@@ -1412,3 +1412,105 @@ def test_no_variants_leave_the_stage_hash_alone():
     assert "hmm_variants" not in resolved_stage_config(base, "hmm")
     learned = ExperimentConfig(hmm_variants={"learned": {"hmm_context_model": "learned"}})
     assert stage_config_hash(learned, "hmm") != stage_config_hash(base, "hmm")
+
+
+# --- SCQ-02: sequence-context QC of state calls -------------------------------
+
+
+def test_context_qc_tallies_every_variant_and_match_the_decoded_layers(tmp_path):
+    from smftools.analysis.compute.site_context_bias import read_weight_table
+    from smftools.informatics.partition_read import materialize
+    from smftools.tools.partitioned_hmm import _configured_model_specs, _prepare_model_input
+
+    cfg, outputs, _ = _context_run(
+        tmp_path, hmm_variants={"learned": {"hmm_context_model": "learned"}}
+    )
+    target = outputs["task_catalog"].parent / "context_qc"
+    counts = pd.read_parquet(target / "site_counts.parquet")
+    assert set(counts["variant"]) == {"default", "learned"}
+    assert not (target / "partials").exists()
+    weights = read_weight_table(target / "accessible_weights_C_learned_k3.parquet")
+    assert set(weights["source"]) == {"accessible"}
+
+    # Equal to a direct count from the stored decoded layer and the input calls.
+    catalog = pd.read_parquet(outputs["task_catalog"])
+    record = catalog.iloc[0]
+    task, _ = safe_read_zarr(outputs["task_catalog"].parent / record["group_path"])
+    spine = outputs["task_catalog"].parent / "spine.h5ad"
+    adata = materialize(
+        spine,
+        references=record["reference"],
+        read_ids=list(task.obs_names),
+        start=int(record["core_start"]),
+        end=int(record["core_end"]),
+    )
+    spec = _configured_model_specs(cfg)[0]
+    values, coords, _ = _prepare_model_input(adata, record["reference"], spec, cfg)
+    values = np.asarray(values, dtype=float)
+    columns = np.searchsorted(np.asarray(task.var_names, dtype=np.int64), np.asarray(coords))
+    state = np.asarray(task.layers["C_all_accessible_features"], dtype=float)[:, columns] > 0
+    observed = ~np.isnan(values)
+    expected = pd.DataFrame(
+        {
+            "position": np.asarray(coords, dtype=np.int64),
+            "observed": observed.sum(0),
+            "accessible": (observed & state).sum(0),
+        }
+    )
+    expected = expected[expected["observed"] > 0].reset_index(drop=True)
+    got = (
+        counts[counts["variant"] == "default"][["position", "observed", "accessible"]]
+        .sort_values("position")
+        .reset_index(drop=True)
+    )
+    pd.testing.assert_frame_equal(got, expected, check_dtype=False)
+
+
+def test_context_qc_without_variants_reports_the_default_alone(tmp_path):
+    _, outputs, _ = _context_run(tmp_path)
+    counts = pd.read_parquet(outputs["task_catalog"].parent / "context_qc" / "site_counts.parquet")
+    assert set(counts["variant"]) == {"default"}
+
+
+def test_context_qc_off_writes_nothing(tmp_path):
+    _, outputs, _ = _context_run(tmp_path, stage_context_qc=False)
+    assert not (outputs["task_catalog"].parent / "context_qc").exists()
+
+
+def test_context_qc_figure_overlays_every_variant(tmp_path, monkeypatch):
+    from smftools.analysis.plot import site_context_bias as plots
+    from smftools.cli.stage_artifacts import prepare_analysis_plot_layout
+    from smftools.tools.hmm_context_qc import context_tables, plot_hmm_context_qc
+
+    rng = np.random.default_rng(0)
+    rows = []
+    for variant in ("default", "learned", "cells"):
+        for position in range(3, 40):
+            rows.append(("SQK_barcode01", "ref_top", "C", variant, position, 50, 20, 30, 15))
+    tallies = pd.DataFrame(
+        rows,
+        columns=[
+            "barcode",
+            "physical_reference",
+            "model",
+            "variant",
+            "position",
+            "observed",
+            "modified",
+            "accessible",
+            "accessible_modified",
+        ],
+    )
+    sequence = "".join(rng.choice(list("ACGT"), 60))
+    sequence = "".join("C" if 3 <= i < 40 else base for i, base in enumerate(sequence))
+    _, rates = context_tables(tallies, {"ref": sequence}, flank=3, kmers=[1, 3])
+    calls = []
+    monkeypatch.setattr(
+        plots, "plot_kmer_rate_series", lambda rates, path, **kwargs: calls.append(kwargs)
+    )
+    layout = prepare_analysis_plot_layout(tmp_path, stage="hmm")
+    plot_hmm_context_qc(rates, layout, min_calls=0)
+    assert {call["scale"] for call in calls} == {"relative", "absolute"}
+    for call in calls:
+        labels = [item["label"] for items in call["panels"].values() for item in items]
+        assert labels[:3] == ["default", "cells", "learned"]  # default first
