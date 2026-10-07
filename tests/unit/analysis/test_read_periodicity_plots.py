@@ -12,10 +12,11 @@ from smftools.analysis.plot.read_periodicity import (
 
 def test_row_order_by_peak_and_bins():
     peaks = np.array([200, np.nan, 150, 180, 170])
-    assert periodicity_row_order(peaks).tolist() == [2, 4, 3, 0]
+    assert periodicity_row_order(peaks).tolist() == [0, 3, 4, 2]  # largest first
+    assert periodicity_row_order(peaks, descending=False).tolist() == [2, 4, 3, 0]
     bins = ["b", "a", "a", "b", "a"]
-    assert periodicity_row_order(peaks, bins=bins).tolist() == [3, 0, 2, 4]  # first appearance
-    assert periodicity_row_order(peaks, bins=bins, bin_order=["a", "b"]).tolist() == [2, 4, 3, 0]
+    assert periodicity_row_order(peaks, bins=bins).tolist() == [0, 3, 4, 2]  # first appearance
+    assert periodicity_row_order(peaks, bins=bins, bin_order=["a", "b"]).tolist() == [4, 2, 0, 3]
 
 
 @pytest.fixture
@@ -93,3 +94,33 @@ def test_shape_errors(scored, tmp_path):
         plot_read_periodicity_clustermap(
             values, positions, power, grid.periods, peaks, tmp_path / "x.png", bins=["a"]
         )
+
+
+def test_display_coordinates():
+    from smftools.analysis.plot.read_periodicity import _display_coordinates
+
+    positions = np.array([0, 10, 20])
+    key, shown, label = _display_coordinates(positions, 15, True)
+    assert shown.tolist() == [15, 5, -5] and np.argsort(key).tolist() == [2, 1, 0]
+    assert "relative to 15" in label and "reversed" in label
+    key, shown, label = _display_coordinates(positions, None, True)
+    assert shown.tolist() == [0, 10, 20] and np.argsort(key).tolist() == [2, 1, 0]
+    key, shown, _ = _display_coordinates(positions, 5, False)
+    assert shown.tolist() == [-5, 5, 15] and np.argsort(key).tolist() == [0, 1, 2]
+
+
+def test_tss_relative_figure_with_input_colorbar(scored, tmp_path):
+    positions, values, power, grid, peaks = scored
+    plot_read_periodicity_clustermap(
+        values,
+        positions,
+        power,
+        grid.periods,
+        peaks,
+        tmp_path / "tss.png",
+        coordinate_origin=1000,
+        coordinate_reverse=True,
+        input_colorbar=True,
+        descending=False,
+    )
+    _written(tmp_path / "tss.png")

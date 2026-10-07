@@ -1,6 +1,6 @@
 # Periodicity figures: orientation, groupings, grids, spectra (`RPF`)
 
-**Status:** proposed. Nothing implemented. Follows `RPG` (completed). One PR
+**Status:** in progress. `RPF-01` implemented. Follows `RPG` (completed). One PR
 per item, in order.
 
 ## Why
@@ -23,7 +23,7 @@ First use of `smftools project periodicity` on real projects asked for:
 
 | item | status | scope |
 |---|---|---|
-| `RPF-01` clustermap presentation | proposed | descending order, no input colour bar, display coordinates |
+| `RPF-01` clustermap presentation | implemented, not merged | descending order, no input colour bar, display coordinates |
 | `RPF-02` several groupings per run | proposed | `--group-by` repeatable; one pass; figures per grouping |
 | `RPF-03` grid figure | proposed | groups laid out by two labels, each cell input + periodogram |
 | `RPF-04` mean spectra and summaries | proposed | mean power per period with bootstrap bands; per-group summary table |

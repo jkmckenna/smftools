@@ -30,22 +30,25 @@ def periodicity_row_order(
     *,
     bins: Sequence[str] | None = None,
     bin_order: Sequence[str] | None = None,
+    descending: bool = True,
 ) -> np.ndarray:
     """Rows with a peak, by bin (in ``bin_order``, else first appearance), then peak period.
 
-    Rows without a finite peak period are left out.
+    Peak period runs largest first unless ``descending`` is False. Rows without
+    a finite peak period are left out.
     """
     peak_period = np.asarray(peak_period, dtype=float)
     keep = np.flatnonzero(np.isfinite(peak_period))
+    key = -peak_period[keep] if descending else peak_period[keep]
     if bins is None:
-        return keep[np.argsort(peak_period[keep], kind="stable")]
+        return keep[np.argsort(key, kind="stable")]
     bins = np.asarray([str(b) for b in bins], dtype=object)
     present = list(dict.fromkeys(bins[keep]))
     ordered = [b for b in (bin_order or present) if b in present]
     ordered += [b for b in present if b not in ordered]
     rank = {b: i for i, b in enumerate(ordered)}
     keys = np.array([rank[b] for b in bins[keep]])
-    return keep[np.lexsort((peak_period[keep], keys))]
+    return keep[np.lexsort((key, keys))]
 
 
 def _subsample(order: np.ndarray, max_reads: int | None, seed: int) -> np.ndarray:
@@ -54,6 +57,18 @@ def _subsample(order: np.ndarray, max_reads: int | None, seed: int) -> np.ndarra
         return order
     chosen = np.random.default_rng(seed).choice(order.size, size=max_reads, replace=False)
     return order[np.sort(chosen)]
+
+
+def _display_coordinates(
+    positions: np.ndarray, origin: float | None, reverse: bool
+) -> tuple[np.ndarray, np.ndarray, str]:
+    """Column sort key (ascending = left to right), tick values, axis label."""
+    positions = np.asarray(positions, dtype=float)
+    if origin is None:
+        return (-positions if reverse else positions), positions, "position"
+    shown = origin - positions if reverse else positions - origin
+    label = f"position relative to {origin:g}" + (" (reversed)" if reverse else "")
+    return shown, shown, label
 
 
 def _input_cmap(binary: bool, color: str, zero_color: str, nan_color: str):
@@ -94,6 +109,10 @@ def plot_read_periodicity_clustermap(
     binary: bool | None = None,
     power_vmax: float | None = None,
     observed_columns_only: bool = True,
+    descending: bool = True,
+    input_colorbar: bool = False,
+    coordinate_origin: float | None = None,
+    coordinate_reverse: bool = False,
     title: str = "",
 ) -> None:
     """Input layer and periodogram of the same reads, in one row order.
@@ -106,7 +125,11 @@ def plot_read_periodicity_clustermap(
     input in two colours, otherwise a ramp from ``zero_color`` to
     ``input_color``. ``observed_columns_only`` drops positions no shown read
     observed -- for a site-restricted input, everything between its sites --
-    while tick labels keep the true positions.
+    while tick labels keep the true positions. Rows run by peak period, largest
+    first unless ``descending`` is False. ``coordinate_origin`` labels positions
+    as ``origin - position`` (``coordinate_reverse``) or ``position - origin``,
+    columns ascending in that coordinate -- e.g. TSS-relative with upstream on
+    the left for a reference whose forward strand runs toward the TSS.
     """
     values = np.asarray(values, dtype=float)
     power = np.asarray(power, dtype=float)
@@ -122,7 +145,9 @@ def plot_read_periodicity_clustermap(
         raise ValueError("bins must give one label per row")
 
     if order is None:
-        rows = periodicity_row_order(peak_period, bins=bins, bin_order=bin_order)
+        rows = periodicity_row_order(
+            peak_period, bins=bins, bin_order=bin_order, descending=descending
+        )
     else:
         rows = np.asarray(order, dtype=int)
         rows = rows[np.isfinite(peak_period[rows])]
@@ -153,6 +178,11 @@ def plot_read_periodicity_clustermap(
         kept = np.isfinite(shown_values).any(axis=0)
         if kept.any():
             shown_values, positions = shown_values[:, kept], positions[kept]
+    sort_key, display, axis_label = _display_coordinates(
+        positions, coordinate_origin, coordinate_reverse
+    )
+    column_order = np.argsort(sort_key, kind="stable")
+    shown_values, display = shown_values[:, column_order], display[column_order]
     if binary is None:
         finite = shown_values[np.isfinite(shown_values)]
         binary = bool(finite.size) and bool(np.isin(finite, (0.0, 1.0)).all())
@@ -207,14 +237,17 @@ def plot_read_periodicity_clustermap(
         vmin=0.0,
         vmax=vmax_input,
     )
-    input_scale = fig.colorbar(image, cax=input_bar)
-    input_scale.ax.tick_params(labelsize=6)
-    if binary:
-        input_scale.set_ticks([0.25, 0.75], labels=["0", "1"])
-    ticks, labels = _ticks(positions)
+    if input_colorbar:
+        input_scale = fig.colorbar(image, cax=input_bar)
+        input_scale.ax.tick_params(labelsize=6)
+        if binary:
+            input_scale.set_ticks([0.25, 0.75], labels=["0", "1"])
+    else:
+        input_bar.axis("off")
+    ticks, labels = _ticks(display)
     input_ax.set_xticks(ticks, labels, fontsize=6)
     input_ax.set_xlabel(
-        "position" + (" (observed columns only)" if observed_columns_only else ""), fontsize=7
+        axis_label + (" (observed columns only)" if observed_columns_only else ""), fontsize=7
     )
     input_ax.set_yticks([])
 

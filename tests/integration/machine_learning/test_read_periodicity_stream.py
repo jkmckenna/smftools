@@ -253,6 +253,8 @@ def test_cli_writes_outputs_and_reuses_them(project, tmp_path) -> None:
     assert record["groups"] == ["barcode01", "barcode02"] and record["molecules"] == 2 * READS
     again = _invoke(*args, "--no-figures")
     assert "reused cached results" in again.output
+    redrawn = _invoke(*args, "--coordinate-origin", 800, "--coordinate-reverse", "--ascending")
+    assert "reused cached results" in redrawn.output  # figure options are not in the key
     changed = _invoke(*args, "--min-coverage", 0.5)
     assert "computed" in changed.output
 
