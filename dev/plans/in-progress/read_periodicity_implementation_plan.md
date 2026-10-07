@@ -1,6 +1,6 @@
 # Per-read periodicity over regions (`RPG`)
 
-**Status:** in progress. `RPG-01` implemented. One PR per item, in order.
+**Status:** in progress. `RPG-01` merged; `RPG-02` implemented. One PR per item, in order.
 
 ## Question
 
@@ -72,8 +72,8 @@ the independent readout.
 
 | item | status | scope |
 |---|---|---|
-| `RPG-01` dense channels | implemented, not merged | `site_context: all` in ML plans |
-| `RPG-02` compute | proposed | streamed per-(read, region) periodograms and statistics |
+| `RPG-01` dense channels | merged | `site_context: all` in ML plans |
+| `RPG-02` compute | implemented, not merged | streamed per-(read, region) periodograms and statistics |
 | `RPG-03` figures | proposed | paired input / periodogram clustermaps in one row order |
 | `RPG-04` CLI | proposed | `smftools project periodicity`, `smftools experiment periodicity` |
 | `RPG-05` qualification | proposed | agreement with stored spatial periodograms; timings |
@@ -113,6 +113,17 @@ range narrows for a short region and the region is skipped below the floor;
 coverage and site thresholds; a dense step signal and its site-restricted
 sampling; 1 vs N workers identical; on the spatial-stage parameters a read's
 periodogram equals `analyze_ls_periodicity_direct` on the same values.
+
+As built: the period grid is descending, 1 bp steps, as the spatial stage
+stores it. Statuses `ok`, `region_too_short`, `low_coverage`, `too_few_sites`,
+`no_signal` (flat after detrending). Results come back in the dataset's
+molecule order whatever the worker count. Checked on a real enzyme panel
+(4,121 molecules, full amplicon, C sites): power and peak period identical
+to the stored spatial-stage periodograms for the reads compared.
+
+Also here (`F74`): with several workers, blocks are capped at an equal share,
+so a dataset smaller than one memory-sized block no longer goes to a single
+worker (that panel: 83 s -> 44 s with 8 workers).
 
 ### `RPG-03` — figures
 
