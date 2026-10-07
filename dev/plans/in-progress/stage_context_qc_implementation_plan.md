@@ -1,6 +1,6 @@
 # Sequence-context QC in the preprocess and HMM stages (`SCQ`)
 
-**Status:** proposed. Nothing implemented. One PR per item, in order.
+**Status:** in progress. `SCQ-01` implemented. One PR per item, in order.
 `SCQ-02` follows `HCE-06` (HMM variants).
 
 ## Why
@@ -42,7 +42,7 @@ barcode.
 
 | item | status | scope |
 |---|---|---|
-| `SCQ-01` preprocess context QC | proposed | modification bias per barcode x reference from passing reads; tables and figures |
+| `SCQ-01` preprocess context QC | implemented, not merged | modification bias per barcode x reference from passing reads; tables and figures |
 | `SCQ-02` HMM context QC | proposed | per variant: residual context bias of state calls; modification rate within accessible-called sites |
 | `SCQ-03` backfill for finished stages | proposed | the same outputs from a finished stage, without re-running it |
 | `SCQ-04` qualification | proposed | a real run: counts equal `context-bias` on the same reads; run time |
@@ -66,6 +66,28 @@ Tests: tallies equal a direct count of passing reads on a fixture; failing and
 duplicate reads excluded; bottom-strand contexts reverse-complemented; site
 types per modality; settings off -> no outputs; the stage config hash is
 unchanged by the settings.
+
+As built (`preprocessing/stage_context_qc.py`): after the stage obs is
+written, `write_stage_context_qc` reads each barcode's task stores (`X`, the
+core-cropped calls, and the `{reference}_{site}` var flags) in a worker
+process. Passing reads are `passes_dedup` where dedup ran, else `passes_qc` --
+the population the mismatch and segment clustermaps show. A call is modified
+at >= 0.5. Tables: `site_counts.parquet`, `sites.parquet` (with context and
+`cpg`), `offset_enrichment.csv`, `kmer_rates.csv` and `run.json`, under
+`<generation>/context_qc/` (sidecar `preprocess_context_qc`). Statistics are
+per (reference, site type, CpG flag) with the barcode as the group;
+references without a stored sequence are skipped with a warning. Figures
+(category `context_qc`) are per reference x site type x CpG flag -- an
+enrichment logo, an offset heatmap and k-mer rates for each k > 1 -- each with
+one panel per barcode, so the planned per-barcode logos and the cross-barcode
+grid are the same figure. Barcodes with < 10,000 calls are left out of the
+figures (not the tables); names lose their shared kit prefix. Tables are
+written even with `emit_automated_plots` off; a failure is logged and never
+blocks publication. The settings join `_NON_SEMANTIC_STAGE_CONFIG_KEYS`
+(every stage) and the preprocess/HMM plot keys.
+
+On the 260923 enzyme panel generation (928k reads, 34 barcodes, dedup-passing
+reads only): tallies 7 s with 8 workers, 18 figures 7 s.
 
 ### `SCQ-02` — HMM context QC (after `HCE-06`)
 

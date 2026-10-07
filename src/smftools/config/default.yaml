@@ -433,6 +433,12 @@ hmm_init_start_probs:
   - 0.5
   - 0.5
 hmm_eps: 1e-8
+# Sequence-context QC (plan SCQ): per barcode x reference, how modification calls of
+# passing reads depend on the bases around the site (tables + figures). QC/plots only:
+# changing these never makes a finished stage stale.
+stage_context_qc: true
+stage_context_qc_flank: 3 # bases either side of the site
+stage_context_qc_kmers: [1, 3] # odd, centred k-mers for rate tables
 # Sequence-context-aware emissions (plan HCE): the accessible state's modification
 # probability shifted per site by its centred k-mer's relative weight (on the odds).
 hmm_context_model: none # none | table (weights from hmm_context_table) | learned (estimated in the fit)

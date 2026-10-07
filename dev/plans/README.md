@@ -66,6 +66,7 @@ An active branch, some items merged and others open.
 | `selective_pod5_rebasecalling_implementation_plan.md` | `SRB` |
 | `duplicate_detection_span_agnostic_implementation_plan.md` | `DSA` span-agnostic duplicate detection; drafted, `DSA-05` real-data qualification open |
 | `transfer_time_analysis_bundling_plan.md` | `TAB` bundle a run's analysis-tree generations into few large files before moving them between drives; `TAB-01` implemented, `TAB-02`/`TAB-03` open; zarr v3 sharding and coarser source-side partitioning both ruled out first, on real data |
+| `stage_context_qc_implementation_plan.md` | `SCQ-01`–`SCQ-04` (`SCQ-01` implemented) sequence-context QC in every run: modification bias per barcode x reference in preprocess, residual context bias and accessible-conditioned rates per HMM variant, backfill for finished stages; plot/QC settings, no stage invalidation |
 
 ## `proposed/`
 
@@ -74,7 +75,6 @@ A plan with no implementation branch yet.
 | document | scope |
 |---|---|
 | `agent_files_plan.md` | restructuring the repo's `AGENTS.md`/`CLAUDE.md` files; explicitly not deployed |
-| `stage_context_qc_implementation_plan.md` | `SCQ-01`–`SCQ-04` sequence-context QC in every run: modification bias per barcode x reference in preprocess, residual context bias and accessible-conditioned rates per HMM variant, backfill for finished stages; plot/QC settings, no stage invalidation |
 | `pipeline_throughput_implementation_plan.md` | `THR-01`–`THR-06` -- single-threaded, pool-collapse and redundant-scan bottlenecks found running `experiment batch full` (`F53`–`F57`, `F59`): alignment rescue, duplicate-detection group sizing, latent, raw extraction |
 
 ## `logs/` — not tracked

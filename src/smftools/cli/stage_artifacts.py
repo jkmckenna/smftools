@@ -40,6 +40,8 @@ STAGE_PLOT_CATEGORIES = {
         "read_span_quality",
         "coverage",
         "task_diagnostics",
+        # Sequence context of passing reads' calls per barcode (`SCQ-01`).
+        "context_qc",
     ),
     "variant": (
         "mismatch_frequency",

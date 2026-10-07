@@ -33,6 +33,10 @@ logger = get_logger(__name__)
 _RESOURCE_ENVELOPE_CACHE: dict[tuple[Any, ...], Any] = {}
 
 _NON_SEMANTIC_STAGE_CONFIG_KEYS = {
+    # Sequence-context QC (`SCQ`) reads a stage's results; it never changes them.
+    "stage_context_qc",
+    "stage_context_qc_flank",
+    "stage_context_qc_kmers",
     "bam_outputs_path",
     "bed_outputs_path",
     "device",
@@ -221,12 +225,15 @@ _STAGE_SEMANTIC_CONFIG_KEYS = {
         "smf_modality",
     },
 }
+_STAGE_CONTEXT_QC_KEYS = {"stage_context_qc", "stage_context_qc_flank", "stage_context_qc_kmers"}
 _STAGE_PLOT_CONFIG_KEYS = {
+    "preprocess": set(_STAGE_CONTEXT_QC_KEYS),
+    "hmm": set(_STAGE_CONTEXT_QC_KEYS),
     "latent": {
         "sample_name_col_for_plotting",
         "latent_plot_max_reads",
         "umap_layers_to_plot",
-    }
+    },
 }
 
 # Canonical mapping from user-facing stage aliases to AdataPaths attribute names

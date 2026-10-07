@@ -1394,6 +1394,24 @@ def execute_partitioned_preprocessing(
         # it must be visible.
         logger.exception("Barcode contamination QC failed; generation still published")
 
+    # Sequence-context QC (`SCQ-01`): needs the final QC/dedup flags, so it
+    # reads the finished store here. Tables always; figures with the plots.
+    from .stage_context_qc import write_stage_context_qc
+
+    try:
+        context_qc_dir = write_stage_context_qc(
+            output_dir,
+            task_catalog,
+            derived_spine.obs,
+            derived_spine.uns,
+            cfg,
+            plot_layout=plot_layout if bool(getattr(cfg, "emit_automated_plots", True)) else None,
+            workers=max(1, int(getattr(cfg, "threads", 1) or 1)),
+        )
+    except Exception:
+        context_qc_dir = None
+        logger.exception("Context QC failed; generation still published")
+
     if bool(getattr(cfg, "emit_automated_plots", True)):
         generate_preprocess_summary_plots(
             obs_sidecar,
@@ -1477,6 +1495,8 @@ def execute_partitioned_preprocessing(
     register_sidecar(manifest, "preprocess_stage_obs", stage_obs_path)
     register_sidecar(manifest, "preprocess_spine", output_spine)
     register_sidecar(manifest, "preprocess_plots", plot_layout.root)
+    if context_qc_dir is not None:
+        register_sidecar(manifest, "preprocess_context_qc", context_qc_dir)
     register_sidecar(manifest, "preprocess_plot_catalog", plot_layout.catalog)
     if variant_outputs:
         for key, path in {
