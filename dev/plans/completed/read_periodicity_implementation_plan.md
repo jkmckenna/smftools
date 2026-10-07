@@ -1,6 +1,6 @@
 # Per-read periodicity over regions (`RPG`)
 
-**Status:** in progress. `RPG-01`–`RPG-03` merged; `RPG-04` implemented. One PR per item, in order.
+**Status:** completed. `RPG-01`–`RPG-04` merged; `RPG-05` qualified.
 
 ## Question
 
@@ -75,8 +75,8 @@ the independent readout.
 | `RPG-01` dense channels | merged | `site_context: all` in ML plans |
 | `RPG-02` compute | merged | streamed per-(read, region) periodograms and statistics |
 | `RPG-03` figures | merged | paired input / periodogram clustermaps in one row order |
-| `RPG-04` CLI | implemented, not merged | `smftools project periodicity`, `smftools experiment periodicity` |
-| `RPG-05` qualification | proposed | agreement with stored spatial periodograms; timings |
+| `RPG-04` CLI | merged | `smftools project periodicity`, `smftools experiment periodicity` |
+| `RPG-05` qualification | qualified | agreement with stored spatial periodograms; timings |
 
 ### `RPG-01` — `site_context: all`
 
@@ -191,10 +191,34 @@ re-run with figures 3 s.
 
 ### `RPG-05` — qualification
 
-On a real project: full-amplicon C-site periodograms with the spatial
-stage's parameters equal the stored spatial-stage periodograms for the same
-reads; a narrowed region; dense HMM vs site-restricted HMM inputs; 1 vs 8
-workers identical, with timings.
+Through `smftools project periodicity` on a real enzyme panel: 4,121 molecules
+of one allele, six enzyme groups, regions 0-4690 (the full amplicon) and
+1000-1600 (600 bp, narrowed).
+
+| check | result |
+|---|---|
+| 1 vs 8 workers | statistics and both power matrices identical; 119 s vs 53 s |
+| full amplicon, C sites, vs the stored spatial-stage periodograms | all 4,112 scored reads: power identical (max difference 0), peak period identical |
+| 600 bp region | range narrowed to 80-200 bp, peak range 150-200 bp; 4,105 reads scored |
+| dense HMM input (`site_context: all`) | 80 s with 8 workers (C sites: 53 s) |
+
+Per input (median peak period, interquartile range, median SNR, fraction of
+peaks on a bound of the search range):
+
+| input | full amplicon | 600 bp region |
+|---|---|---|
+| C calls | 188 bp, 14, 14.1, 0.1% | 190 bp, 20, 4.4, 31% |
+| HMM accessible at C sites | 189 bp, 16, 12.0, 0.1% | 191 bp, 20, 3.9, 34% |
+| HMM accessible at every position | 189 bp, 15, 11.7, 0% | 191 bp, 21, 4.3, 36% |
+
+The three inputs agree on the population (median 188-189 bp; per enzyme
+within 1-2 bp, except the group with ~11 molecules), less so per read
+(per-read peak correlation over the full amplicon: C vs HMM at C 0.58, C vs
+HMM at every position 0.46, the two HMM inputs 0.61): single-read
+periodograms are noisy, and the HMM inputs share its smoothing. The C-site
+input has the highest SNR. On the short region a third of peaks sit on the
+narrowed ceiling (`peak_at_edge`), as expected from its resolution; short
+regions are for comparing groups, not reading single-read periods.
 
 ## Out of scope
 
