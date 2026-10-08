@@ -6,7 +6,7 @@ import hashlib
 import json
 from collections import Counter
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import Any
 
@@ -115,6 +115,9 @@ class MLSplitResolution:
     class_by_modality: tuple[SplitCellCount, ...]
     warnings: tuple[str, ...]
     locked_roles: tuple[str, ...]
+    # ("train", "validation") when a molecule-level validation fraction splits
+    # training groups between them (`MLR-07`); test always stays isolated.
+    shared_roles: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "group_by", tuple(self.group_by))
@@ -185,6 +188,7 @@ class MLSplitResolution:
             dataset=dataset,
             group_by=self.group_by,
             assignments=self.assignments,
+            shared_roles=self.shared_roles,
         )
 
     def to_dry_run_dict(self) -> dict[str, Any]:
@@ -205,6 +209,7 @@ class MLSplitResolution:
             "class_by_modality": [cell.to_dict() for cell in self.class_by_modality],
             "warnings": list(self.warnings),
             "locked_roles": list(self.locked_roles),
+            "shared_roles": list(self.shared_roles),
         }
 
 
@@ -718,6 +723,9 @@ def plan_ml_splits(
             group.group_id: "test" if group.group_id == held_out.group_id else "train"
             for group in groups
         }
+        fold_name = f"holdout={held_out.token}"
+        if spec.validation_fraction is not None and spec.validation_by == "groups":
+            roles = _validation_groups(groups, roles, spec, fold_name, set(classes))
         for role in ("train", "test"):
             role_classes = {
                 class_id
@@ -730,15 +738,219 @@ def plan_ml_splits(
                     f"leave-one-group-out fold {held_out.token!r} cannot preserve "
                     f"all classes in {role}"
                 )
-        result.append(
-            _resolution(
-                split_name=split_name,
-                fold_name=f"holdout={held_out.token}",
-                spec=spec,
-                selection=selection,
-                frame=frame,
-                groups=groups,
-                group_roles=roles,
-            )
+        resolution = _resolution(
+            split_name=split_name,
+            fold_name=fold_name,
+            spec=spec,
+            selection=selection,
+            frame=frame,
+            groups=groups,
+            group_roles=roles,
         )
+        if spec.validation_fraction is not None and spec.validation_by == "molecules":
+            resolution = with_validation_molecules(
+                resolution,
+                frame,
+                groups,
+                fraction=spec.validation_fraction,
+                seed=spec.seed,
+            )
+        result.append(resolution)
     return tuple(result)
+
+
+def _fold_rng(seed: int, fold_name: str | None) -> np.random.Generator:
+    """A generator fixed by the split seed and the fold (stable across runs)."""
+    digest = hashlib.sha256(f"{seed}:{fold_name}".encode()).hexdigest()
+    return np.random.default_rng(int(digest[:16], 16))
+
+
+def _validation_groups(
+    groups: Sequence[_Group],
+    roles: Mapping[str, str],
+    spec: SplitSpec,
+    fold_name: str,
+    classes: set[int],
+) -> dict[str, str]:
+    """Whole training groups as validation: ``round(fraction x training
+    groups)`` of them (at least one, leaving one to train), drawn so that
+    train and validation both hold every class."""
+    training = sorted(
+        (group for group in groups if roles[group.group_id] == "train"),
+        key=lambda item: item.token,
+    )
+    n_validation = max(1, round(spec.validation_fraction * len(training)))
+    if n_validation >= len(training):
+        raise MLSplitPlanningError(
+            f"{fold_name}: {len(training)} training groups cannot spare "
+            f"{n_validation} for validation"
+        )
+    rng = _fold_rng(spec.seed, fold_name)
+    for _attempt in range(200):
+        order = rng.permutation(len(training))
+        chosen = {training[i].group_id for i in order[:n_validation]}
+
+        def support(members):
+            return {c for group in members for c in group.counts_by_class}
+
+        if (
+            support(g for g in training if g.group_id in chosen) == classes
+            and support(g for g in training if g.group_id not in chosen) == classes
+        ):
+            return {
+                group_id: "validation" if group_id in chosen else role
+                for group_id, role in roles.items()
+            }
+    raise MLSplitPlanningError(
+        f"{fold_name}: no choice of {n_validation} validation groups keeps every class "
+        "in both train and validation"
+    )
+
+
+def with_validation_molecules(
+    resolution: MLSplitResolution,
+    frame: pd.DataFrame,
+    groups: Sequence[_Group],
+    *,
+    fraction: float,
+    seed: int,
+) -> MLSplitResolution:
+    """Move ``fraction`` of the training molecules to validation, stratified by
+    group x class (each cell rounded), seeded by the split seed and fold.
+
+    Train and validation then share groups (recorded as ``shared_roles``);
+    test is untouched.
+    """
+    group_of = {uid: group.group_id for group in groups for uid in group.molecule_uids}
+    rows = frame.set_index(MOLECULE_UID_COLUMN)
+    assignments = _molecule_validation(
+        resolution.assignments, rows, group_of, fraction, seed, resolution.fold_name
+    )
+    summaries, cells_out = _molecule_summaries(rows, assignments, group_of)
+    resolution_id = _sha256(
+        {
+            "resolution_id": resolution.resolution_id,
+            "validation_fraction": fraction,
+            "validation_by": "molecules",
+            "assignments": dict(sorted(assignments.items())),
+        }
+    )
+    return replace(
+        resolution,
+        resolution_id=resolution_id,
+        assignments=assignments,
+        summaries=summaries,
+        class_by_modality=cells_out,
+        locked_roles=tuple(sorted({*resolution.locked_roles, "validation"})),
+        shared_roles=("train", "validation"),
+    )
+
+
+def _molecule_validation(
+    assignments: Mapping[str, str],
+    rows: pd.DataFrame,
+    group_of: Mapping[str, str],
+    fraction: float,
+    seed: int,
+    fold_name: str | None,
+) -> dict[str, str]:
+    training = sorted(uid for uid, role in assignments.items() if role == "train")
+    cells = (
+        pd.DataFrame(
+            {
+                "uid": training,
+                "group": [group_of[uid] for uid in training],
+                "class_id": rows.loc[training, "class_id"].astype(int).to_numpy(),
+            }
+        )
+        .groupby(["group", "class_id"], sort=True)["uid"]
+        .apply(list)
+    )
+    rng = _fold_rng(seed, fold_name)
+    chosen: set[str] = set()
+    for members in cells:
+        take = int(round(fraction * len(members)))
+        if take:
+            chosen.update(rng.choice(np.asarray(members), size=take, replace=False).tolist())
+    result = {uid: "validation" if uid in chosen else role for uid, role in assignments.items()}
+    classes = set(rows["class_id"].astype(int))
+    for role in ("train", "validation"):
+        present = {int(rows.at[uid, "class_id"]) for uid, r in result.items() if r == role}
+        if present != classes:
+            raise MLSplitPlanningError(
+                f"{fold_name}: validation fraction {fraction} leaves {role} "
+                f"without classes {sorted(classes - present)}"
+            )
+    return result
+
+
+FINAL_SPLIT_NAME = "final"
+
+
+def final_split_assignments(
+    plan: MLPlan, split_name: str, selection: MLDataSelectionPlan
+) -> tuple[dict[str, str], tuple[str, ...]]:
+    """Roles for a final model fit on every selected row (`MLR-02`): all
+    train, or -- when the split declares a validation fraction (`MLR-07`) --
+    with that validation taken as in each fold (molecules by group x class,
+    or whole groups). Returns the assignments and the shared roles."""
+    spec = plan.splits[split_name]
+    group_by = tuple(spec.group_by)
+    frame = _normalize_identity_table(selection, group_by)
+    groups = _groups(frame, group_by)
+    roles = {group.group_id: "train" for group in groups}
+    if spec.validation_fraction is not None and spec.validation_by == "groups":
+        classes = {class_id for group in groups for class_id in group.counts_by_class}
+        roles = _validation_groups(groups, roles, spec, FINAL_SPLIT_NAME, classes)
+    assignments = {uid: roles[group.group_id] for group in groups for uid in group.molecule_uids}
+    if spec.validation_fraction is not None and spec.validation_by == "molecules":
+        group_of = {uid: group.group_id for group in groups for uid in group.molecule_uids}
+        assignments = _molecule_validation(
+            assignments,
+            frame.set_index(MOLECULE_UID_COLUMN),
+            group_of,
+            spec.validation_fraction,
+            spec.seed,
+            FINAL_SPLIT_NAME,
+        )
+        return assignments, ("train", "validation")
+    return assignments, ()
+
+
+def _molecule_summaries(
+    rows: pd.DataFrame, assignments: Mapping[str, str], group_of: Mapping[str, str]
+) -> tuple[tuple[SplitRoleSummary, ...], tuple[SplitCellCount, ...]]:
+    frame = pd.DataFrame(
+        {
+            "uid": list(assignments),
+            "role": list(assignments.values()),
+            "group": [group_of[uid] for uid in assignments],
+            "class_id": rows.loc[list(assignments), "class_id"].astype(int).to_numpy(),
+            "modality": rows.loc[list(assignments), "modality"].astype(str).to_numpy(),
+        }
+    )
+    summaries = tuple(
+        SplitRoleSummary(
+            split=role,
+            n_observations=len(part),
+            n_groups=part["group"].nunique(),
+            counts_by_class=Counter(part["class_id"].tolist()),
+            counts_by_modality=Counter(part["modality"].tolist()),
+        )
+        for role, part in frame.groupby("role", sort=True)
+    )
+    cells = []
+    for role, part in frame.groupby("role", sort=True):
+        for class_id in sorted(frame["class_id"].unique()):
+            for modality in sorted(frame["modality"].unique()):
+                cell = part[(part["class_id"] == class_id) & (part["modality"] == modality)]
+                cells.append(
+                    SplitCellCount(
+                        split=role,
+                        modality=modality,
+                        class_id=int(class_id),
+                        n_observations=len(cell),
+                        n_groups=cell["group"].nunique(),
+                    )
+                )
+    return summaries, tuple(cells)

@@ -193,7 +193,7 @@ def _membership(
                 FINAL_FOLD,
                 None,
                 final_split.split_id,
-                {item.molecule_uid: "train" for item in bound.snapshot.observations},
+                {member.molecule_uid: member.split for member in final_split.members},
             )
         )
     frames, splits = [], []
@@ -459,12 +459,13 @@ def train_and_publish(
     backends = {name: bound.plan.models[name].backend for name in job_spec.models}
     final = None
     if final_model:
-        torch_models = sorted(name for name, backend in backends.items() if backend == "torch")
-        if torch_models:
-            raise MLJobServiceError(
-                f"final models for torch models {torch_models} need a validation role (MLR-07)"
-            )
         final = final_training_split(bound)
+        torch_models = sorted(name for name, backend in backends.items() if backend == "torch")
+        if torch_models and not any(m.split == "validation" for m in final[0].members):
+            raise MLJobServiceError(
+                f"final models for torch models {torch_models} need a validation role; "
+                "declare the split's validation_fraction"
+            )
     job = ResolvedJob(
         plan=bound.plan,
         workspace=workspace,

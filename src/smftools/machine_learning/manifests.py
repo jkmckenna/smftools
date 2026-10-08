@@ -924,6 +924,33 @@ def _split_summaries(
     return tuple(result)
 
 
+def _shared_roles(roles: Sequence[str]) -> tuple[str, ...]:
+    """Normalised roles that may share a group: none, or train + validation."""
+    shared = tuple(sorted(set(roles)))
+    if shared not in ((), ("train", "validation")):
+        _fail("split.shared_roles", "may only be empty or ['train', 'validation']")
+    return shared
+
+
+def _split_identity(
+    schema_version: int,
+    dataset_snapshot_id: str,
+    group_by: Sequence[str],
+    membership_digest: str,
+    shared_roles: Sequence[str],
+) -> dict[str, Any]:
+    identity = {
+        "schema_version": schema_version,
+        "dataset_snapshot_id": dataset_snapshot_id,
+        "group_by": list(group_by),
+        "membership_digest": membership_digest,
+    }
+    if shared_roles:
+        # Only when used, so every earlier split keeps its id.
+        identity["shared_roles"] = list(shared_roles)
+    return identity
+
+
 @dataclass(frozen=True)
 class SplitManifest:
     """Immutable resolved train/validation/test membership for one snapshot."""
@@ -935,9 +962,13 @@ class SplitManifest:
     group_by: tuple[str, ...]
     members: tuple[SplitMember, ...]
     summaries: tuple[SplitSummary, ...]
+    # Roles that may share a biological group (`MLR-07`): only train and
+    # validation, for a molecule-level validation fraction. Test stays isolated.
+    shared_roles: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "group_by", tuple(self.group_by))
+        object.__setattr__(self, "shared_roles", _shared_roles(self.shared_roles))
         object.__setattr__(
             self,
             "members",
@@ -961,7 +992,7 @@ class SplitManifest:
         molecule_uids = [member.molecule_uid for member in self.members]
         if len(molecule_uids) != len(set(molecule_uids)):
             _fail("split.members", "molecule UIDs must be unique")
-        group_splits: dict[str, str] = {}
+        group_roles: dict[str, set[str]] = {}
         for member in self.members:
             if set(member.group_values) != set(self.group_by):
                 _fail(
@@ -976,8 +1007,9 @@ class SplitManifest:
             )
             if member.group_id != expected_group_id:
                 _fail("split.members", "group ID does not match group_by and group values")
-            previous = group_splits.setdefault(member.group_id, member.split)
-            if previous != member.split:
+            group_roles.setdefault(member.group_id, set()).add(member.split)
+        for roles in group_roles.values():
+            if len(roles) > 1 and not roles <= set(self.shared_roles):
                 _fail("split.members", "one biological group occurs in multiple splits")
         expected_membership_digest = _sha256(
             {"members": [member.to_dict() for member in self.members]}
@@ -985,12 +1017,13 @@ class SplitManifest:
         if self.membership_digest != expected_membership_digest:
             _fail("split.membership_digest", "does not match members")
         expected_split_id = _sha256(
-            {
-                "schema_version": self.schema_version,
-                "dataset_snapshot_id": self.dataset_snapshot_id,
-                "group_by": list(self.group_by),
-                "membership_digest": self.membership_digest,
-            }
+            _split_identity(
+                self.schema_version,
+                self.dataset_snapshot_id,
+                self.group_by,
+                self.membership_digest,
+                self.shared_roles,
+            )
         )
         if self.split_id != expected_split_id:
             _fail("split.split_id", "does not match split identity")
@@ -1014,8 +1047,15 @@ class SplitManifest:
         dataset: DatasetSnapshotManifest,
         group_by: Sequence[str],
         assignments: Mapping[str, str],
+        shared_roles: Sequence[str] = (),
     ) -> SplitManifest:
-        """Resolve explicit row assignments and verify biological-group isolation."""
+        """Resolve explicit row assignments and verify biological-group isolation.
+
+        ``shared_roles`` (``("train", "validation")`` or empty) lets those two
+        roles share a group, for a molecule-level validation fraction; any
+        other group in several roles is refused.
+        """
+        shared = _shared_roles(shared_roles)
         fields = tuple(_string(field, "split.group_by") for field in group_by)
         if not fields:
             _fail("split.group_by", "must contain at least one field")
@@ -1041,7 +1081,7 @@ class SplitManifest:
             )
             group_id = _sha256({"group_by": list(fields), "values": dict(values)})
             previous = group_splits.setdefault(group_id, split)
-            if previous != split:
+            if previous != split and not {previous, split} <= set(shared):
                 _fail(
                     "split.assignments",
                     f"group {dict(values)!r} occurs in both {previous!r} and {split!r}",
@@ -1056,12 +1096,9 @@ class SplitManifest:
             )
         canonical_members = tuple(sorted(members, key=lambda item: item.molecule_uid))
         membership_digest = _sha256({"members": [member.to_dict() for member in canonical_members]})
-        identity = {
-            "schema_version": ML_SPLIT_MANIFEST_VERSION,
-            "dataset_snapshot_id": dataset.snapshot_id,
-            "group_by": list(fields),
-            "membership_digest": membership_digest,
-        }
+        identity = _split_identity(
+            ML_SPLIT_MANIFEST_VERSION, dataset.snapshot_id, fields, membership_digest, shared
+        )
         return cls(
             schema_version=ML_SPLIT_MANIFEST_VERSION,
             split_id=_sha256(identity),
@@ -1070,6 +1107,7 @@ class SplitManifest:
             group_by=fields,
             members=canonical_members,
             summaries=_split_summaries(dataset, canonical_members),
+            shared_roles=shared,
         )
 
     def validate_against(self, dataset: DatasetSnapshotManifest) -> None:
@@ -1081,6 +1119,7 @@ class SplitManifest:
             dataset=dataset,
             group_by=self.group_by,
             assignments=assignments,
+            shared_roles=self.shared_roles,
         )
         if rebuilt.to_dict() != self.to_dict():
             _fail("split", "does not match its dataset, grouping fields, or summaries")
@@ -1095,6 +1134,8 @@ class SplitManifest:
             "group_by": list(self.group_by),
             "members": [member.to_dict() for member in self.members],
             "summaries": [summary.to_dict() for summary in self.summaries],
+            # Only when used: earlier manifests keep their serialized form.
+            **({"shared_roles": list(self.shared_roles)} if self.shared_roles else {}),
         }
 
     @classmethod
@@ -1116,7 +1157,7 @@ class SplitManifest:
             "members",
             "summaries",
         }
-        _keys(value, path=path, allowed=fields, required=fields)
+        _keys(value, path=path, allowed=fields | {"shared_roles"}, required=fields)
         _version(value["schema_version"], ML_SPLIT_MANIFEST_VERSION, f"{path}.schema_version")
         members = tuple(
             SplitMember.from_dict(item) for item in _sequence(value["members"], f"{path}.members")
@@ -1128,6 +1169,7 @@ class SplitManifest:
             dataset=dataset,
             group_by=_strings(value["group_by"], f"{path}.group_by"),
             assignments=assignments,
+            shared_roles=_strings(value.get("shared_roles", []), f"{path}.shared_roles"),
         )
         if restored.to_dict() != dict(value):
             _fail(path, "serialized fields do not match resolved split content")

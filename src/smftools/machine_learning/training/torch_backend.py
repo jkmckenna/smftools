@@ -238,7 +238,8 @@ class FittedTorchModel:
     best_epoch: int
     history: tuple[TorchEpochRecord, ...]
     validation_loss: float
-    test_loss: float
+    # None for a final model fit without a held-out test role (`MLR-07`).
+    test_loss: float | None
 
     def __post_init__(self) -> None:
         if self.architecture.backend != "torch" or self.family != self.architecture.family:
@@ -251,6 +252,8 @@ class FittedTorchModel:
         if not history or self.best_epoch not in {row.epoch for row in history}:
             raise TorchTrainingError("best_epoch must identify one recorded epoch")
         for name in ("validation_loss", "test_loss"):
+            if name == "test_loss" and self.test_loss is None:
+                continue
             value = float(getattr(self, name))
             if not np.isfinite(value) or value < 0:
                 raise TorchTrainingError(f"{name} must be finite and non-negative")
@@ -283,6 +286,13 @@ class TorchTrainingResult:
     n_training_observations: int
     class_counts: tuple[int, ...]
     stopped_early: bool
+
+
+def _has_role(dataset: Any, role: str) -> bool:
+    """Whether a partition dataset's split represents ``role``; datasets that
+    do not list their entries are assumed to (the earlier behaviour)."""
+    entries = getattr(dataset.plan, "entries", None)
+    return True if entries is None else any(entry.split == role for entry in entries)
 
 
 def _resolve_device(requested: str) -> str:
@@ -646,13 +656,16 @@ def fit_torch_partition_model_streaming(
 
     # The locked test role stays unread until early stopping has selected and
     # restored the best validation state, exactly as in the materialized path.
-    test_loader = _StreamingLoader(
-        dataset,
-        transform,
-        "test",
-        batch_size=config.batch_size,
-    )
-    test_loss = _evaluate(model, task, test_loader)
+    # A final model's split has no test role: no test loss (`MLR-07`).
+    test_loss = None
+    if _has_role(dataset, "test"):
+        test_loader = _StreamingLoader(
+            dataset,
+            transform,
+            "test",
+            batch_size=config.batch_size,
+        )
+        test_loss = _evaluate(model, task, test_loader)
     fitted = FittedTorchModel(
         family=resolved_model.family,
         architecture=resolved_model,
@@ -821,18 +834,20 @@ def fit_torch_partition_model(
     model.to(device)
     validation_loss = _evaluate(model, task, validation_loader)
 
-    test = dataset.materialize("test")
-    if test.labels is None:
-        raise TorchTrainingError("locked test role must contain labels")
-    transformed_test = transform(test)
-    test_loader = _loader(
-        transformed_test,
-        indices=np.arange(len(test.labels), dtype=np.int64),
-        batch_size=config.batch_size,
-        seed=config.seed,
-        shuffle=False,
-    )
-    test_loss = _evaluate(model, task, test_loader)
+    test_loss = None
+    if _has_role(dataset, "test"):
+        test = dataset.materialize("test")
+        if test.labels is None:
+            raise TorchTrainingError("locked test role must contain labels")
+        transformed_test = transform(test)
+        test_loader = _loader(
+            transformed_test,
+            indices=np.arange(len(test.labels), dtype=np.int64),
+            batch_size=config.batch_size,
+            seed=config.seed,
+            shuffle=False,
+        )
+        test_loss = _evaluate(model, task, test_loader)
     fitted = FittedTorchModel(
         family=resolved_model.family,
         architecture=resolved_model,

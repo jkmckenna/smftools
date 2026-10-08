@@ -251,6 +251,11 @@ class SplitSpec:
     # leave_one_group_out only (`MLX-07`): "train" keeps groups holding a
     # single class in every fold's train role instead of refusing them.
     single_class_groups: str = "refuse"
+    # leave_one_group_out only (`MLR-07`): this fraction of each fold's
+    # training data becomes validation -- molecules stratified by group x
+    # class ("molecules"), or whole training groups ("groups").
+    validation_fraction: float | None = None
+    validation_by: str = "molecules"
 
 
 @dataclass(frozen=True)
@@ -329,6 +334,9 @@ class MLPlan:
         for split in payload["splits"].values():
             if split.get("single_class_groups") == "refuse":
                 split.pop("single_class_groups")  # default; keeps earlier hashes
+            if split.get("validation_fraction") is None:
+                split.pop("validation_fraction", None)  # unset; keeps earlier hashes
+                split.pop("validation_by", None)
         for dataset in payload["datasets"].values():
             for key in ("positions", "coordinate_frame"):
                 if dataset.get(key) is None:
@@ -738,6 +746,8 @@ def _parse_split(raw: Any, path: str) -> SplitSpec:
             "fractions",
             "seed",
             "single_class_groups",
+            "validation_fraction",
+            "validation_by",
         },
         required={"strategy", "group_by"},
     )
@@ -759,6 +769,22 @@ def _parse_split(raw: Any, path: str) -> SplitSpec:
     seed = value.get("seed", 0)
     if isinstance(seed, bool) or not isinstance(seed, int):
         _fail(f"{path}.seed", "must be an integer")
+    validation_fraction = value.get("validation_fraction")
+    validation_by = str(value.get("validation_by", "molecules")).strip().lower()
+    if validation_fraction is not None:
+        if strategy != "leave_one_group_out":
+            _fail(f"{path}.validation_fraction", "applies only to leave_one_group_out")
+        if (
+            isinstance(validation_fraction, bool)
+            or not isinstance(validation_fraction, (int, float))
+            or not 0 < float(validation_fraction) < 1
+        ):
+            _fail(f"{path}.validation_fraction", "must be between zero and one")
+        validation_fraction = float(validation_fraction)
+    elif "validation_by" in value:
+        _fail(f"{path}.validation_by", "needs validation_fraction")
+    if validation_by not in {"molecules", "groups"}:
+        _fail(f"{path}.validation_by", "must be 'molecules' or 'groups'")
     role_groups = {
         "train": _string_tuple(value.get("train_groups"), f"{path}.train_groups"),
         "validation": _string_tuple(value.get("validation_groups"), f"{path}.validation_groups"),
@@ -816,6 +842,8 @@ def _parse_split(raw: Any, path: str) -> SplitSpec:
         single_class_groups=single_class_groups,
         fractions=MappingProxyType(fractions),
         seed=seed,
+        validation_fraction=validation_fraction,
+        validation_by=validation_by,
     )
 
 
