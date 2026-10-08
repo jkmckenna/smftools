@@ -280,7 +280,10 @@ prevalence (reweighted), with fast implementations equal to scikit-learn's.
 Uncertainty: per-fold values, mean and SD across folds, folds better; a
 class-stratified bootstrap over molecules within folds (shared resamples),
 giving intervals for each entry's fold-mean and each paired difference.
-`RunComparison.write` saves tables, settings (source run ids) and
+Added after the `MLR-10` qualification (whose fold SDs of 2-3.5 dwarfed
+the molecule intervals): a between-experiment interval (folds resampled) for
+every mean and difference, and an exact paired sign-flip test on per-fold
+differences. `RunComparison.write` saves tables, settings (source run ids) and
 `plot_run_comparison`'s figure. Comparisons are recomputed, not published as
 runs.
 
