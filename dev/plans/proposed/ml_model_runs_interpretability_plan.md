@@ -233,9 +233,34 @@ so receptive fields are in bp:
 - At full-locus RF a CNN can infer absolute position from padding at the
   molecule's edges: position-agnostic by design, not in effect -- the
   comparison point, recorded as such.
+- **Sparse site inputs** (C / GpC calls at their sites) beside **dense HMM
+  layers** (accessible / footprint / lengths at every bp, `site_context: all`)
+  share the bp grid, each with its own observed mask. Two fixes to the
+  residual CNN first:
+  1. *Missing vs unmodified.* Unobserved values are zero-filled and the mask is
+     not an input, so "no site" and "site, unmodified" both read 0. Give the
+     model the mask: an observed-indicator channel per sparse channel (or a
+     signed encoding, +1 modified / -1 unmodified / 0 no site).
+  2. *Propagation between sites.* Features are zeroed after the stem and every
+     block wherever no channel is observed; with site channels alone that is
+     most positions, so dilated taps between sites read zeros and context
+     flows only through sites (worse for GpC). Zero by the read's span (first
+     to last observed position) instead.
+  Length layers are rescaled (log length, or length classes) before sitting
+  beside 0 / 1 channels.
+- **HMM inputs do not respect the receptive field.** Each position's HMM call
+  comes from decoding the whole read, and a length layer stamps a feature's
+  full extent at each of its positions, so a "sub-nucleosome" CNN on HMM
+  layers can use information from far outside its window. The ladder bounds
+  information only with raw site inputs. Three input arms per recipe: sites
+  only (the context experiment), HMM layers only, sites + HMM -- reported
+  separately. HMM inputs also inherit the HMM's choices (enzyme context bias,
+  variant, merging): the channel's layer name records which.
 - Needs the validation role (`MLR-07`) for early stopping.
 
-Tests: the computed RF equals the formula; perturbing one input position
+Tests: with a sparse site channel, "no site" and "unmodified site" give
+different features (mask as input); features propagate across positions
+between sites within the read span; the computed RF equals the formula; perturbing one input position
 changes pre-pooling features only within RF / 2 of it (empirical bound) for
 bounded recipes and anywhere with SE on; `max_receptive_field` refuses an
 over-wide config; translating a feature within the molecule leaves the
