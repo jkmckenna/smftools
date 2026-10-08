@@ -437,3 +437,212 @@ def plot_attribution_summary(
         axis.set_visible(False)
     figure.suptitle(title)
     _save(figure, output_path)
+
+
+ATTRIBUTION_ORDERS = ("label", "score", "bins")
+_POSITIVE_COLOR = "#D84315"
+_OTHER_CLASS_COLORS = ("#455A64", "#90A4AE", "#263238", "#B0BEC5")
+
+
+def _class_colors(classes: Sequence[str], positive_class: str | None) -> dict[str, str]:
+    """True-class colours that cannot be confused with the fold palette."""
+    others = [value for value in sorted(set(classes)) if value != positive_class]
+    colors = {value: _OTHER_CLASS_COLORS[i % 4] for i, value in enumerate(others)}
+    if positive_class is not None:
+        colors[positive_class] = _POSITIVE_COLOR
+    return colors
+
+
+def attribution_row_layout(
+    molecules: pd.DataFrame,
+    attributions: np.ndarray,
+    *,
+    order: str = "label",
+    positive_class: str | None = None,
+    bins: Sequence[Any] | None = None,
+    bin_order: Sequence[Any] | None = None,
+) -> tuple[np.ndarray, list[tuple[str, int, int]], np.ndarray]:
+    """Row order, blocks and per-row block labels for an attribution clustermap.
+
+    ``order``: ``"label"`` -- blocks by true class (``positive_class`` first),
+    rows clustered within each block on their attributions; ``"score"`` -- one
+    block, rows by out-of-fold score, highest first; ``"bins"`` -- blocks by
+    ``bins`` (one value per molecule) in ``bin_order``, clustered within.
+    """
+    from smftools.tools.latent_ordering import hierarchical_block_order
+
+    if order not in ATTRIBUTION_ORDERS:
+        raise ValueError(f"order must be one of {ATTRIBUTION_ORDERS}")
+    n_rows = len(molecules)
+    points = np.nan_to_num(np.asarray(attributions, dtype=float).reshape(n_rows, -1))
+    if order == "score":
+        scores = molecules["score"].to_numpy(dtype=float)
+        row_order = np.argsort(-np.nan_to_num(scores, nan=-np.inf), kind="stable")
+        labels = molecules["truth"].astype(str).to_numpy()
+        return row_order, [("", 0, n_rows)], labels
+    if order == "bins":
+        if bins is None or len(bins) != n_rows:
+            raise ValueError("order='bins' needs one bin value per molecule")
+        labels = np.asarray(bins, dtype=object).astype(str)
+        present = list(dict.fromkeys(labels))
+        wanted = [str(value) for value in (bin_order or sorted(present))]
+        block_order = [value for value in wanted if value in present]
+        block_order += [value for value in present if value not in block_order]
+    else:
+        labels = molecules["truth"].astype(str).to_numpy()
+        present = sorted(set(labels))
+        block_order = (
+            [positive_class, *[value for value in present if value != positive_class]]
+            if positive_class in present
+            else present
+        )
+    parts, blocks, cursor = [], [], 0
+    for value in block_order:
+        members = np.flatnonzero(labels == value)
+        if members.size == 0:
+            continue
+        parts.append(members[hierarchical_block_order(points[members])])
+        blocks.append((value, cursor, cursor + members.size))
+        cursor += members.size
+    return np.concatenate(parts).astype(int), blocks, labels
+
+
+def plot_attribution_clustermap(
+    molecules: pd.DataFrame,
+    attributions: np.ndarray,
+    *,
+    channels: Sequence[str],
+    coordinates: Sequence[int],
+    inputs: np.ndarray | None = None,
+    order: str = "label",
+    positive_class: str | None = None,
+    bins: Sequence[Any] | None = None,
+    bin_order: Sequence[Any] | None = None,
+    bin_name: str = "bin",
+    bin_colors: dict | None = None,
+    coordinate_labels: Sequence[Any] | None = None,
+    extra_panels: Sequence[dict] = (),
+    extra_strips: Sequence[dict] = (),
+    max_rows: int | None = 2000,
+    seed: int = 0,
+    attribution_limit: float | None = None,
+    title: str = "",
+    output_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Inputs beside per-position attributions, one row per molecule.
+
+    ``molecules`` has one row per molecule (``molecule_uid``, ``fold``,
+    ``truth``, ``score``), aligned with ``attributions`` (molecules x channels
+    x positions) and ``inputs`` (the same shape; NaN where unobserved). For
+    each channel the input panel (when given) sits beside its attribution
+    panel; ``extra_panels`` (``name``, ``matrix`` aligned with ``molecules``,
+    optional ``positions``, ``cmap``, ``vmin``, ``vmax``) -- e.g. HMM layers --
+    follow, and ``extra_strips`` (``name``, ``values`` aligned with
+    ``molecules``, as `plot_latent_ordered_clustermap`) join the true-class,
+    fold and score strips. Every panel and strip uses one row order
+    (`attribution_row_layout`). Attributions use a diverging scale symmetric
+    about zero (``attribution_limit``, default the 99th percentile of
+    absolute values). ``coordinate_labels`` relabels the position axis (e.g.
+    TSS-relative). At most ``max_rows`` molecules are drawn (a seeded,
+    class-stratified sample).
+
+    Returns the plot summary plus ``row_uids`` (drawn order) and
+    ``attribution_limit``.
+    """
+    from smftools.plotting.latent_plotting import plot_latent_ordered_clustermap
+
+    molecules = molecules.reset_index(drop=True)
+    attributions = np.asarray(attributions, dtype=float)
+    if attributions.shape[:2] != (len(molecules), len(channels)):
+        raise ValueError("attributions must be molecules x channels x positions")
+    if inputs is not None and np.shape(inputs) != attributions.shape:
+        raise ValueError("inputs must have the attributions' shape")
+    keep = np.arange(len(molecules))
+    if max_rows is not None and len(molecules) > max_rows:
+        rng = np.random.default_rng(seed)
+        chosen = []
+        for _truth, group in molecules.groupby("truth", sort=True, dropna=False):
+            take = max(1, round(max_rows * len(group) / len(molecules)))
+            chosen.extend(rng.choice(group.index.to_numpy(), min(take, len(group)), replace=False))
+        keep = np.sort(np.asarray(chosen, dtype=int))
+    subset = molecules.iloc[keep].reset_index(drop=True)
+    attribution = attributions[keep]
+    row_order, blocks, labels = attribution_row_layout(
+        subset,
+        attribution,
+        order=order,
+        positive_class=positive_class,
+        bins=None if bins is None else np.asarray(bins, dtype=object)[keep],
+        bin_order=bin_order,
+    )
+    limit = attribution_limit
+    if limit is None:
+        finite = np.abs(attribution[np.isfinite(attribution)])
+        limit = float(np.percentile(finite, 99)) if finite.size else 1.0
+    limit = limit or 1.0
+    positions = list(coordinate_labels) if coordinate_labels is not None else list(coordinates)
+    panels = []
+    for index, channel in enumerate(channels):
+        if inputs is not None:
+            panels.append(
+                {
+                    "name": f"{channel} (input)",
+                    "matrix": np.asarray(inputs, dtype=float)[keep][:, index],
+                    "positions": positions,
+                    "cmap": "viridis",
+                    "vmin": 0.0,
+                    "vmax": 1.0,
+                }
+            )
+        panels.append(
+            {
+                "name": f"{channel} attribution",
+                "matrix": attribution[:, index],
+                "positions": positions,
+                "cmap": "RdBu_r",
+                "vmin": -limit,
+                "vmax": limit,
+            }
+        )
+    for panel in extra_panels:
+        panels.append({**panel, "matrix": np.asarray(panel["matrix"], dtype=float)[keep]})
+    truth = subset["truth"].astype(str).to_numpy()
+    class_colors = _class_colors(truth, positive_class)
+    strips = []
+    if order == "bins":
+        strips.append({"name": "true class", "values": truth, "colors": class_colors})
+    # Folds by their held-out group ("holdout=exp_a" -> "exp_a"): readable in place.
+    held_out = subset["fold"].astype(str).str.split("=", n=1).str[-1].to_numpy()
+    strips.append({"name": "held out", "values": held_out})
+    strips.append(
+        {
+            "name": "score",
+            "kind": "continuous",
+            "values": subset["score"].to_numpy(dtype=float),
+            "vmin": 0.0,
+            "vmax": 1.0,
+        }
+    )
+    for strip in extra_strips:
+        strips.append({**strip, "values": np.asarray(strip["values"], dtype=object)[keep]})
+    result = (
+        plot_latent_ordered_clustermap(
+            panels,
+            row_order=row_order,
+            blocks=blocks,
+            labels=labels,
+            cluster_colors=bin_colors if order == "bins" else class_colors,
+            cluster_name=bin_name if order == "bins" else "true class",
+            cluster_legend=order == "bins",
+            extra_strips=strips,
+            title=title,
+            save_path=output_path,
+        )
+        or {}
+    )
+    return {
+        **result,
+        "row_uids": subset["molecule_uid"].to_numpy()[row_order].tolist(),
+        "blocks": blocks,
+        "attribution_limit": limit,
+    }

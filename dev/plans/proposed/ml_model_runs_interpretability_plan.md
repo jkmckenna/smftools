@@ -153,9 +153,9 @@ the stores.
 |---|---|---|
 | `MLR-01` train-and-publish | done (PR #700) | one call: bind a plan job, train each model per fold, publish run / data / models / evaluation records and index; fixed-prevalence AUPRC (reweighted, subsampled) in smftools metrics |
 | `MLR-02` final models and apply | done (PR #701) | optional all-groups final model; apply a run to another dataset with records |
-| `MLR-03` explanation records | implemented (`feature/ml-explanation-records`) | out-of-fold position importance and per-molecule attribution matrices per run; fold consistency |
+| `MLR-03` explanation records | done (PR #704) | out-of-fold position importance and per-molecule attribution matrices per run; fold consistency |
 | `MLR-03b` detector catalogue | proposed | CNN detector catalogue (split from `MLR-03`) |
-| `MLR-04` attribution clustermap | proposed | input layers beside attributions, shared row order, label / score / fold strips; detector catalogue figures |
+| `MLR-04` attribution clustermap | implemented (`feature/ml-attribution-clustermap`) | input layers beside attributions, shared row order, label / score / fold strips; detector catalogue figures |
 | `MLR-05` run comparison | proposed | select runs by tags; paired per-fold metrics, bootstrap intervals, figures |
 | `MLR-06` fold-matrix cache | proposed | read each task's data once for every model |
 | `MLR-07` validation role | proposed | a stratified validation fraction of each fold's training molecules (default) or held-out training experiments, for early stopping and tuning; the test experiment stays whole; final models too |
@@ -244,13 +244,27 @@ recover it, at the planted locations, enriched in the planted class.
 
 ### `MLR-04` -- attribution clustermap
 
-Detector catalogue figures: per detector (or group), the mean top-window
-pattern per input channel, its locus position histogram and class
-enrichment.
+As built: explain runs with per-molecule attributions also store each fold's
+explained inputs (`attributions/inputs_NN.npy`, NaN where unobserved) and
+draw `figures/attributions.png` (all folds, blocks by true class).
+`analysis.plot.ml_results.plot_attribution_clustermap` (and
+`attribution_row_layout`) renders from arrays alone: per channel, input beside
+attributions; extra panels (e.g. HMM layers) and strips aligned with the
+molecules; true-class (fixed colours), held-out and continuous score strips;
+orders `label`, `score` or `bins` (given order, e.g. NDR states);
+`coordinate_labels` (e.g. TSS-relative); a seeded class-stratified row cap.
+`orchestration.plot_explanation` draws from a record. The shared clustermap
+gains continuous strips.
 
-Tests: panels share rows; strips match their rows; colour scale symmetric
-about 0; row orders as requested; figure written per explanation; catalogue
-figures match the stored windows.
+Tests (`test_ml_attribution_clustermap.py`, `test_explanation_records.py`):
+panels and strips share one row order; returned row ids are the drawn
+molecules; symmetric scale; row orders; seeded class-stratified sampling;
+shape checks; stored inputs equal the re-read data; default figure recorded;
+custom orderings from the record; no figure for global methods.
+
+Detector catalogue figures move to `MLR-03b`: per detector (or group), the
+mean top-window pattern per input channel, its locus position histogram and
+class enrichment; tests that they match the stored windows.
 
 ### `MLR-05` -- run comparison
 

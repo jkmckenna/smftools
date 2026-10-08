@@ -1025,6 +1025,9 @@ def plot_latent_ordered_clustermap(
     unordered like ``labels``), optional ``colors`` (value -> colour) and
     optional ``order`` (legend order). Runs of one value covering at least
     3 % of the rows are labelled in place, and each extra strip gets a legend.
+    A strip with ``"kind": "continuous"`` instead draws numeric ``values``
+    through ``cmap`` (default ``viridis``) between ``vmin`` and ``vmax``
+    (default: the values' range), with a three-step legend.
     """
     import matplotlib
 
@@ -1147,6 +1150,36 @@ def plot_latent_ordered_clustermap(
             (cluster_name, [Patch(facecolor=block_colors[v], label=v) for v in present_blocks])
         )
     for strip in extra_strips:
+        if strip.get("kind") == "continuous":
+            numeric = np.asarray(strip["values"], dtype=float)[row_order]
+            cmap = plt.get_cmap(strip.get("cmap", "viridis"))
+            finite = numeric[np.isfinite(numeric)]
+            low = strip.get("vmin", float(finite.min()) if finite.size else 0.0)
+            high = strip.get("vmax", float(finite.max()) if finite.size else 1.0)
+            axis = figure.add_subplot(grid[1, n_panels + column])
+            axis.imshow(
+                numeric[:, None],
+                aspect="auto",
+                interpolation="nearest",
+                cmap=cmap,
+                vmin=low,
+                vmax=high,
+            )
+            axis.set_xticks([])
+            axis.tick_params(labelleft=False, length=0)
+            axis.set_xlabel(str(strip["name"]), rotation=90, fontsize=7, labelpad=6)
+            span = (high - low) or 1.0
+            legends.append(
+                (
+                    str(strip["name"]),
+                    [
+                        Patch(facecolor=cmap((value - low) / span), label=f"{value:.3g}")
+                        for value in (high, (low + high) / 2, low)
+                    ],
+                )
+            )
+            column += 1
+            continue
         values = np.asarray(strip["values"], dtype=object).astype(str)[row_order]
         colors = dict(strip.get("colors") or cluster_color_map(values))
         for value in sorted(set(values) - set(colors)):

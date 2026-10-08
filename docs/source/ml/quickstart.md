@@ -166,6 +166,25 @@ attributions sum each position's transformed features (signal and indicators). U
 `max_per_fold` held-out molecules per fold are explained (class-stratified, seeded). The explain
 run names the fold models it used and is refused if the run's data have changed since training.
 
+Per-molecule explanations also keep the explained inputs, and the run draws a default figure
+(`figures/attributions.png`): each channel's input beside its attributions, one row per molecule,
+blocked by true class, with held-out-experiment and score strips. Other figures come from the
+record without re-reading data:
+
+```python
+from smftools.machine_learning.orchestration import plot_explanation
+
+molecules, attributions, inputs = explained.pooled()
+plot_explanation(explained, "by_ndr_state.png", order="bins", bins=ndr_state_of(molecules),
+                 bin_order=["enhancer only open", "both open", "promoter only open", "neither open"],
+                 bin_name="NDR state", coordinate_labels=tss_relative,
+                 extra_panels=[{"name": "HMM accessible", "matrix": hmm_layer(molecules)}])
+```
+
+`order` is `"label"` (default), `"score"` (highest first) or `"bins"`; attributions use a
+diverging scale symmetric about zero. Extra panels and strips must be aligned with the pooled
+molecules.
+
 For a whole-cohort analysis with no folds -- an embedding, clustering -- `bind_ml_dataset` reads
 every selected row of one dataset through the same selection (label tables, filters, `positions`,
 coordinate frames), and the plan may declare datasets only:

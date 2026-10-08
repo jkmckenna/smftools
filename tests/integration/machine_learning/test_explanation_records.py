@@ -229,3 +229,51 @@ def test_integrated_gradients_for_a_torch_run(project: Path) -> None:
     molecules, matrix = explained.attributions(entry["fold"])
     assert matrix.shape == (2 * READS_PER_BARCODE, 1, N_POSITIONS)
     assert np.isfinite(matrix).all() and np.abs(matrix).sum() > 0
+
+
+# --- MLR-04: attribution clustermaps from the record ---------------------------
+
+
+def test_the_record_keeps_its_inputs_and_default_figure(project: Path, trained) -> None:
+    explained = explain_run(
+        trained.run_id, model="nb", method="NaiveBayesLogOdds", project_dir=project
+    )
+    manifest = json.loads((explained.path / "run_manifest.json").read_text())
+    assert "figure" in {artifact["role"] for artifact in manifest["artifacts"]}
+    assert (explained.path / records.FIGURE).is_file()
+    bound = bind_ml_job(ml_plan(MODELS), "train", project_dir=project)
+    folds = {fold.fold_name: fold for fold in bound.folds}
+    for entry in explained.read(records.ATTRIBUTION_INDEX)["folds"]:
+        molecules, matrix = explained.attributions(entry["fold"])
+        inputs = explained.inputs(entry["fold"])
+        assert inputs.shape == matrix.shape
+        data = records._rows(folds[entry["fold"]].dataset, "test", list(molecules["molecule_uid"]))
+        expected = np.where(data.observed_mask, data.values, np.nan).transpose(0, 2, 1)
+        np.testing.assert_array_equal(inputs, expected.astype(np.float32))
+        assert np.isnan(inputs).any()  # the fixture leaves 10 % unobserved
+
+
+def test_plot_explanation_draws_custom_orderings(project: Path, trained, tmp_path: Path) -> None:
+    explained = explain_run(
+        trained.run_id, model="nb", method="NaiveBayesLogOdds", project_dir=project, figure=False
+    )
+    assert not (explained.path / records.FIGURE).exists()
+    molecules, _matrices, _inputs = explained.pooled()
+    result = records.plot_explanation(
+        explained,
+        tmp_path / "by_experiment.png",
+        order="bins",
+        bins=molecules["experiment_uid"],
+        bin_name="experiment",
+        coordinate_labels=[f"{p - 20:+d}" for p in range(N_POSITIONS)],
+    )
+    assert (tmp_path / "by_experiment.png").is_file()
+    assert sorted(result["row_uids"]) == sorted(molecules["molecule_uid"])
+    assert len(result["blocks"]) == len(EXPERIMENTS)
+
+
+def test_global_methods_draw_no_figure(project: Path, trained) -> None:
+    explained = explain_run(
+        trained.run_id, model="lr", method="LinearCoefficients", project_dir=project
+    )
+    assert not (explained.path / records.FIGURE).exists()
