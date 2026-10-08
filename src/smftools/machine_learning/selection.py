@@ -703,9 +703,15 @@ def _join_label_table(
         "sample": frame[sample_column],
         "reference": physical.map(reference_map),
         "physical_reference": physical,
+        "molecule_uid": frame[MOLECULE_UID_COLUMN],
     }
-    index = pd.MultiIndex.from_arrays(
-        [_normalized_key(key, sources[key]) for key in table.keys], names=list(table.keys)
+    arrays = [_normalized_key(key, sources[key]) for key in table.keys]
+    # One key: the table is indexed by a plain Index, which a one-level
+    # MultiIndex never matches -- every row would read as unlabelled.
+    index = (
+        pd.Index(arrays[0], name=table.keys[0])
+        if len(arrays) == 1
+        else pd.MultiIndex.from_arrays(arrays, names=list(table.keys))
     )
     joined = table.frame.reindex(index)
     frame = frame.copy()
