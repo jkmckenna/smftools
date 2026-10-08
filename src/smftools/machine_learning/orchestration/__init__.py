@@ -37,7 +37,7 @@ from .contracts import (
     ResolvedJob,
     ResolvedModelSelection,
 )
-from .explanations import PublishedExplanationRun, explain_run
+from .explanations import PublishedExplanationRun, explain_run, plot_explanation
 from .planning import (
     MLWorkflowDryRun,
     MLWorkflowPlanningError,
@@ -94,6 +94,7 @@ __all__ = [
     "iter_bound_train_job",
     "resolve_model_selection",
     "plan_ml_workflow",
+    "plot_explanation",
     "resolve_plan_model",
     "run_apply_job",
     "run_bound_train_job",

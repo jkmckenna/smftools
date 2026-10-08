@@ -77,6 +77,7 @@ ATTRIBUTION_INDEX = "attributions/index.json"
 IMPORTANCE = "importance.parquet"
 CONSISTENCY = "consistency.parquet"
 SUMMARY = "summary.json"
+FIGURE = "figures/attributions.png"
 
 # Method parameters used when the caller gives none.
 DEFAULT_PARAMETERS: Mapping[str, Mapping[str, Any]] = {
@@ -130,6 +131,30 @@ class PublishedExplanationRun:
         molecules = self.read(MOLECULES)
         molecules = molecules[molecules["fold"] == fold].sort_values("row")
         return molecules.reset_index(drop=True), np.load(self.path / entry["file"])
+
+    def inputs(self, fold: str) -> np.ndarray:
+        """One fold's explained input values, molecules x channels x positions
+        in `attributions` row order (NaN where unobserved)."""
+        index = self.read(ATTRIBUTION_INDEX)
+        entry = next((item for item in index["folds"] if item["fold"] == fold), None)
+        if entry is None or not entry.get("inputs"):
+            raise KeyError(f"no explained inputs for fold {fold!r}")
+        return np.load(self.path / entry["inputs"])
+
+    def pooled(self) -> tuple[pd.DataFrame, np.ndarray, np.ndarray]:
+        """Every fold's molecules, attributions and inputs, concatenated."""
+        index = self.read(ATTRIBUTION_INDEX)
+        frames, matrices, inputs = [], [], []
+        for entry in index["folds"]:
+            molecules, matrix = self.attributions(entry["fold"])
+            frames.append(molecules)
+            matrices.append(matrix)
+            inputs.append(self.inputs(entry["fold"]))
+        return (
+            pd.concat(frames, ignore_index=True),
+            np.concatenate(matrices),
+            np.concatenate(inputs),
+        )
 
 
 def _read_run(workspace: MLWorkspace, run_id: str) -> tuple[dict, Path]:
@@ -305,6 +330,7 @@ def explain_run(
     policy=None,
     environment: EnvironmentRecord | None = None,
     rebuild_index: bool = True,
+    figure: bool = True,
 ) -> PublishedExplanationRun:
     """Explain one model of a published train run, out-of-fold, and publish it.
 
@@ -323,6 +349,9 @@ def explain_run(
             methods.
         seed: Seed for molecule and background sampling and the method.
         tags, policy, environment, rebuild_index: As `train_and_publish`.
+        figure: Draw the default attribution clustermap into the run
+            (``figures/attributions.png``: all folds, blocks by true class);
+            `plot_explanation` draws others from the record.
 
     The run's data must be unchanged since training: the re-bound dataset
     snapshot and fold splits must equal the run's.
@@ -478,6 +507,15 @@ def explain_run(
             if matrix is not None:
                 entry["file"] = f"attributions/fold_{number:02d}.npy"
                 np.save(context.output_path(entry["file"]), matrix)
+                # The explained inputs (NaN where unobserved), so the record
+                # draws its figures without re-reading the data (`MLR-04`).
+                entry["inputs"] = f"attributions/inputs_{number:02d}.npy"
+                observed = np.where(
+                    np.asarray(data.observed_mask, dtype=bool),
+                    np.asarray(data.values, dtype=np.float32),
+                    np.float32(np.nan),
+                )
+                np.save(context.output_path(entry["inputs"]), np.transpose(observed, (0, 2, 1)))
                 statistics = {
                     "mean_abs": np.abs(matrix).mean(axis=0),
                     "mean": matrix.mean(axis=0),
@@ -588,10 +626,35 @@ def explain_run(
             JobArtifact("summary", SUMMARY, "application/json"),
         ]
         artifacts += [
-            JobArtifact(f"attributions:{entry['fold']}", entry["file"], "application/x-npy")
+            JobArtifact(f"{kind}:{entry['fold']}", entry[key], "application/x-npy")
             for entry in index_folds
             if entry["file"]
+            for kind, key in (("attributions", "file"), ("inputs", "inputs"))
         ]
+        if figure and per_molecule:
+            # Imported here: the plotting module selects a non-interactive backend.
+            from smftools.analysis.plot.ml_results import plot_attribution_clustermap
+
+            context.advance_phase("figure")
+            frames, matrices, inputs = [], [], []
+            for entry in index_folds:
+                frame = pd.read_parquet(context.output_path(MOLECULES))
+                frames.append(frame[frame["fold"] == entry["fold"]].sort_values("row"))
+                matrices.append(np.load(context.output_path(entry["file"])))
+                inputs.append(np.load(context.output_path(entry["inputs"])))
+            plot_attribution_clustermap(
+                pd.concat(frames, ignore_index=True),
+                np.concatenate(matrices),
+                inputs=np.concatenate(inputs),
+                channels=channels,
+                coordinates=coordinates,
+                positive_class=positive,
+                order="label",
+                seed=seed,
+                title=f"{model}: {method}, out-of-fold ({run_id[:8]})",
+                output_path=context.output_path(FIGURE),
+            )
+            artifacts.append(JobArtifact("figure", FIGURE, "image/png"))
         return JobOperationResult(value=None, artifacts=tuple(artifacts))
 
     outcome = run_explain_job(job, operation)
@@ -606,4 +669,33 @@ def explain_run(
         method=method,
         summary=state["summary"],
         outcome=outcome,
+    )
+
+
+def plot_explanation(
+    explained: PublishedExplanationRun, output_path: str | Path, **options: Any
+) -> dict[str, Any]:
+    """An attribution clustermap from a published explanation record: every
+    fold's molecules, inputs beside attributions. ``options`` go to
+    `plot_attribution_clustermap` (``order``, ``bins`` aligned with the pooled
+    molecules -- see `PublishedExplanationRun.pooled` -- ``coordinate_labels``,
+    ``extra_panels``, ``extra_strips``, ``max_rows``, ...)."""
+    from smftools.analysis.plot.ml_results import plot_attribution_clustermap
+
+    molecules, matrices, inputs = explained.pooled()
+    index = explained.read(ATTRIBUTION_INDEX)
+    request = explained.read(REQUEST)
+    options.setdefault("positive_class", request["target_class"])
+    options.setdefault(
+        "title",
+        f"{explained.model}: {explained.method}, out-of-fold ({explained.source_run_id[:8]})",
+    )
+    return plot_attribution_clustermap(
+        molecules,
+        matrices,
+        inputs=inputs,
+        channels=index["channels"],
+        coordinates=index["coordinates"],
+        output_path=output_path,
+        **options,
     )
