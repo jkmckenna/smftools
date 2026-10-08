@@ -185,6 +185,25 @@ plot_explanation(explained, "by_ndr_state.png", order="bins", bins=ndr_state_of(
 diverging scale symmetric about zero. Extra panels and strips must be aligned with the pooled
 molecules.
 
+To compare models across runs -- on the same held-out experiments, molecule for molecule:
+
+```python
+from smftools.machine_learning.orchestration import compare_runs, select_runs
+
+runs = select_runs(project_dir="path/to/project", tags={"cell": "fresh_b6_vs_nk"})
+comparison = compare_runs(runs["run_id"], project_dir="path/to/project",
+                          reference="full_locus/rf", n_bootstrap=200)
+comparison.summary       # per entry and metric: fold mean, SD, bootstrap interval
+comparison.differences   # paired differences to the reference, folds better
+comparison.write("project_outputs/ml_comparisons/regions")   # tables, settings, figure
+```
+
+Entries are named by the tags that differ among the runs, then the model. Folds are matched by
+held-out group (folds not shared by every entry are dropped, with a warning); within each fold,
+metrics are recomputed on the molecules every entry predicted. Intervals come from a seeded
+bootstrap over molecules within folds (class-stratified, the same resamples for every entry);
+the spread across folds is reported beside them.
+
 For a whole-cohort analysis with no folds -- an embedding, clustering -- `bind_ml_dataset` reads
 every selected row of one dataset through the same selection (label tables, filters, `positions`,
 coordinate frames), and the plan may declare datasets only:
