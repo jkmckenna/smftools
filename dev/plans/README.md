@@ -67,7 +67,7 @@ An active branch, some items merged and others open.
 | `selective_pod5_rebasecalling_implementation_plan.md` | `SRB` selective POD5 re-basecalling and processing lineages; `SRB-01`–`SRB-09` merged, one open item: basecalls onto the shared generation layout |
 | `duplicate_detection_span_agnostic_implementation_plan.md` | `DSA` span-agnostic duplicate detection; `DSA-01`–`DSA-04`, `DSA-06` merged, `DSA-05` measured (hierarchical-cap revisit open) |
 | `transfer_time_analysis_bundling_plan.md` | `TAB` bundle a run's analysis-tree generations into few large files before moving them between drives; `TAB-01`, `TAB-02` merged, `TAB-03` blocked (no tested configuration beat plain rsync); zarr v3 sharding and coarser source-side partitioning both ruled out first, on real data |
-| `motif_scanning_occupancy_implementation_plan.md` | `MOT-01`–`MOT-06` (`MOT-01` implemented) motif scanning (user-supplied motif file; built-in numpy engine, optional FIMO), bulk HMM-class tracks with motif lanes, and per-molecule motif occupancy from HMM classes (TF-sized, medium, nucleosome, accessible, uninformative), co-occupancy and group comparisons; an analysis + CLI, not a stage |
+| `motif_scanning_occupancy_implementation_plan.md` | `MOT-01`–`MOT-06` (`MOT-01` merged, `MOT-02` implemented) motif scanning (user-supplied motif file; built-in numpy engine, optional FIMO), bulk HMM-class tracks with motif lanes, and per-molecule motif occupancy from HMM classes (TF-sized, medium, nucleosome, accessible, uninformative), co-occupancy and group comparisons; an analysis + CLI, not a stage |
 
 ## `proposed/`
 

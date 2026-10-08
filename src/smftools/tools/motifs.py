@@ -17,6 +17,117 @@ import pandas as pd
 
 HITS_FILE = "motif_hits.parquet"
 RUN_FILE = "run.json"
+ENGINES = ("builtin", "fimo")
+
+
+def find_fimo(fimo: str | Path | None = None) -> Path:
+    """The FIMO executable: ``fimo`` if given, else ``fimo`` on ``PATH``."""
+    import shutil
+
+    if fimo is not None:
+        path = Path(fimo)
+        if path.is_file():
+            return path
+        found = shutil.which(str(fimo))
+    else:
+        found = shutil.which("fimo")
+    if not found:
+        raise FileNotFoundError(
+            "FIMO (MEME suite) was requested but not found; install it (e.g. "
+            "`conda install -c bioconda meme`), pass --fimo PATH, or use --engine builtin"
+        )
+    return Path(found)
+
+
+def fimo_version(fimo: Path) -> str:
+    import subprocess
+
+    result = subprocess.run([str(fimo), "--version"], capture_output=True, text=True)
+    return (result.stdout or result.stderr).strip()
+
+
+def parse_fimo_text(text: str) -> pd.DataFrame:
+    """FIMO ``--text`` output as the hit table (0-based, half-open, forward)."""
+    import io
+
+    from smftools.analysis.compute.motifs import HIT_COLUMNS, parse_motif_id
+
+    lines = [line for line in text.splitlines() if line and not line.startswith("#")]
+    if len(lines) <= 1:
+        return pd.DataFrame(columns=HIT_COLUMNS)
+    raw = pd.read_csv(io.StringIO("\n".join(lines)), sep="\t", dtype={"sequence_name": str})
+    names = raw["motif_id"].map(lambda motif_id: parse_motif_id(motif_id))
+    return pd.DataFrame(
+        {
+            "motif_id": raw["motif_id"].astype(str),
+            "motif_alt_id": raw["motif_alt_id"].fillna("").astype(str),
+            "motif_name": [name for name, _ in names],
+            "family": [family for _, family in names],
+            "reference": raw["sequence_name"].astype(str),
+            "start": raw["start"].astype("int64") - 1,
+            "end": raw["stop"].astype("int64"),
+            "motif_strand": raw["strand"].astype(str),
+            "score": raw["score"].astype(float),
+            "pvalue": raw["p-value"].astype(float),
+            "matched_sequence": raw["matched_sequence"].fillna("").astype(str).str.upper(),
+        }
+    )
+
+
+def scan_with_fimo(
+    motifs_path: str | Path,
+    sequences: dict[str, str],
+    *,
+    max_pvalue: float = 1e-4,
+    background: str = "uniform",
+    pseudocount: float = 0.1,
+    motif_ids: Sequence[str] | None = None,
+    fimo: str | Path | None = None,
+) -> pd.DataFrame:
+    """The same scan through FIMO, with the background passed explicitly
+    (FIMO's own default is NRDB, not the motif file's)."""
+    import subprocess
+    import tempfile
+
+    from smftools.analysis.compute.motifs import BASES, read_motifs, resolve_background
+
+    executable = find_fimo(fimo)
+    with tempfile.TemporaryDirectory(prefix="smftools_fimo_") as work:
+        work = Path(work)
+        fasta = work / "sequences.fa"
+        fasta.write_text("".join(f">{name}\n{seq}\n" for name, seq in sequences.items()))
+        if background == "uniform":
+            bfile = "--uniform--"
+        elif background == "motif":
+            bfile = "--motif--"
+        else:
+            frequencies = resolve_background(background, read_motifs(motifs_path), sequences)
+            bfile = str(work / "background.txt")
+            Path(bfile).write_text(
+                "".join(f"{base} {value:.6f}\n" for base, value in zip(BASES, frequencies))
+            )
+        command = [
+            str(executable),
+            "--text",
+            "--verbosity",
+            "1",
+            "--thresh",
+            str(max_pvalue),
+            "--bfile",
+            bfile,
+            "--motif-pseudo",
+            str(pseudocount),
+        ]
+        for motif_id in motif_ids or ():
+            command += ["--motif", motif_id]
+        command += [str(motifs_path), str(fasta)]
+        result = subprocess.run(command, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"FIMO failed ({result.returncode}): {result.stderr.strip()[:500]}")
+    hits = parse_fimo_text(result.stdout)
+    return hits.sort_values(["reference", "start", "motif_id", "motif_strand"]).reset_index(
+        drop=True
+    )
 
 
 def fasta_sequences(path: str | Path) -> dict[str, str]:
@@ -86,6 +197,8 @@ def scan_references(
     motif_ids: Sequence[str] | None = None,
     references: Sequence[str] | None = None,
     refresh: bool = False,
+    engine: str = "builtin",
+    fimo: str | Path | None = None,
 ) -> tuple[pd.DataFrame, dict]:
     """Scan ``sequences`` (or the named ``references``) and write the hit table
     to ``output_dir``; reuse it when the motif file, sequences and settings are
@@ -93,6 +206,8 @@ def scan_references(
     from smftools import __version__
     from smftools.analysis.compute.motifs import read_motifs, scan
 
+    if engine not in ENGINES:
+        raise ValueError(f"engine must be one of {ENGINES}")
     if references:
         missing = sorted(set(references) - set(sequences))
         if missing:
@@ -106,23 +221,36 @@ def scan_references(
         "background": background,
         "pseudocount": float(pseudocount),
         "motif_ids": sorted(motif_ids) if motif_ids else None,
-        "engine": "builtin",
+        "engine": engine,
     }
+    if engine == "fimo":
+        key["fimo_version"] = fimo_version(find_fimo(fimo))
     output_dir = Path(output_dir)
     run_path = output_dir / RUN_FILE
     if not refresh and run_path.is_file() and (output_dir / HITS_FILE).is_file():
         record = json.loads(run_path.read_text())
         if record.get("key") == key:
             return pd.read_parquet(output_dir / HITS_FILE), {**record, "reused": True}
-    hits = scan(
-        sequences,
-        motif_file,
-        max_pvalue=max_pvalue,
-        background=background,
-        pseudocount=pseudocount,
-        motif_ids=motif_ids,
-    )
-    hits = hits.assign(engine="builtin", motif_file_sha256=motif_file.sha256)
+    if engine == "fimo":
+        hits = scan_with_fimo(
+            motifs_path,
+            sequences,
+            max_pvalue=max_pvalue,
+            background=background,
+            pseudocount=pseudocount,
+            motif_ids=motif_ids,
+            fimo=fimo,
+        )
+    else:
+        hits = scan(
+            sequences,
+            motif_file,
+            max_pvalue=max_pvalue,
+            background=background,
+            pseudocount=pseudocount,
+            motif_ids=motif_ids,
+        )
+    hits = hits.assign(engine=engine, motif_file_sha256=motif_file.sha256)
     output_dir.mkdir(parents=True, exist_ok=True)
     hits.to_parquet(output_dir / HITS_FILE, index=False)
     record = {

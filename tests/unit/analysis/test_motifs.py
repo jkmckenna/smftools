@@ -191,3 +191,75 @@ def test_motifs_scan_command(tmp_path):
     assert record["key"]["max_pvalue"] == 0.05
     result = CliRunner().invoke(cli, args + ["--experiment-dir", str(tmp_path)])
     assert result.exit_code != 0 and "exactly one" in result.output
+
+
+# --- MOT-02: the FIMO engine ---------------------------------------------------
+
+FIMO_TEXT = """motif_id\tmotif_alt_id\tsequence_name\tstart\tstop\tstrand\tscore\tp-value\tq-value\tmatched_sequence
+M1:GATA:GATA\talt1\tref1\t4\t7\t+\t10.5\t1.2e-05\t\tAGTA
+M2\t\tref1\t10\t12\t-\t3.1\t4e-03\t\tcga
+"""
+
+
+def test_fimo_text_parses_to_the_hit_table():
+    from smftools.analysis.compute.motifs import HIT_COLUMNS
+    from smftools.tools.motifs import parse_fimo_text
+
+    hits = parse_fimo_text(FIMO_TEXT)
+    assert list(hits.columns) == HIT_COLUMNS
+    first, second = hits.itertuples(index=False)
+    assert (first.start, first.end, first.motif_strand) == (
+        3,
+        7,
+        "+",
+    )  # 1-based closed -> 0-based half-open
+    assert (first.motif_name, first.family, first.motif_alt_id) == ("GATA", "GATA", "alt1")
+    assert second.matched_sequence == "CGA" and second.motif_alt_id == ""
+    assert parse_fimo_text("motif_id\tmotif_alt_id\n").empty
+
+
+def test_missing_fimo_is_a_clear_error(tmp_path):
+    from smftools.tools.motifs import find_fimo, scan_references
+
+    with pytest.raises(FileNotFoundError, match="--engine builtin"):
+        find_fimo(tmp_path / "no_fimo_here")
+    meme = tmp_path / "m.meme"
+    meme.write_text(MEME)
+    with pytest.raises(FileNotFoundError):
+        scan_references(meme, {"r": "ACGT"}, tmp_path / "o", engine="fimo", fimo=tmp_path / "nope")
+    with pytest.raises(ValueError, match="engine"):
+        scan_references(meme, {"r": "ACGT"}, tmp_path / "o", engine="homer")
+
+
+def test_sequence_background_is_strand_symmetric(motif_file):
+    from smftools.analysis.compute.motifs import resolve_background
+
+    frequencies = resolve_background("sequence", motif_file, {"r": "AAAAAAAACG"})
+    assert frequencies[0] == pytest.approx(frequencies[3])
+    assert frequencies[1] == pytest.approx(frequencies[2])
+
+
+@pytest.mark.skipif(
+    __import__("shutil").which("fimo") is None, reason="FIMO (MEME suite) not installed"
+)
+@pytest.mark.parametrize("background", ["uniform", "motif", "sequence"])
+def test_fimo_and_builtin_engines_agree(tmp_path, background):
+    from smftools.tools.motifs import scan_references
+
+    meme = tmp_path / "m.meme"
+    meme.write_text(MEME)
+    rng = np.random.default_rng(3)
+    sequences = {"r1": "".join(rng.choice(list("ACGT"), 3000)), "r2": "ACGTAGTANAGTA"}
+    kwargs = dict(max_pvalue=0.01, background=background)
+    builtin, _ = scan_references(meme, sequences, tmp_path / "b", **kwargs)
+    fimo, record = scan_references(meme, sequences, tmp_path / "f", engine="fimo", **kwargs)
+    assert record["key"]["engine"] == "fimo" and record["key"]["fimo_version"]
+    keys = ["motif_id", "reference", "start", "motif_strand"]
+    merged = builtin.merge(fimo, on=keys, how="outer", suffixes=("_b", "_f"), indicator=True)
+    shared = merged[merged["_merge"] == "both"]
+    assert len(shared) >= 0.97 * max(len(builtin), len(fimo))
+    assert np.abs(shared.score_b - shared.score_f).max() < 0.1
+    assert (shared.matched_sequence_b == shared.matched_sequence_f).all()
+    # Hits found by only one engine sit at the threshold.
+    edge = merged[merged["_merge"] != "both"]
+    assert (edge[["pvalue_b", "pvalue_f"]].max(axis=1) > 0.005).all()

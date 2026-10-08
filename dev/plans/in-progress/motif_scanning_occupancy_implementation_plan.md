@@ -1,6 +1,6 @@
 # Motif scanning and per-molecule motif occupancy (`MOT`)
 
-**Status:** in progress. `MOT-01` implemented. One PR per item, in order.
+**Status:** in progress. `MOT-01` merged, `MOT-02` implemented. One PR per item, in order.
 
 ## Question
 
@@ -145,8 +145,8 @@ metadata.
 
 | item | status | scope |
 |---|---|---|
-| `MOT-01` motif files and the built-in scanner | implemented, not merged | MEME parser (exact), numpy scanner, exact p-values, interval table; `smftools motifs scan` |
-| `MOT-02` FIMO engine | proposed | optional `engine: fimo`, background parity, same table |
+| `MOT-01` motif files and the built-in scanner | merged | MEME parser (exact), numpy scanner, exact p-values, interval table; `smftools motifs scan` |
+| `MOT-02` FIMO engine | implemented, not merged | optional `engine: fimo`, background parity, same table |
 | `MOT-03` bulk class tracks with motif lanes | proposed | per group x reference: class fractions along the locus, motif lanes below, per-instance inside-vs-flank contrast table; `project|experiment motif-tracks` |
 | `MOT-04` per-molecule occupancy | proposed | states per read x instance from HMM layers via a plan dataset; group fractions; `project|experiment motif-occupancy` |
 | `MOT-05` co-occupancy, comparisons, figures | proposed | pair tables, group tests, locus track, bars, heatmap, volcano |
@@ -199,6 +199,29 @@ Run FIMO with `--text --thresh --bfile` (background written from the chosen
 one) and `--max-stored-scores` high enough; parse into the same table.
 Tests (skipped without FIMO): same columns; on a fixture, hits equal the
 built-in engine within a stated tolerance.
+
+As built: `tools/motifs.py` `find_fimo`, `fimo_version`, `parse_fimo_text`,
+`scan_with_fimo`; `scan_references(engine="fimo", fimo=PATH)`; CLI
+`smftools motifs scan --engine fimo [--fimo PATH]`. Backgrounds map to
+`--bfile --uniform--`, `--bfile --motif--`, or a written order-0 file;
+`--motif-pseudo` carries the pseudocount; the FIMO version joins the cache
+key. Requesting FIMO when it is not installed is an error naming
+`--engine builtin`.
+
+The `sequence` background is now strand-symmetric (both strands counted, as
+FIMO makes it): with forward-strand counts the engines disagreed on ~6 % of
+hits; with both strands they agree.
+
+On the 260923 references (637 archetype motifs, p < 1e-4), builtin vs FIMO 5.5.9:
+
+| background | builtin | FIMO | shared | max abs score diff | max abs log10 p ratio |
+|---|---|---|---|---|---|
+| uniform | 3,668 | 3,666 | 3,662 | 0.045 | 0.064 |
+| motif | 3,668 | 3,666 | 3,662 | 0.045 | 0.064 |
+| sequence | 3,808 | 3,805 | 3,803 | 0.050 | 0.047 |
+
+Every unshared hit has p between 9.9e-5 and 1e-4 (binning at the cutoff);
+matched sequences are identical; both take 2-3 s.
 
 ### `MOT-03` — bulk class tracks with motif lanes
 
