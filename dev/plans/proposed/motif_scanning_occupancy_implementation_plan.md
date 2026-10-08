@@ -1,0 +1,188 @@
+# Motif scanning and per-molecule motif occupancy (`MOT`)
+
+**Status:** proposed. Nothing implemented. One PR per item, in order.
+
+## Question
+
+Which transcription-factor motifs on a reference does each molecule leave
+bound by something TF-sized, cover with a nucleosome, or leave accessible --
+per sample, per condition, and jointly with other motifs on the same molecule?
+Bulk assays give a population average per position; single-molecule footprints
+give a state per molecule per motif instance, and co-occupancy.
+
+## What exists
+
+- **Nothing motif-aware in smftools**: no motif-file reading, scanning or
+  interval labelling. Biopython is a dependency but unused for motifs.
+- **HMM occupancy classes** (`hmm_feature_sets`): per position and read,
+  footprints `small_bound_stretch` (6-40 bp), `medium_bound_stretch` (40-100),
+  `putative_nucleosome` (100-200), `large_bound_stretch` (200+); accessible
+  `small/mid/large_accessible_patch` and `nucleosome_depleted_region` (110+);
+  per emission variant (`HCE-06`).
+- **Selection and grouping**: plan datasets bound with `bind_ml_dataset`
+  (molecules, QC/dedup filters, groups, masks, coordinate frames), as
+  `context-bias` (`SCB`) and `periodicity` (`RPG`) use; cached runs keyed by
+  referenced files' content (`tools/analysis_cache`, `F72`).
+- **Strand handling**: `site_context_bias.strand_of`, `strand_window`;
+  reference sequences from spines (`sequences_from_uns`, padding trimmed).
+- **Earlier project scripts** (not in smftools): FIMO over the NKG2A
+  references with a hard-coded motif file and hand-written TSS/deletion
+  coordinate conversion; mean small-footprint signal summed over motif
+  intervals per cell type (population level); per-read TetO/ZF site occupancy
+  (bound vs accessible vs observed) on one fixed reference.
+
+## Engines: a prototype (2026-10-07)
+
+On the 6B6 reference (4.7 kb) with 637 archetype motifs (MEME v4), at
+p < 1e-4, both strands:
+
+- **Biopython is not usable as the engine.** `Bio.motifs.parse(..., "minimal")`
+  rounds letter probabilities to integer counts (0.677 x nsites 20 -> 14, read
+  back as 0.70), and `pssm.search` + `pssm.distribution` took > 6 min where
+  FIMO takes < 1 s.
+- **A numpy engine is fast**: exact MEME parsing, vectorized log-odds scoring
+  of every window on both strands, exact p-values by dynamic programming over
+  the integer-scaled score distribution (FIMO's method): 0.5 s for all motifs.
+- **FIMO's defaults differ from the motif file**: without `--bfile` FIMO uses
+  NRDB background frequencies, not the file's (uniform) ones -- 12.90 vs 14.36
+  for the same hit. With `--bfile --uniform--`, ~80 % of hits are shared; some
+  FIMO hits (31 of 966) report negative scores with p < 1e-4, and minus-strand
+  `matched_sequence` / soft-masked (lowercase) bases need checking before
+  matching it exactly. Agreement is qualified in `MOT-05`, not assumed.
+
+## Design
+
+### Motif files are always user-supplied
+
+No motif file ships with smftools or is assumed: every command takes
+`--motifs PATH` (MEME minimal format first; JASPAR / TRANSFAC readable later
+through the same parser interface). Motif identity in every output is the
+file's content hash plus the motif ID, so cached scans follow the file.
+
+### Two engines, one output
+
+- `engine: builtin` (default): the numpy scanner -- no external tools.
+  Background: uniform (default), the motif file's, or the scanned sequences'
+  base composition; pseudocount 0.1 (FIMO's default) distributed by
+  background; p-values exact for the integer-scaled matrix.
+- `engine: fimo`: runs FIMO (MEME suite) when `fimo` is on `PATH` (or
+  `--fimo PATH`) with the same threshold and an explicit `--bfile` matching
+  the chosen background, so the two engines answer the same question; a clear
+  error when FIMO is requested but not found.
+- Both write the same interval table: `motif_id`, `motif_name`, `family`
+  (parsed from IDs such as `AC0395:SOX:Sox` when present), `reference`
+  (physical, strand-suffixed as smftools stores it), `start`, `end`
+  (0-based, half-open, reference coordinates), `motif_strand`, `score`,
+  `pvalue`, `engine`, `motif_file_sha256`. Windows touching `N` are skipped;
+  case is ignored.
+
+### Occupancy states per molecule and motif instance
+
+For each read covering a motif instance (with `flank` bp either side),
+classify by the HMM layers over the instance:
+
+| state | rule (default) |
+|---|---|
+| `tf_bound` | a `small_bound_stretch` covers the motif core |
+| `medium_bound` | a `medium_bound_stretch` covers it |
+| `nucleosome` | `putative_nucleosome` or `large_bound_stretch` covers it |
+| `accessible` | an accessible feature covers it |
+| `uninformative` | fewer than `min_sites` observed sites of the model in motif +/- flank, or the read does not span it |
+
+Precedence and coverage rule (any overlap vs a covered fraction) are
+parameters; the informative-site rule is not optional -- a motif with no
+observable site would otherwise read as bound. The HMM layer prefix (model and
+variant, e.g. `C_` / `C_learned_`) is a parameter, so variants can be
+compared on the same motifs.
+
+### Outputs
+
+- Per read x motif instance states (sparse, parquet) -- the base table.
+- Per group (sample, condition, ...) x motif instance: state fractions with
+  Wilson intervals, n informative reads.
+- Per motif (family): aggregates over instances.
+- Co-occupancy: for instance pairs within `max_distance`, the 2x2 table of
+  bound/not bound on molecules informative for both, with log odds ratio.
+- Group comparisons: difference in bound fraction with a test per instance
+  (Fisher / chi-square), BH-adjusted.
+- Figures: locus track (state fractions per group along the reference, motif
+  lanes coloured by family, as the earlier enhancer plot), per-instance
+  state bars per group, co-occupancy heatmap, comparison volcano.
+
+### An analysis, not a stage
+
+Results depend on a user motif file, thresholds and the motifs of interest,
+and are wanted for some experiments, not every run; as a stage they would
+enter fingerprints and run everywhere. So: library functions + thin CLI,
+reading through plan datasets like `context-bias` and `periodicity`, cached by
+`analysis_cache`. Projects keep motif sets and figure layouts in their own
+metadata.
+
+## Work items
+
+| item | status | scope |
+|---|---|---|
+| `MOT-01` motif files and the built-in scanner | proposed | MEME parser (exact), numpy scanner, exact p-values, interval table; `smftools motifs scan` |
+| `MOT-02` FIMO engine | proposed | optional `engine: fimo`, background parity, same table |
+| `MOT-03` per-molecule occupancy | proposed | states per read x instance from HMM layers via a plan dataset; group fractions; `project|experiment motif-occupancy` |
+| `MOT-04` co-occupancy, comparisons, figures | proposed | pair tables, group tests, locus track, bars, heatmap, volcano |
+| `MOT-05` qualification | proposed | built-in vs FIMO agreement on real references; occupancy vs the earlier per-read TetO script on its data; NKG2A locus run |
+
+### `MOT-01` — motif files and the built-in scanner
+
+`analysis/compute/motifs.py`: `read_motifs(path)` (MEME minimal; exact
+probabilities, nsites, IDs), `log_odds(matrix, background, pseudocount)`,
+`score_distribution` / `pvalues` (integer-scaled DP), `scan(sequences, motifs,
+threshold, background)` -> interval table. `tools/motifs.py`: references from
+spines (or `--fasta`), physical strand references mapped as `strand_of`
+does, caching by motif-file and sequence hashes. CLI `smftools motifs scan
+--motifs PATH (--experiment-dir | --project-dir | --fasta) [--threshold 1e-4]
+[--background uniform|motif|sequence] -o DIR`.
+
+Tests: parser keeps probabilities exactly; scores equal a hand computation;
+p-values equal brute-force enumeration for short motifs; reverse-strand hits
+equal a forward scan of the reverse complement; `N` windows skipped;
+threshold monotone.
+
+### `MOT-02` — FIMO engine
+
+Run FIMO with `--text --thresh --bfile` (background written from the chosen
+one) and `--max-stored-scores` high enough; parse into the same table.
+Tests (skipped without FIMO): same columns; on a fixture, hits equal the
+built-in engine within a stated tolerance.
+
+### `MOT-03` — per-molecule occupancy
+
+`analysis/compute/motif_occupancy.py`: given read x position layers (HMM
+class layers, observed sites) and instances, the state per read x instance.
+`tools/motif_occupancy.py`: binds a plan dataset (channels: the HMM class
+layers at all positions, the model's site calls), groups, writes the base
+table and group fractions. CLI `smftools project|experiment motif-occupancy
+--plan --dataset --motif-hits PARQUET [--layer-prefix C_] [--flank 10]
+[--min-sites 2] --group-by ...`.
+
+Tests: each state from a constructed read; uninformative when no sites;
+precedence; variants by prefix; group fractions equal a direct count.
+
+### `MOT-04` — co-occupancy, comparisons, figures
+
+As in Outputs. Tests: 2x2 tables equal direct counts; only reads
+informative for both instances counted; BH adjustment; figures written.
+
+### `MOT-05` — qualification
+
+Built-in vs FIMO on the NKG2A references with matched background (shared
+hits, score and p agreement, explained differences); the per-read
+TetO/ZF-occupancy numbers reproduced from the same layers; a full-locus run
+on the enzyme panel and 260820 sets (WT vs enh-del, cell type, spermidine)
+with run time.
+
+## Out of scope
+
+- Shipping or downloading motif databases.
+- Joint thermodynamic inference of TF and nucleosome binding (e.g.
+  HiddenFoot); this plan classifies from the HMM's states. A later
+  comparison against such a model is possible on the same instances.
+- Genome-wide k-mer / motif enrichment in accessible stretches: on a
+  single amplicon it mostly reflects which few hundred bp are open and
+  partly the enzyme's context bias (`SCQ-04`); revisit for genome-mode data.
