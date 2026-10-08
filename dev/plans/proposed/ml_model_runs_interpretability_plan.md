@@ -159,9 +159,10 @@ the stores.
 | `MLR-05` run comparison | done (PR #705) | select runs by tags; paired per-fold metrics, bootstrap intervals, figures |
 | `MLR-06` fold-matrix cache | proposed | read each task's data once for every model |
 | `MLR-07` validation role | done (PR #706) | a stratified validation fraction of each fold's training molecules (default) or held-out training experiments, for early stopping and tuning; the test experiment stays whole; final models too |
-| `MLR-08` detector-scale CNNs | implemented (`feature/ml-detector-scale-cnns`) | position-agnostic residual dilated CNNs whose pattern detectors have a stated, enforced maximum span (receptive field): sub-nucleosome, 2-3, 4-6 nucleosomes, full locus; effective span measured per run |
-| `MLR-09` further neural families | proposed | MLP / transformer ported to registry configs; project-registered families |
-| `MLR-10` qualification | proposed | `nkg2a_final` region / model grid through `MLR-01`-`MLR-05`; parity with its current metrics |
+| `MLR-08` detector-scale CNNs | done (PR #709) | position-agnostic residual dilated CNNs whose pattern detectors have a stated, enforced maximum span (receptive field): sub-nucleosome, 2-3, 4-6 nucleosomes, full locus; effective span measured per run |
+| `MLR-09` model classes and the zoo | proposed | a capability class per registry family (additive, tabular non-linear, spatial, global sequence); class-aware defaults; MLP, multiscale CNN and transformer recipes; per-task zoo declarations |
+| `MLR-10` qualification | in progress | `nkg2a_final` region / model grid through `MLR-01`-`MLR-05`; parity with its current metrics |
+| `MLR-11` pretraining and fine-tuning | proposed | encoder / head split; a `pretrain` action (masked-site reconstruction, autoencoder, VAE) publishing head-less encoders; fine-tuning through `initialization`; pretraining-corpus leakage policy; transfer benchmark (absorbs `ML-304`) |
 
 ### `MLR-01` -- train-and-publish
 
@@ -449,16 +450,50 @@ over-wide config; translating a feature within the molecule leaves the
 prediction unchanged up to edge effects (position-agnostic); each recipe
 trains a few epochs, saves, reloads and explains (integrated gradients).
 
-### `MLR-09` -- further neural families
+### `MLR-09` -- model classes and the zoo
 
-MLP and transformer as `models/<arch>.py` with a config dataclass, builder
-and registry recipe on the residual CNN's input contract (channel-first
-values, observed mask); a project may build a registry from the built-ins
-plus its own families and pass it to training (experimental architectures
-live in the project until they earn a place in smftools).
+A *family* is one implementation and a *recipe* one configured variant; a
+**model class** is what a model can represent, which is what a task's zoo
+should span:
 
-Tests: each family trains a few epochs on a fixture, saves and reloads with
-identical predictions, and explains with integrated gradients.
+| class | represents | families (now / planned) | default explanation |
+|---|---|---|---|
+| `additive` | independent per-position evidence | naive Bayes, logistic regression | exact contributions (log-odds, coefficients) |
+| `tabular_nonlinear` | interactions among any positions, no adjacency | random forest, MLP | TreeSHAP; integrated gradients (MLP) |
+| `spatial` | local, translation-invariant patterns of bounded span | residual dilated CNN (`MLR-08` ladder), multiscale CNN | integrated gradients; detector catalogue (`MLR-03b`); effective span |
+| `global_sequence` | dependencies between any positions | transformer | integrated gradients; attention |
+
+- `ModelFamilyDefinition` gains `model_class` (one of the above); run
+  records and the index carry it; `compare_runs` can name and group entries by
+  class; `explain_run` defaults its method by class (and family).
+- A task's zoo is the model list of its train job: every member sees the same
+  molecules and folds, so the paired comparison (`MLR-05`) is across classes
+  by construction. Projects declare zoos per task type (`ml_sets.yaml`).
+- New members on the residual CNN's input contract (channel-first values,
+  validity masks; mask channels / span masking as in `MLR-08`):
+  - **MLP** (`tabular_nonlinear`, torch): flattened positions x channels
+    plus validity; the non-linear counterpart of the random forest with
+    gradients.
+  - **Multiscale CNN** (`spatial`): parallel branches of different spans
+    (e.g. the ladder's) concatenated before pooling -- one model, several
+    detector scales, each branch's span recorded.
+  - **Transformer** (`global_sequence`): tokens per position (or per patch
+    of positions, for 4.7 kb inputs), masked attention over valid positions.
+    **Positional encoding is a recipe-level decision, recorded:** absolute
+    encodings make the model position-aware (unlike the CNN ladder);
+    relative encodings keep it closer to position-agnostic. Both are
+    legitimate; they answer different questions.
+- A project may register its own families (with a class) and pass the
+  registry to training; experimental ones live in the project until they earn
+  a place in smftools.
+
+Tests: every built-in family declares a class; runs, index and comparisons
+carry it; default explanation per class; each new family trains a few epochs
+on the fixture with a validation fraction, publishes, reloads with identical
+predictions and explains with integrated gradients; the multiscale CNN
+records each branch's span; transformer recipes record their positional
+encoding, and a relative-encoding transformer's prediction is unchanged by
+translating a pattern away from the edges.
 
 ### `MLR-10` -- qualification
 
@@ -468,11 +503,56 @@ through `MLR-01`-`MLR-05`: metrics equal the project's current tables;
 attribution clustermaps for the RF and NB promoter / E + P models; then the
 receptive-field ladder on the full locus.
 
+### `MLR-11` -- pretraining and fine-tuning
+
+Absorbs `ML-304` (proposed in the completed ML program, never built; its
+schema slots exist: lineage kinds `pretrained` / `fine_tuned`, plan models'
+`initialization`, a reserved `pretraining_task` mask role).
+
+- **Encoder / head split.** Torch families expose an encoder (everything
+  before the head -- for the residual CNN, stem + blocks + pooling) and a head;
+  a classifier head, a reconstruction decoder or a VAE's latent heads attach
+  to the same encoder.
+- **`pretrain` action.** A plan job with a dataset (labels not required),
+  an objective and its corruption policy:
+  - masked-site reconstruction (hide a fraction of observed calls, predict
+    them; loss only at hidden observed sites);
+  - autoencoder reconstruction;
+  - VAE (reconstruction + KL; the latent is also a per-molecule embedding,
+    an alternative input to the latent analyses).
+  It publishes an **encoder artifact**: lineage `pretrained`, no classifier
+  head, no label schema, with its objective, corruption policy and corpus.
+- **Corruption masks stay distinct** from validity: a hidden site is
+  observed-but-masked, never "no site" or "unobserved"; with `mask_channels`
+  the model must not be able to read the corruption from its validity input.
+- **Fine-tuning** through a model's `initialization`:
+  `{"kind": "pretrained", "model": "model:<encoder id>", "freeze": "encoder" |
+  "none" | {"schedule": ...}}`; a new head is attached; the run records the
+  parent encoder (id, checksum) and the freeze schedule; the model's lineage
+  is `fine_tuned`.
+- **Leakage policy (declared, recorded).** Unlabeled pretraining could use a
+  fold's held-out experiment, inflating fine-tuned scores. Policies:
+  `per_fold` (pretrain without the fold's test experiment -- honest, one
+  encoder per fold), `external` (a separate corpus: other experiments,
+  cells, alleles) or `transductive` (everything, declared as such). Fine-tune
+  runs refuse a `per_fold` encoder from another fold.
+- **Transfer benchmark.** Fine-tuned against from-scratch on the same folds
+  (`compare_runs`, entries tagged by initialization), including a frozen-
+  encoder linear probe.
+
+Tests: an encoder artifact loads without a head or label schema; a
+fine-tuned model records its parent and freeze schedule and reloads; a
+`per_fold` encoder is refused for another fold; masked-site loss reads only
+hidden observed sites and the corruption is not visible through validity
+channels; a VAE's latent is exported per molecule; the transfer comparison
+pairs fine-tuned and from-scratch entries on shared folds.
+
 ## Project side (`nkg2a_final`)
 
 - Runs replace the per-task `result*.json` / `folds*.csv` / predictions files;
   run tags carry the task id and model name.
-- `metadata/ml_sets.yaml`: which tasks x models to run, evaluation sets to
+- `metadata/ml_sets.yaml`: which tasks x models (a zoo per task type, one or
+  more models per class, `MLR-09`) to run, evaluation sets to
   explain (held-out; applied cohorts), figure orderings (score, label, latent
   Leiden / NDR bins), comparisons to report.
 - Experimental neural architectures in `project_scripts/ml/models/`,
@@ -483,4 +563,4 @@ receptive-field ladder on the full locus.
 - XGBoost and SVM families (not planned; the registry can take them later).
 - Hosted trackers (W&B / MLflow) and Hydra -- `ML-601` / `ML-602`, deferred.
 - Hyperparameter search beyond what the validation role enables.
-- Pretrained encoders (`ML-304`, gated).
+- Pretrained encoders now planned as `MLR-11`.
