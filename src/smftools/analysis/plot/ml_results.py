@@ -646,3 +646,86 @@ def plot_attribution_clustermap(
         "blocks": blocks,
         "attribution_limit": limit,
     }
+
+
+def plot_run_comparison(comparison: Any, output_path: str | Path, *, metric: str) -> None:
+    """Entries on one metric: per-fold points with the fold-mean and its
+    bootstrap interval (left), and paired differences against the reference
+    with per-fold points (right). ``comparison`` is a `RunComparison`."""
+    summary = comparison.summary[comparison.summary["metric"] == metric]
+    if summary.empty:
+        raise ValueError(f"comparison has no metric {metric!r}")
+    entries = list(summary["entry"])
+    folds = sorted(comparison.fold_metrics["fold"].unique())
+    palette = plt.get_cmap("tab10")
+    fold_color = {fold: palette(i % 10) for i, fold in enumerate(folds)}
+    differences = comparison.differences[comparison.differences["metric"] == metric]
+    fold_differences = comparison.fold_differences[comparison.fold_differences["metric"] == metric]
+    height = max(2.5, 0.45 * len(entries) + 1.2)
+    figure, (left, right) = plt.subplots(
+        1, 2, figsize=(11, height), sharey=True, gridspec_kw={"width_ratios": (1, 1)}
+    )
+    y = {entry: index for index, entry in enumerate(entries)}
+    values = comparison.fold_metrics[comparison.fold_metrics["metric"] == metric]
+    offsets = np.linspace(-0.2, 0.2, max(len(folds), 1))
+    for offset, fold in zip(offsets, folds):
+        rows = values[values["fold"] == fold]
+        left.scatter(
+            rows["value"],
+            [y[e] + offset for e in rows["entry"]],
+            s=14,
+            color=fold_color[fold],
+            label=str(fold),
+            zorder=3,
+        )
+    for _index, row in summary.iterrows():
+        left.errorbar(
+            row["mean"],
+            y[row["entry"]],
+            xerr=[[row["mean"] - row["ci_low"]], [row["ci_high"] - row["mean"]]],
+            fmt="D",
+            color="black",
+            markersize=5,
+            capsize=3,
+            zorder=4,
+        )
+    left.set_yticks(range(len(entries)), entries, fontsize=8)
+    left.invert_yaxis()
+    left.set_xlabel(metric)
+    left.set_title("per fold (points), mean and bootstrap interval", fontsize=9)
+    left.legend(title="held out", fontsize=7, title_fontsize=7, loc="best", frameon=False)
+    reference = comparison.settings.get("reference")
+    for offset, fold in zip(offsets, folds):
+        rows = fold_differences[fold_differences["fold"] == fold]
+        right.scatter(
+            rows["difference"],
+            [y[e] + offset for e in rows["entry"]],
+            s=14,
+            color=fold_color[fold],
+            zorder=3,
+        )
+    for _index, row in differences.iterrows():
+        right.errorbar(
+            row["mean"],
+            y[row["entry"]],
+            xerr=[[row["mean"] - row["ci_low"]], [row["ci_high"] - row["mean"]]],
+            fmt="D",
+            color="black",
+            markersize=5,
+            capsize=3,
+            zorder=4,
+        )
+        right.annotate(
+            f"{row['folds_better']}/{row['n_folds']}",
+            (row["ci_high"], y[row["entry"]]),
+            xytext=(4, 0),
+            textcoords="offset points",
+            va="center",
+            fontsize=7,
+        )
+    right.axvline(0, color="grey", linewidth=0.8)
+    right.set_xlabel(f"{metric} minus {reference}")
+    right.set_title("paired difference (folds better / folds)", fontsize=9)
+    figure.suptitle(f"{metric}: {len(entries)} models, {len(folds)} held-out folds", fontsize=11)
+    figure.tight_layout()
+    _save(figure, output_path)

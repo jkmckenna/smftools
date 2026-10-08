@@ -21,6 +21,7 @@ from .binding import (
     run_bound_train_job,
     snapshot_from_selection,
 )
+from .comparison import RunComparison, compare_runs, select_runs
 from .contracts import (
     JobArtifact,
     JobCancellationToken,
@@ -79,12 +80,14 @@ __all__ = [
     "ModelSelectionRequest",
     "ResolvedJob",
     "ResolvedModelSelection",
+    "RunComparison",
     "SklearnTrainOptions",
     "TorchTrainOptions",
     "apply_and_publish",
     "apply_partition_model",
     "bind_ml_dataset",
     "bind_ml_job",
+    "compare_runs",
     "dry_run_job",
     "evaluate_prediction_result",
     "explain_partition_model",
@@ -102,6 +105,7 @@ __all__ = [
     "run_explain_job",
     "run_plot_job",
     "run_train_job",
+    "select_runs",
     "snapshot_from_selection",
     "train_and_publish",
     "train_partition_model",

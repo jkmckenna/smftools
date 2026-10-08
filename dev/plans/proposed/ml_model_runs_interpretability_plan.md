@@ -155,8 +155,8 @@ the stores.
 | `MLR-02` final models and apply | done (PR #701) | optional all-groups final model; apply a run to another dataset with records |
 | `MLR-03` explanation records | done (PR #704) | out-of-fold position importance and per-molecule attribution matrices per run; fold consistency |
 | `MLR-03b` detector catalogue | proposed | CNN detector catalogue (split from `MLR-03`) |
-| `MLR-04` attribution clustermap | implemented (`feature/ml-attribution-clustermap`) | input layers beside attributions, shared row order, label / score / fold strips; detector catalogue figures |
-| `MLR-05` run comparison | proposed | select runs by tags; paired per-fold metrics, bootstrap intervals, figures |
+| `MLR-04` attribution clustermap | done (PR #705) | input layers beside attributions, shared row order, label / score / fold strips; detector catalogue figures |
+| `MLR-05` run comparison | implemented (`feature/ml-run-comparison`) | select runs by tags; paired per-fold metrics, bootstrap intervals, figures |
 | `MLR-06` fold-matrix cache | proposed | read each task's data once for every model |
 | `MLR-07` validation role | proposed | a stratified validation fraction of each fold's training molecules (default) or held-out training experiments, for early stopping and tuning; the test experiment stays whole; final models too |
 | `MLR-08` detector-scale CNNs | proposed | position-agnostic residual dilated CNNs whose pattern detectors have a stated, enforced maximum span (receptive field): sub-nucleosome, 2-3, 4-6 nucleosomes, full locus; effective span measured per run |
@@ -268,9 +268,26 @@ class enrichment; tests that they match the stored windows.
 
 ### `MLR-05` -- run comparison
 
-Tests: runs on different folds are refused (or compared on the shared folds
-with a warning); paired differences equal direct computation; bootstrap is
-seeded.
+As built (`orchestration/comparison.py`): `select_runs(tags=...)` from the run
+index; `compare_runs(run_ids, models=, metrics=, reference=, label_tags=,
+prevalence=0.10, n_bootstrap=200, seed=0)` from run records only. Folds are
+matched by held-out group (unshared folds dropped with a warning; none shared
+refused); within a fold, metrics are recomputed on the molecules every entry
+predicted (counts of dropped molecules reported; disagreeing truth refused).
+Metrics: AUROC, average precision, normalised AP, normalised AP at a fixed
+prevalence (reweighted), with fast implementations equal to scikit-learn's.
+Uncertainty: per-fold values, mean and SD across folds, folds better; a
+class-stratified bootstrap over molecules within folds (shared resamples),
+giving intervals for each entry's fold-mean and each paired difference.
+`RunComparison.write` saves tables, settings (source run ids) and
+`plot_run_comparison`'s figure. Comparisons are recomputed, not published as
+runs.
+
+Tests (`test_run_comparison.py`, `test_ml_comparison_metrics.py`): selection
+by tags; fold metrics and paired differences equal direct computation; seeded
+bootstrap; shared-fold comparison with a warning; bad metric / reference
+refused; written tables, settings and figure; fast metrics equal
+scikit-learn's (with ties and weights).
 
 ### `MLR-06` -- fold-matrix cache
 

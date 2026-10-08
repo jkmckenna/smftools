@@ -2,7 +2,7 @@
 
 Two claims are pinned here.
 
-``docs/source/api/machine_learning.md`` documents 63 of 68 modules and states
+``docs/source/api/machine_learning.md`` documents 64 of 69 modules and states
 that the five it omits are excluded because they cannot import under the docs
 build's mocked dependencies, *and* that all five are deprecated or gated behind
 an unbuilt integration. That second half is what makes the omission acceptable.
