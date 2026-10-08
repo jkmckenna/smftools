@@ -42,7 +42,7 @@ from ..manifests import (
 from ..models.registry import BUILTIN_MODEL_REGISTRY, ModelRegistry
 from ..plan import MLPlan
 from ..selection import MLDataSelectionPlan, SelectedExperimentSource, plan_ml_dataset
-from ..splitting import MLSplitResolution, plan_ml_splits
+from ..splitting import MLSplitResolution, final_split_assignments, plan_ml_splits
 from .actions import (
     SklearnTrainOptions,
     TorchTrainOptions,
@@ -468,12 +468,17 @@ FINAL_FOLD = "final"
 
 
 def final_training_split(bound: BoundJob) -> tuple[SplitManifest, PartitionDataset]:
-    """Every selected row in the train role, read as the job's folds are
-    (same groups, read policy and coordinate maps): a final model's data."""
+    """Every selected row for a final model, read as the job's folds are (same
+    groups, read policy and coordinate maps): all train, or with the split's
+    validation fraction (`MLR-07`)."""
+    assignments, shared_roles = final_split_assignments(
+        bound.plan, bound.plan.jobs[bound.job_name].split, bound.selection
+    )
     split = SplitManifest.create(
         dataset=bound.snapshot,
         group_by=bound.folds[0].split.group_by,
-        assignments={item.molecule_uid: "train" for item in bound.snapshot.observations},
+        assignments=assignments,
+        shared_roles=shared_roles,
     )
     read_plan = build_partition_data_plan(
         bound.snapshot,
@@ -497,15 +502,16 @@ def iter_bound_final_models(
     ``predictions`` and ``evaluation`` are ``None``) -- the model to apply to
     new data, its performance estimated by the folds. ``final``: a prebuilt
     `final_training_split`."""
-    _split, dataset = final or final_training_split(bound)
+    split, dataset = final or final_training_split(bound)
+    has_validation = any(member.split == "validation" for member in split.members)
     for model_name, spec, resolved, sk_options, th_options in _job_models(
         bound, sklearn_options, torch_options, registry
     ):
-        if spec.backend == "torch":
+        if spec.backend == "torch" and not has_validation:
             # Torch training stops early on a validation role (`MLR-07`).
             raise MLJobServiceError(
-                f"model {model_name!r}: a final torch model needs a validation role, "
-                "which an all-rows final split does not have"
+                f"model {model_name!r}: a final torch model needs a validation role; "
+                "declare the split's validation_fraction"
             )
         training = train_partition_model(
             dataset,

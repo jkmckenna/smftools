@@ -153,12 +153,12 @@ the stores.
 |---|---|---|
 | `MLR-01` train-and-publish | done (PR #700) | one call: bind a plan job, train each model per fold, publish run / data / models / evaluation records and index; fixed-prevalence AUPRC (reweighted, subsampled) in smftools metrics |
 | `MLR-02` final models and apply | done (PR #701) | optional all-groups final model; apply a run to another dataset with records |
-| `MLR-03` explanation records | done (PR #704) | out-of-fold position importance and per-molecule attribution matrices per run; fold consistency |
+| `MLR-03` explanation records | done (PR #702) | out-of-fold position importance and per-molecule attribution matrices per run; fold consistency |
 | `MLR-03b` detector catalogue | proposed | CNN detector catalogue (split from `MLR-03`) |
-| `MLR-04` attribution clustermap | done (PR #705) | input layers beside attributions, shared row order, label / score / fold strips; detector catalogue figures |
-| `MLR-05` run comparison | implemented (`feature/ml-run-comparison`) | select runs by tags; paired per-fold metrics, bootstrap intervals, figures |
+| `MLR-04` attribution clustermap | done (PR #704) | input layers beside attributions, shared row order, label / score / fold strips; detector catalogue figures |
+| `MLR-05` run comparison | done (PR #705) | select runs by tags; paired per-fold metrics, bootstrap intervals, figures |
 | `MLR-06` fold-matrix cache | proposed | read each task's data once for every model |
-| `MLR-07` validation role | proposed | a stratified validation fraction of each fold's training molecules (default) or held-out training experiments, for early stopping and tuning; the test experiment stays whole; final models too |
+| `MLR-07` validation role | implemented (`feature/ml-validation-fraction`) | a stratified validation fraction of each fold's training molecules (default) or held-out training experiments, for early stopping and tuning; the test experiment stays whole; final models too |
 | `MLR-08` detector-scale CNNs | proposed | position-agnostic residual dilated CNNs whose pattern detectors have a stated, enforced maximum span (receptive field): sub-nucleosome, 2-3, 4-6 nucleosomes, full locus; effective span measured per run |
 | `MLR-09` further neural families | proposed | MLP / transformer ported to registry configs; project-registered families |
 | `MLR-10` qualification | proposed | `nkg2a_final` region / model grid through `MLR-01`-`MLR-05`; parity with its current metrics |
@@ -321,7 +321,19 @@ stopping and tuning only:
   batch and early stopping may stop somewhat late; reported performance stays
   honest (test is a whole experiment).
 
-Tests: test molecules never appear in train or validation, and test is one
+As built: `leave_one_group_out` takes `validation_fraction` and
+`validation_by` (`molecules` default, or `groups`); omitted when unset, so
+earlier plan hashes and split ids are unchanged. Folds draw validation from a
+generator fixed by the split seed and fold name. `SplitManifest.shared_roles`
+(empty or train + validation) relaxes isolation for the declared pair only,
+recorded in the split identity when used. Final splits
+(`final_split_assignments`) take the same validation, so final torch models
+train; torch fits without a test role record `test_loss = None`. Sklearn
+models train on the train role only, so a declared fraction also removes
+those molecules from their training (the same training set for every model
+of a job).
+
+Tests (`test_validation_fraction.py`): test molecules never appear in train or validation, and test is one
 whole experiment per fold; the validation fraction is met within rounding per
 experiment x class; seeded and reproducible; the relaxed isolation rule
 accepts the declared shared groups and still refuses test leakage or an

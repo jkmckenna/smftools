@@ -104,6 +104,13 @@ for run in run_bound_train_job(bound):
     print(run.fold_name, run.model_name, run.evaluation.metrics)
 ```
 
+Neural models stop early on a validation role. With leave-one-group-out, declare one inside each
+fold: the held-out experiment stays the test set, and a seeded fraction of the training
+experiments' molecules (stratified by experiment x class) becomes validation --
+`validation_fraction: 0.15` on the split (`validation_by: groups` holds out whole training
+experiments instead). Final models take the same fraction. Every model of the job then trains
+on the same, smaller train role.
+
 Results come back in memory. To keep them, `train_and_publish` runs the same job through the
 train job service and publishes one immutable run in the workspace (`project_outputs/ml/` for a
 project):
