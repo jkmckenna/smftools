@@ -2900,6 +2900,121 @@ def plot_current(config_path):
 
 
 ####### Volume- and machine-scoped storage operations ###########
+@cli.group("motifs")
+def motifs_group():
+    """Motif scanning (user-supplied motif files)."""
+
+
+@motifs_group.command("scan")
+@click.option(
+    "--motifs",
+    "motifs_path",
+    required=True,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="Motif file (MEME minimal format). Required: no motif set is assumed.",
+)
+@click.option(
+    "--experiment-dir",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    default=None,
+    help="Scan the references recorded in this experiment's spines.",
+)
+@click.option(
+    "--project-dir",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    default=None,
+    help="Scan the references of a project's registered experiments.",
+)
+@click.option(
+    "--experiment",
+    "experiment_ids",
+    multiple=True,
+    help="With --project-dir: only these experiment IDs (repeatable).",
+)
+@click.option(
+    "--fasta",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help="Scan the sequences of a FASTA file.",
+)
+@click.option(
+    "--output-dir",
+    "-o",
+    required=True,
+    type=click.Path(file_okay=False, path_type=Path),
+    help="Where motif_hits.parquet and run.json are written.",
+)
+@click.option("--max-pvalue", type=float, default=1e-4, show_default=True)
+@click.option(
+    "--background",
+    type=click.Choice(["uniform", "motif", "sequence"]),
+    default="uniform",
+    show_default=True,
+    help="Base frequencies: uniform, the motif file's, or the scanned sequences'.",
+)
+@click.option("--pseudocount", type=float, default=0.1, show_default=True)
+@click.option("--motif", "motif_ids", multiple=True, help="Only these motif IDs (repeatable).")
+@click.option(
+    "--reference", "references", multiple=True, help="Only these references (repeatable)."
+)
+@click.option("--refresh", is_flag=True, help="Rescan even if a matching scan exists.")
+def motifs_scan_cmd(
+    motifs_path,
+    experiment_dir,
+    project_dir,
+    experiment_ids,
+    fasta,
+    output_dir,
+    max_pvalue,
+    background,
+    pseudocount,
+    motif_ids,
+    references,
+    refresh,
+):
+    """Scan reference sequences with every motif of a motif file, both strands.
+
+    Writes one table of motif instances -- motif, family, reference, 0-based
+    half-open start/end on the forward strand, motif strand, log2-odds score,
+    p-value, matched sequence. Exactly one of --experiment-dir, --project-dir
+    or --fasta chooses the sequences.
+    """
+    from smftools.tools.motifs import (
+        experiment_sequences,
+        fasta_sequences,
+        project_sequences,
+        scan_references,
+    )
+
+    sources = [value for value in (experiment_dir, project_dir, fasta) if value is not None]
+    if len(sources) != 1:
+        raise click.UsageError("give exactly one of --experiment-dir, --project-dir, --fasta")
+    if experiment_ids and project_dir is None:
+        raise click.UsageError("--experiment needs --project-dir")
+    if experiment_dir is not None:
+        sequences = experiment_sequences(experiment_dir)
+    elif project_dir is not None:
+        sequences = project_sequences(project_dir, experiment_ids or None)
+    else:
+        sequences = fasta_sequences(fasta)
+    hits, record = scan_references(
+        motifs_path,
+        sequences,
+        output_dir,
+        max_pvalue=max_pvalue,
+        background=background,
+        pseudocount=pseudocount,
+        motif_ids=list(motif_ids) or None,
+        references=list(references) or None,
+        refresh=refresh,
+    )
+    state = "reused" if record["reused"] else "scanned"
+    click.echo(
+        f"{state}: {len(hits)} motif instance(s) of {record['motifs']} motif(s) over "
+        f"{len(record['references'])} reference(s); wrote {output_dir}"
+    )
+
+
 @cli.group("data")
 def data_group():
     """Machine- and volume-scoped storage operations (portable storage roots).

@@ -1,6 +1,6 @@
 # Motif scanning and per-molecule motif occupancy (`MOT`)
 
-**Status:** proposed. Nothing implemented. One PR per item, in order.
+**Status:** in progress. `MOT-01` implemented. One PR per item, in order.
 
 ## Question
 
@@ -45,10 +45,12 @@ p < 1e-4, both strands:
   the integer-scaled score distribution (FIMO's method): 0.5 s for all motifs.
 - **FIMO's defaults differ from the motif file**: without `--bfile` FIMO uses
   NRDB background frequencies, not the file's (uniform) ones -- 12.90 vs 14.36
-  for the same hit. With `--bfile --uniform--`, ~80 % of hits are shared; some
-  FIMO hits (31 of 966) report negative scores with p < 1e-4, and minus-strand
-  `matched_sequence` / soft-masked (lowercase) bases need checking before
-  matching it exactly. Agreement is qualified in `MOT-06`, not assumed.
+  for the same hit. With `--bfile --uniform--` it agrees with the `MOT-01`
+  scanner on 964 of 965 hits (identical coordinates, strand, score, matched
+  sequence and p-value; the odd pair sits on the 1e-4 cutoff). The prototype's
+  apparent disagreement was its own minus-strand mapping. Low-information
+  motifs (long C2H2 zinc fingers) are significant at low or negative log-odds
+  scores -- in both tools. Further agreement checks: `MOT-06`.
 
 ## Design
 
@@ -143,7 +145,7 @@ metadata.
 
 | item | status | scope |
 |---|---|---|
-| `MOT-01` motif files and the built-in scanner | proposed | MEME parser (exact), numpy scanner, exact p-values, interval table; `smftools motifs scan` |
+| `MOT-01` motif files and the built-in scanner | implemented, not merged | MEME parser (exact), numpy scanner, exact p-values, interval table; `smftools motifs scan` |
 | `MOT-02` FIMO engine | proposed | optional `engine: fimo`, background parity, same table |
 | `MOT-03` bulk class tracks with motif lanes | proposed | per group x reference: class fractions along the locus, motif lanes below, per-instance inside-vs-flank contrast table; `project|experiment motif-tracks` |
 | `MOT-04` per-molecule occupancy | proposed | states per read x instance from HMM layers via a plan dataset; group fractions; `project|experiment motif-occupancy` |
@@ -165,6 +167,31 @@ Tests: parser keeps probabilities exactly; scores equal a hand computation;
 p-values equal brute-force enumeration for short motifs; reverse-strand hits
 equal a forward scan of the reverse complement; `N` windows skipped;
 threshold monotone.
+
+As built: `analysis/compute/motifs.py` (`read_motifs`, `log_odds`,
+`score_model`, `strand_models`, `scan_sequence`, `scan`) and `tools/motifs.py`
+(`fasta_sequences`, `experiment_sequences`, `project_sequences`,
+`scan_references`); CLI `smftools motifs scan --motifs PATH
+(--experiment-dir | --project-dir [--experiment ID ...] | --fasta)
+-o DIR [--max-pvalue] [--background uniform|motif|sequence] [--pseudocount]
+[--motif ID ...] [--reference NAME ...] [--refresh]`.
+
+- `reference` in the hit table is the sequence name as the spines record it
+  (strand suffix removed: `6B6`, `6B6_enh_del`), since motif instances are
+  sequence features on the forward strand; `MOT-03` maps physical references
+  (`6B6_top`, `6B6_bottom`) to it as `strand_of` does.
+- Minus-strand hits score the reverse-complement matrix on the forward
+  sequence, with its own p-value model (a strand-asymmetric background
+  changes the distribution); `start`/`end` are forward, `matched_sequence`
+  is read 5'->3' on the motif's strand.
+- Scores use 10,000 integer bins; p-values are exact for the binned matrix.
+- Cached as `motif_hits.parquet` + `run.json`, keyed by the motif file's and
+  every sequence's SHA-256 and the settings.
+
+On the 260923 project references with the 637 archetype motifs at p < 1e-4:
+3,668 instances (B6 965, BALB 960, enh-del 853 / 855, ctcf_mNanog 35) in
+12 s, most of it reading spines; the spine's B6 sequence is the earlier
+project's FASTA byte for byte.
 
 ### `MOT-02` — FIMO engine
 
