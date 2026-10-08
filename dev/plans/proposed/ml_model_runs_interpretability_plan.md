@@ -1,0 +1,304 @@
+# Model runs, reuse, interpretability and comparison (`MLR`)
+
+**Status:** proposed. Nothing implemented. One PR per item, in order.
+
+## Why
+
+A trained model should be a self-describing record: what task and data it was
+trained and evaluated on, its fitted state, its metrics, and its
+interpretations -- reusable later on new data, and comparable with other
+models on the same evaluation. Today a project trains through
+`bind_ml_job` -> `run_bound_train_job`, scores each fold and keeps only
+metrics (`nkg2a_final` adds a prediction table by hand); every fitted model is
+discarded, nothing records which molecules trained it, interpretability is
+never run, and model comparisons are tables written by hand.
+
+## What exists (the ML program, `ML-000`-`ML-702`, completed)
+
+- Plans, selection, splits: `plan.py`, `selection.py`, `splitting.py`
+  (`leave_one_group_out`, `explicit_groups`, `stratified_group`; roles
+  train / validation / test), label tables (molecule-level keys since
+  `feature/ml-molecule-label-keys`).
+- Model registry (`models/registry.py`): `bernoulli_nb`,
+  `logistic_regression`, `random_forest` (sklearn), `residual_dilated_cnn`
+  (torch); versioned recipes, validated configs, capabilities. Training:
+  `training/sklearn_backend.py` (streaming for `partial_fit` families),
+  `training/torch_backend.py` (epochs, early stopping, per-epoch history).
+- Artifacts: `workspace.py` (project `ml/{datasets,runs,models,index}`),
+  `artifacts/` (`RunManifest`, `ModelManifest` with lineage,
+  `PredictionManifest`, `ExplanationManifest`, atomic `publish_bundle`),
+  `models/sklearn_artifacts.py` (skops, no pickle) and
+  `models/torch_artifacts.py` (state dicts) with `load_published_*`.
+- Job service (`orchestration/service.py`): immutable train / apply /
+  evaluate / explain / plot lifecycles around a caller's operation.
+- Evaluation (`evaluation/`): predictions, metrics, ROC/PR curves, folds,
+  training history.
+- Interpretability (`interpretability/`): `NaiveBayesLogOdds`,
+  `LinearCoefficients`, `PermutationImportance`, `TreeSHAP`; `Saliency`,
+  `InputXGradient`, `IntegratedGradients`, `GradientSHAP`, `LayerGradCam`
+  (Captum); training-background sampling; explanation artifact layout.
+  Plot: `analysis/plot/ml_results.plot_attribution_summary`.
+- Older neural classes (`models/mlp.py`, `cnn.py`, `rnn.py`,
+  `transformer.py` incl. a domain-adversarial transformer,
+  `lightning_base.py`) predate the registry.
+
+**Gaps.** No single call trains *and* publishes a plan's job (the service
+needs an operation the caller assembles); no "apply a saved run to another
+dataset"; per-molecule attributions are computed but not stored as a
+molecules x positions matrix with molecule identities, and there is no figure
+of them beside the input; no fixed-prevalence AUPRC; no report comparing runs;
+each model re-reads the data; only one neural family is registered; no XGBoost
+or SVM.
+
+**Precedent** (`Nkg2a_DAFseq_merged/claude_scripts/ml/`): out-of-fold random
+forest SHAP per held-out molecule stitched across folds into one aligned
+figure, fold models saved and reloaded (`f1_activity_rf_explanations.py`);
+per-site layer integrated gradients from a transformer, chunked for memory
+(`transformer_apply.py`); fold-to-fold consistency of attribution tracks
+(`f1_activity_cnn_consistency.py`). This plan makes that pattern standard.
+
+## Design
+
+### A model run is the unit
+
+One directory per train job and model under the workspace's `runs/`,
+published atomically and never edited:
+
+```
+runs/<run_id>/
+  run.json            RunManifest: plan + plan hash, job, model recipe and
+                      resolved config, dataset snapshot id, label-table and
+                      coordinate-map content hashes, split resolution, seeds,
+                      smftools / package versions, tags (caller's labels, e.g.
+                      a project's task id)
+  data/               per fold and role: the molecule UIDs (and class ids)
+                      used -- the exact training / evaluation set, rebuildable
+  models/<fold>/      fitted model per fold (ModelManifest + skops / state
+                      dict); optional models/final/ fit on every group
+  evaluation/         predictions (fold, molecule, truth, score), fold metrics
+                      (incl. fixed-prevalence AUPRC), ROC / PR curve points,
+                      training history (torch: per-epoch losses)
+  explanations/<id>/  interpretability records (below)
+  figures/            curves, attribution figures
+```
+
+The workspace `index/` lists runs with their tags and headline metrics, so a
+project can find "every model on task X" without walking directories.
+
+### Applying a saved run
+
+`apply` takes a run (fold models, or the final model) and any dataset
+selection whose input schema matches (same channels, positions or a
+coordinate map): predictions, and metrics when labels exist, published as an
+`applications/<id>/` record under the run, linked to the data it scored.
+
+### Interpretability belongs to the run
+
+`explanations/<id>/` holds one method on one evaluation set: the method and
+parameters, the background (for SHAP-style methods), the evaluation set's
+molecule UIDs, and
+
+- **position importance**: per position, the global score per fold model
+  (mean |attribution|, NB log-odds, permutation drop) and the fold-to-fold
+  consistency (rank correlation);
+- **per-molecule attributions**: a molecules x positions matrix (float32,
+  chunked, with UIDs and frame positions), the positive-class contribution of
+  each position to each molecule's score, from the fold model that held the
+  molecule out (out-of-fold) or the chosen model for applied data.
+
+### The attribution clustermap
+
+For an explanation record: the input layer(s) (site calls, HMM accessible /
+footprint, read from the same dataset) and the attribution matrix side by
+side, one row order for all panels, TSS-relative columns, with strips for the
+true label, predicted score and fold (and optionally Leiden / NDR state when a
+latent embedding is supplied). Row order: by predicted score, by label then
+hierarchical, or by a supplied binning. Built on
+`plotting.latent_plotting.plot_latent_ordered_clustermap` (colour-stable
+strips, extra strips), a diverging colour scale for attributions.
+
+### Comparing runs
+
+A comparison selects runs (by tags) evaluated on the same folds and reports,
+per fold and overall: each metric, paired differences between runs, and
+uncertainty (bootstrap over molecules within folds; across folds), with a
+figure (models x tasks, per-fold points). It reads only run records.
+
+### Speed: one read per task
+
+Fold feature matrices are cached per (dataset snapshot, split, transform) in
+the workspace `datasets/`, so a second model on the same task does not re-read
+the stores.
+
+## Work items
+
+| item | status | scope |
+|---|---|---|
+| `MLR-01` train-and-publish | proposed | one call: bind a plan job, train each model per fold, publish run / data / models / evaluation records and index; fixed-prevalence AUPRC (reweighted, subsampled) in smftools metrics |
+| `MLR-02` final models and apply | proposed | optional all-groups final model; apply a run to another dataset with records |
+| `MLR-03` explanation records | proposed | position importance and per-molecule attribution matrices per run and evaluation set, out-of-fold; fold consistency |
+| `MLR-04` attribution clustermap | proposed | input layers beside attributions, shared row order, label / score / fold strips |
+| `MLR-05` run comparison | proposed | select runs by tags; paired per-fold metrics, bootstrap intervals, figures |
+| `MLR-06` fold-matrix cache | proposed | read each task's data once for every model |
+| `MLR-07` validation role | proposed | inner validation groups inside each training fold (nested CV) for early stopping and tuning |
+| `MLR-08` receptive-field-bounded CNNs | proposed | position-agnostic residual dilated CNNs with a stated, enforced receptive field: sub-nucleosome, 2-3, 4-6 nucleosomes, full locus |
+| `MLR-09` further neural families | proposed | MLP / transformer ported to registry configs; project-registered families |
+| `MLR-10` qualification | proposed | `nkg2a_final` region / model grid through `MLR-01`-`MLR-05`; parity with its current metrics |
+
+### `MLR-01` -- train-and-publish
+
+`orchestration.train_and_publish(plan, job, *, project_dir | experiment_dir,
+tags=None, policy=None, registry=BUILTIN, final_model=False)` -> run records
+(one run per model of the job), composing `bind_ml_job`,
+`run_bound_train_job` and the service's train lifecycle; fold models through
+`publish_sklearn_model` / `publish_torch_model`; per-fold molecule lists;
+predictions, metrics, curves, history. `evaluation.metrics` gains
+`average_precision_at_prevalence` (reweighted, and subsampled with draws and a
+seed). The index records tags and headline metrics.
+
+Tests: a fixture project trains NB and RF; every record exists and validates;
+reloading a fold model reproduces its predictions; the molecule lists equal
+the split; the fixed-prevalence metric equals a direct computation; a second
+call with the same plan publishes a new run (immutable) and the index lists
+both.
+
+### `MLR-02` -- final models and apply
+
+Tests: a final model is fit on every group; applying a run to another dataset
+with the same schema writes predictions and (with labels) metrics linked to
+the run; a schema mismatch is refused with the differing channel / positions.
+
+### `MLR-03` -- explanation records
+
+`explain_run(run, method, *, evaluation="held_out" | dataset selection,
+parameters, background=...)`; dispatches to `interpretability` by model
+capability; stores importance and the attribution matrix (chunked, UIDs,
+positions); out-of-fold by default.
+
+Tests: NB log-odds attributions equal the closed form; TreeSHAP rows sum to
+the model output minus the base value; each held-out molecule is explained by
+the fold model that held it out; fold consistency on a planted signal.
+
+### `MLR-04` -- attribution clustermap
+
+Tests: panels share rows; strips match their rows; colour scale symmetric
+about 0; row orders as requested; figure written per explanation.
+
+### `MLR-05` -- run comparison
+
+Tests: runs on different folds are refused (or compared on the shared folds
+with a warning); paired differences equal direct computation; bootstrap is
+seeded.
+
+### `MLR-06` -- fold-matrix cache
+
+Tests: a second model reuses the cache (no store reads); the cache key changes
+with the snapshot, split or transform; results equal an uncached run.
+
+### `MLR-07` -- validation role
+
+Tests: inner validation groups are disjoint from the outer test group and from
+inner training; early stopping uses validation only; leave-one-group-out
+keeps its outer folds.
+
+### `MLR-08` -- receptive-field-bounded CNNs
+
+Question: how much context does activity need? Models that see only
+sub-nucleosome features, 2-3 nucleosomes, 4-6, or the whole locus, and are
+otherwise alike.
+
+The existing `residual_dilated_cnn` is the base: convolutions then global
+average / max / content-attention pooling and a small head -- no positional
+encoding, no flatten over positions, so it learns what a feature looks like,
+not where it is. Inputs are on a bp grid (site calls with an observed mask),
+so receptive fields are in bp:
+`RF = 1 + (stem_kernel - 1) + sum over blocks of 2 (kernel - 1) dilation`.
+
+- `ResidualCNNConfig` gains `receptive_field` (computed, recorded in the run
+  manifest) and an optional `max_receptive_field` (refused when exceeded).
+- Squeeze-excite pools over the whole molecule inside every block, so a model
+  with SE sees the full locus whatever its dilations: bounded models require
+  `use_se: false` (validated against `max_receptive_field`).
+- Recipes, alike in depth / width as far as the ladder allows (dilations grow
+  gradually -- large jumps leave gaps, "gridding"; a downsampling stage is the
+  alternative for the full locus):
+
+  | recipe | target | example dilations (kernel 5) | RF |
+  |---|---|---|---|
+  | `rcnn_subnucleosome` | < ~150 bp | 1, 1, 2, 2, 3, 4 | 113 bp |
+  | `rcnn_2_3_nucleosomes` | ~400-600 bp | 1, 2, 4, 8, 16, 32 | 513 bp |
+  | `rcnn_4_6_nucleosomes` | ~800-1,200 bp | 1, 2, 4, 8, 16, 32, 64 | 1,025 bp |
+  | `rcnn_full_locus` | >= 4.7 kb | 1, 2, 4, 8, 16, 32, 64, 128, 256, 128 | 5,121 bp |
+
+- At full-locus RF a CNN can infer absolute position from padding at the
+  molecule's edges: position-agnostic by design, not in effect -- the
+  comparison point, recorded as such.
+- **Sparse site inputs** (C / GpC calls at their sites) beside **dense HMM
+  layers** (accessible / footprint / lengths at every bp, `site_context: all`)
+  share the bp grid, each with its own observed mask. Two fixes to the
+  residual CNN first:
+  1. *Missing vs unmodified.* Unobserved values are zero-filled and the mask is
+     not an input, so "no site" and "site, unmodified" both read 0. Give the
+     model the mask: an observed-indicator channel per sparse channel (or a
+     signed encoding, +1 modified / -1 unmodified / 0 no site).
+  2. *Propagation between sites.* Features are zeroed after the stem and every
+     block wherever no channel is observed; with site channels alone that is
+     most positions, so dilated taps between sites read zeros and context
+     flows only through sites (worse for GpC). Zero by the read's span (first
+     to last observed position) instead.
+  Length layers are rescaled (log length, or length classes) before sitting
+  beside 0 / 1 channels.
+- **HMM inputs do not respect the receptive field.** Each position's HMM call
+  comes from decoding the whole read, and a length layer stamps a feature's
+  full extent at each of its positions, so a "sub-nucleosome" CNN on HMM
+  layers can use information from far outside its window. The ladder bounds
+  information only with raw site inputs. Three input arms per recipe: sites
+  only (the context experiment), HMM layers only, sites + HMM -- reported
+  separately. HMM inputs also inherit the HMM's choices (enzyme context bias,
+  variant, merging): the channel's layer name records which.
+- Needs the validation role (`MLR-07`) for early stopping.
+
+Tests: with a sparse site channel, "no site" and "unmodified site" give
+different features (mask as input); features propagate across positions
+between sites within the read span; the computed RF equals the formula; perturbing one input position
+changes pre-pooling features only within RF / 2 of it (empirical bound) for
+bounded recipes and anywhere with SE on; `max_receptive_field` refuses an
+over-wide config; translating a feature within the molecule leaves the
+prediction unchanged up to edge effects (position-agnostic); each recipe
+trains a few epochs, saves, reloads and explains (integrated gradients).
+
+### `MLR-09` -- further neural families
+
+MLP and transformer as `models/<arch>.py` with a config dataclass, builder
+and registry recipe on the residual CNN's input contract (channel-first
+values, observed mask); a project may build a registry from the built-ins
+plus its own families and pass it to training (experimental architectures
+live in the project until they earn a place in smftools).
+
+Tests: each family trains a few epochs on a fixture, saves and reloads with
+identical predictions, and explains with integrated gradients.
+
+### `MLR-10` -- qualification
+
+The `nkg2a_final` cell already compared by hand (fresh B6 vs NK; full locus,
+E + P, E, P, intervening, downstream, E/P masked; NB, RF; NDR baselines)
+through `MLR-01`-`MLR-05`: metrics equal the project's current tables;
+attribution clustermaps for the RF and NB promoter / E + P models; then the
+receptive-field ladder on the full locus.
+
+## Project side (`nkg2a_final`)
+
+- Runs replace the per-task `result*.json` / `folds*.csv` / predictions files;
+  run tags carry the task id and model name.
+- `metadata/ml_sets.yaml`: which tasks x models to run, evaluation sets to
+  explain (held-out; applied cohorts), figure orderings (score, label, latent
+  Leiden / NDR bins), comparisons to report.
+- Experimental neural architectures in `project_scripts/ml/models/`,
+  registered through a project registry.
+
+## Out of scope
+
+- XGBoost and SVM families (not planned; the registry can take them later).
+- Hosted trackers (W&B / MLflow) and Hydra -- `ML-601` / `ML-602`, deferred.
+- Hyperparameter search beyond what the validation role enables.
+- Pretrained encoders (`ML-304`, gated).
