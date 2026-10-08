@@ -20,7 +20,13 @@ from .contracts import (
     TrainingHistory,
 )
 from .history import sklearn_training_history, torch_training_history
-from .metrics import aggregate_fold_metrics, evaluate_predictions, fit_binary_threshold
+from .metrics import (
+    PrevalenceAveragePrecision,
+    aggregate_fold_metrics,
+    average_precision_at_prevalence,
+    evaluate_predictions,
+    fit_binary_threshold,
+)
 
 _LAZY_EXPORTS = {
     "flatten_sliding_window_results": (".eval_utils", "flatten_sliding_window_results"),
@@ -51,10 +57,12 @@ __all__ = [
     "ModelEvaluator",
     "PostInferenceModelEvaluator",
     "PredictionResult",
+    "PrevalenceAveragePrecision",
     "ThresholdProvenance",
     "TrainingEvent",
     "TrainingHistory",
     "aggregate_fold_metrics",
+    "average_precision_at_prevalence",
     "evaluate_predictions",
     "fit_binary_threshold",
     "flatten_sliding_window_results",

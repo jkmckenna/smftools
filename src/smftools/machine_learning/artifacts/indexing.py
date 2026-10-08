@@ -49,8 +49,23 @@ def _published_directories(root: Path) -> list[Path]:
     )
 
 
+# Run payload roles whose JSON the index carries, so a workspace's runs can be
+# found by caller tags and compared on headline metrics without opening them.
+_INDEXED_RUN_PAYLOADS = ("tags", "summary")
+
+
+def _indexed_payloads(bundle: PublishedBundle, manifest: RunManifest) -> dict:
+    found = {}
+    for reference in manifest.artifacts:
+        if reference.role in _INDEXED_RUN_PAYLOADS:
+            with (bundle.path / reference.relative_path).open(encoding="utf-8") as handle:
+                found[reference.role] = json.load(handle)
+    return found
+
+
 def _run_record(bundle: PublishedBundle, manifest: RunManifest, workspace: MLWorkspace) -> dict:
     return {
+        **_indexed_payloads(bundle, manifest),
         "run_id": manifest.run_id,
         "state": manifest.state,
         "action": manifest.action,

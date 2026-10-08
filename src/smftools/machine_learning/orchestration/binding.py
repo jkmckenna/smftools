@@ -15,7 +15,7 @@ immutable run artifacts is a separate step.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Any
@@ -384,11 +384,29 @@ def run_bound_train_job(
     The plan's balancing profile, when the job names one, applies to training;
     explicit options take precedence over it.
     """
+    return tuple(
+        iter_bound_train_job(
+            bound,
+            sklearn_options=sklearn_options,
+            torch_options=torch_options,
+            registry=registry,
+        )
+    )
+
+
+def iter_bound_train_job(
+    bound: BoundJob,
+    *,
+    sklearn_options: SklearnTrainOptions | None = None,
+    torch_options: TorchTrainOptions | None = None,
+    registry: ModelRegistry = BUILTIN_MODEL_REGISTRY,
+) -> Iterator[FoldRun]:
+    """As `run_bound_train_job`, one fold run at a time (model-major), so a
+    caller can publish and release each fitted model before the next."""
     job = bound.plan.jobs[bound.job_name]
     if job.action != "train":
         raise MLJobServiceError(f"job {bound.job_name!r} is a {job.action!r} job, not train")
     balancing = bound.plan.balancing[job.balancing] if job.balancing is not None else None
-    runs = []
     for model_name in job.models:
         spec = bound.plan.models[model_name]
         resolved = resolve_plan_model(
@@ -417,13 +435,10 @@ def run_bound_train_job(
                 "test",
                 model_id=f"{bound.job_name}:{model_name}:{fold.fold_name or 'single'}",
             )
-            runs.append(
-                FoldRun(
-                    fold_name=fold.fold_name,
-                    model_name=model_name,
-                    training=training,
-                    predictions=predictions,
-                    evaluation=evaluate_prediction_result(predictions),
-                )
+            yield FoldRun(
+                fold_name=fold.fold_name,
+                model_name=model_name,
+                training=training,
+                predictions=predictions,
+                evaluation=evaluate_prediction_result(predictions),
             )
-    return tuple(runs)

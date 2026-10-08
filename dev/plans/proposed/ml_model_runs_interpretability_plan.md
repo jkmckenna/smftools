@@ -61,26 +61,34 @@ per-site layer integrated gradients from a transformer, chunked for memory
 
 ### A model run is the unit
 
-One directory per train job and model under the workspace's `runs/`,
-published atomically and never edited:
+One directory per train job under the workspace's `runs/` (its models listed
+in the manifest's `model_keys`), published atomically and never edited. As
+built in `MLR-01` (`orchestration/runs.py`):
 
 ```
 runs/<run_id>/
-  run.json            RunManifest: plan + plan hash, job, model recipe and
-                      resolved config, dataset snapshot id, label-table and
-                      coordinate-map content hashes, split resolution, seeds,
-                      smftools / package versions, tags (caller's labels, e.g.
-                      a project's task id)
-  data/               per fold and role: the molecule UIDs (and class ids)
-                      used -- the exact training / evaluation set, rebuildable
-  models/<fold>/      fitted model per fold (ModelManifest + skops / state
-                      dict); optional models/final/ fit on every group
-  evaluation/         predictions (fold, molecule, truth, score), fold metrics
-                      (incl. fixed-prevalence AUPRC), ROC / PR curve points,
-                      training history (torch: per-epoch losses)
-  explanations/<id>/  interpretability records (below)
-  figures/            curves, attribution figures
+  run_manifest.json   plan hash, job, dataset snapshot id (molecules and their
+                      class ids), split id (digest of the fold split ids),
+                      environment (smftools version, commit, dirty tree,
+                      packages), seeds, artifact checksums, state
+  resolved_plan.json, resolved_config.json   (options, prevalence, fold split ids)
+  tags.json           caller labels (e.g. a project's task id)
+  data/membership.parquet   per fold: every molecule's role and class
+  data/splits.json    per fold: split id, held-out group, role / class counts
+  models.json         per model and fold: the published model id
+  predictions/test.parquet  held-out truth, prediction, class probabilities
+  metrics.parquet     every metric per model and fold, plus normalised and
+                      fixed-prevalence average precision
+  curves.parquet      ROC / PR / calibration points
+  history.parquet     training events (torch: per-epoch losses)
+  summary.json        per model: mean / SD / n over folds
+models/<model_id>/    each fold model (ModelManifest + skops / state dict),
+                      `originating_run_id` pointing back at the run
 ```
+
+Planned additions: `models/final` (`MLR-02`), `applications/<id>/`
+(`MLR-02`), `explanations/<id>/` and figures (`MLR-03`, `MLR-04`). Not yet
+recorded: a content hash of a coordinate map (the plan hash covers its path).
 
 The workspace `index/` lists runs with their tags and headline metrics, so a
 project can find "every model on task X" without walking directories.
@@ -141,7 +149,7 @@ the stores.
 
 | item | status | scope |
 |---|---|---|
-| `MLR-01` train-and-publish | proposed | one call: bind a plan job, train each model per fold, publish run / data / models / evaluation records and index; fixed-prevalence AUPRC (reweighted, subsampled) in smftools metrics |
+| `MLR-01` train-and-publish | implemented (`feature/ml-train-and-publish`) | one call: bind a plan job, train each model per fold, publish run / data / models / evaluation records and index; fixed-prevalence AUPRC (reweighted, subsampled) in smftools metrics |
 | `MLR-02` final models and apply | proposed | optional all-groups final model; apply a run to another dataset with records |
 | `MLR-03` explanation records | proposed | position importance, per-molecule attribution matrices, and the CNN detector catalogue per run and evaluation set, out-of-fold; fold consistency |
 | `MLR-04` attribution clustermap | proposed | input layers beside attributions, shared row order, label / score / fold strips; detector catalogue figures |
@@ -154,10 +162,12 @@ the stores.
 
 ### `MLR-01` -- train-and-publish
 
-`orchestration.train_and_publish(plan, job, *, project_dir | experiment_dir,
-tags=None, policy=None, registry=BUILTIN, final_model=False)` -> run records
-(one run per model of the job), composing `bind_ml_job`,
-`run_bound_train_job` and the service's train lifecycle; fold models through
+`orchestration.train_and_publish(bound, *, workspace | project_dir, tags,
+sklearn_options, torch_options, registry, prevalence=0.10, ...)` -> one run
+per bound train job, composing `iter_bound_train_job` (fold runs one at a
+time, each model published and released) and the service's train lifecycle
+(failures publish a failed run and raise); the final model moves to
+`MLR-02`; fold models through
 `publish_sklearn_model` / `publish_torch_model`; per-fold molecule lists;
 predictions, metrics, curves, history. `evaluation.metrics` gains
 `average_precision_at_prevalence` (reweighted, and subsampled with draws and a
@@ -168,6 +178,12 @@ reloading a fold model reproduces its predictions; the molecule lists equal
 the split; the fixed-prevalence metric equals a direct computation; a second
 call with the same plan publishes a new run (immutable) and the index lists
 both.
+
+Evidence: `tests/integration/machine_learning/test_train_and_publish.py` (NB
+and RF over three held-out experiments; a residual CNN with an explicit
+train / validation / test split -- torch training needs a validation role,
+which leave-one-group-out lacks until `MLR-07`; a failed run) and
+`tests/unit/machine_learning/test_ml_prevalence_metric.py`.
 
 ### `MLR-02` -- final models and apply
 

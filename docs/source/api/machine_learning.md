@@ -154,6 +154,7 @@ Backend-neutral job services, planning, and dispatch.
    smftools.machine_learning.orchestration.contracts
    smftools.machine_learning.orchestration.planning
    smftools.machine_learning.orchestration.resolution
+   smftools.machine_learning.orchestration.runs
    smftools.machine_learning.orchestration.service
 ```
 
