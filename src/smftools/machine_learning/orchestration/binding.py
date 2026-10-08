@@ -394,15 +394,14 @@ def run_bound_train_job(
     )
 
 
-def iter_bound_train_job(
+def _job_models(
     bound: BoundJob,
-    *,
-    sklearn_options: SklearnTrainOptions | None = None,
-    torch_options: TorchTrainOptions | None = None,
-    registry: ModelRegistry = BUILTIN_MODEL_REGISTRY,
-) -> Iterator[FoldRun]:
-    """As `run_bound_train_job`, one fold run at a time (model-major), so a
-    caller can publish and release each fitted model before the next."""
+    sklearn_options: SklearnTrainOptions | None,
+    torch_options: TorchTrainOptions | None,
+    registry: ModelRegistry,
+) -> Iterator[tuple[str, Any, Any, SklearnTrainOptions | None, TorchTrainOptions | None]]:
+    """Each job model resolved, with its backend's options (the plan's
+    balancing profile unless explicit options are given)."""
     job = bound.plan.jobs[bound.job_name]
     if job.action != "train":
         raise MLJobServiceError(f"job {bound.job_name!r} is a {job.action!r} job, not train")
@@ -421,12 +420,33 @@ def iter_bound_train_job(
             sk_options = SklearnTrainOptions(balancing=balancing)
         if spec.backend == "torch" and th_options is None:
             th_options = TorchTrainOptions(balancing=balancing)
+        yield (
+            model_name,
+            spec,
+            resolved,
+            sk_options if spec.backend == "sklearn" else None,
+            th_options if spec.backend == "torch" else None,
+        )
+
+
+def iter_bound_train_job(
+    bound: BoundJob,
+    *,
+    sklearn_options: SklearnTrainOptions | None = None,
+    torch_options: TorchTrainOptions | None = None,
+    registry: ModelRegistry = BUILTIN_MODEL_REGISTRY,
+) -> Iterator[FoldRun]:
+    """As `run_bound_train_job`, one fold run at a time (model-major), so a
+    caller can publish and release each fitted model before the next."""
+    for model_name, _spec, resolved, sk_options, th_options in _job_models(
+        bound, sklearn_options, torch_options, registry
+    ):
         for fold in bound.folds:
             training = train_partition_model(
                 fold.dataset,
                 resolved,
-                sklearn_options=sk_options if spec.backend == "sklearn" else None,
-                torch_options=th_options if spec.backend == "torch" else None,
+                sklearn_options=sk_options,
+                torch_options=th_options,
                 registry=registry,
             )
             predictions = _predict_split(
@@ -442,3 +462,62 @@ def iter_bound_train_job(
                 predictions=predictions,
                 evaluation=evaluate_prediction_result(predictions),
             )
+
+
+FINAL_FOLD = "final"
+
+
+def final_training_split(bound: BoundJob) -> tuple[SplitManifest, PartitionDataset]:
+    """Every selected row in the train role, read as the job's folds are
+    (same groups, read policy and coordinate maps): a final model's data."""
+    split = SplitManifest.create(
+        dataset=bound.snapshot,
+        group_by=bound.folds[0].split.group_by,
+        assignments={item.molecule_uid: "train" for item in bound.snapshot.observations},
+    )
+    read_plan = build_partition_data_plan(
+        bound.snapshot,
+        split,
+        _partition_sources(bound.selection),
+        policy=bound.folds[0].dataset.plan.policy,
+        coordinate_maps=bound.selection.coordinate_maps,
+    )
+    return split, PartitionDataset(read_plan)
+
+
+def iter_bound_final_models(
+    bound: BoundJob,
+    *,
+    final: tuple[SplitManifest, PartitionDataset] | None = None,
+    sklearn_options: SklearnTrainOptions | None = None,
+    torch_options: TorchTrainOptions | None = None,
+    registry: ModelRegistry = BUILTIN_MODEL_REGISTRY,
+) -> Iterator[FoldRun]:
+    """Each job model fit on every selected row (no held-out evaluation:
+    ``predictions`` and ``evaluation`` are ``None``) -- the model to apply to
+    new data, its performance estimated by the folds. ``final``: a prebuilt
+    `final_training_split`."""
+    _split, dataset = final or final_training_split(bound)
+    for model_name, spec, resolved, sk_options, th_options in _job_models(
+        bound, sklearn_options, torch_options, registry
+    ):
+        if spec.backend == "torch":
+            # Torch training stops early on a validation role (`MLR-07`).
+            raise MLJobServiceError(
+                f"model {model_name!r}: a final torch model needs a validation role, "
+                "which an all-rows final split does not have"
+            )
+        training = train_partition_model(
+            dataset,
+            resolved,
+            sklearn_options=sk_options,
+            torch_options=th_options,
+            registry=registry,
+        )
+        yield FoldRun(
+            fold_name=FINAL_FOLD,
+            model_name=model_name,
+            training=training,
+            predictions=None,
+            evaluation=None,
+        )

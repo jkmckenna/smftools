@@ -126,6 +126,25 @@ fixed positive prevalence (`prevalence`, default 10 %); ROC / PR curves; trainin
 fold summary. The workspace run index (`index/runs.json`) lists every run with its tags and
 summary. A failed job still publishes a failed run manifest, then raises.
 
+To reuse a model, train a final one on every selected row as well, then apply it to any dataset
+with the same channels and positions (and classes, if it has labels) through a plan's apply job:
+
+```python
+run = train_and_publish(bound, project_dir="path/to/project", final_model=True)
+final_id = run.model_ids["nb"]["final"]
+
+# plan_new declares the new dataset and a job
+#   {"action": "apply", "dataset": "new_cohort", "model": "nb"}  (or "model": "model:<id>")
+from smftools.machine_learning.orchestration import apply_and_publish
+
+applied = apply_and_publish(plan_new, "apply", model_id=final_id, project_dir="path/to/project")
+applied.read(runs.APPLIED_PREDICTIONS)   # molecule, class probabilities (and truth, if labeled)
+```
+
+The apply run's manifest names the source model, and `model.json` its originating train run.
+Labeled data also gets metrics, curves and a summary; mismatched channels, positions or classes
+are refused, naming the difference. Final torch models wait for a validation role.
+
 For a whole-cohort analysis with no folds -- an embedding, clustering -- `bind_ml_dataset` reads
 every selected row of one dataset through the same selection (label tables, filters, `positions`,
 coordinate frames), and the plan may declare datasets only:

@@ -24,7 +24,13 @@ the result is an immutable run in the ML workspace:
   metrics, which the workspace run index carries with the tags.
 
 Fold models are published as they are trained and released, so memory holds
-one fitted model at a time.
+one fitted model at a time. With ``final_model=True`` each model is also fit
+on every selected row (fold ``"final"``; `MLR-02`), the model to reuse.
+
+`apply_and_publish` (`MLR-02`) applies one published model to a plan's apply
+job dataset -- after checking it has the model's channels, positions and
+classes -- and publishes an apply run naming the source model: the applied
+molecules, predictions and, for labeled data, metrics, curves and summary.
 """
 
 from __future__ import annotations
@@ -32,7 +38,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass, is_dataclass
+from dataclasses import asdict, dataclass, is_dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -51,19 +57,37 @@ from ..evaluation import (
     sklearn_training_history,
     torch_training_history,
 )
+from ..manifests import SplitManifest
 from ..models.registry import BUILTIN_MODEL_REGISTRY, ModelRegistry
 from ..workspace import MLWorkspace, resolve_ml_workspace
-from .actions import SklearnTrainOptions, TorchTrainOptions
-from .binding import BoundJob, FoldRun, iter_bound_train_job
+from .actions import (
+    SklearnTrainOptions,
+    TorchTrainOptions,
+    apply_partition_model,
+    evaluate_prediction_result,
+)
+from .binding import (
+    FINAL_FOLD,
+    BoundDataset,
+    BoundJob,
+    FoldRun,
+    _concat_predictions,
+    bind_ml_dataset,
+    final_training_split,
+    iter_bound_final_models,
+    iter_bound_train_job,
+)
 from .contracts import (
     JobArtifact,
     JobExecutionContext,
     JobExecutionOutcome,
     JobOperationResult,
     MLJobServiceError,
+    ModelSelectionRequest,
     ResolvedJob,
 )
-from .service import _now, run_train_job
+from .resolution import resolve_model_selection
+from .service import _now, run_apply_job, run_train_job
 
 # Run payloads (paths inside the run bundle) and their roles.
 TAGS = "tags.json"
@@ -121,9 +145,13 @@ def _jsonable(value: Any) -> Any:
     return json.loads(json.dumps(payload, default=str, sort_keys=True))
 
 
-def _split_family_id(bound: BoundJob) -> str:
-    """One id for the job's folds: a digest of their split ids in fold order."""
-    joined = "\n".join(fold.split.split_id for fold in bound.folds)
+def _split_family_id(bound: BoundJob, final_split: SplitManifest | None = None) -> str:
+    """One id for the job's folds (and final split): a digest of their split
+    ids in fold order."""
+    ids = [fold.split.split_id for fold in bound.folds]
+    if final_split is not None:
+        ids.append(final_split.split_id)
+    joined = "\n".join(ids)
     return hashlib.sha256(joined.encode()).hexdigest()
 
 
@@ -136,7 +164,9 @@ def _tags(tags: Mapping[str, Any] | None) -> dict[str, str]:
     return dict(sorted(result.items()))
 
 
-def _membership(bound: BoundJob) -> tuple[pd.DataFrame, list[dict]]:
+def _membership(
+    bound: BoundJob, final_split: SplitManifest | None = None
+) -> tuple[pd.DataFrame, list[dict]]:
     observations = pd.DataFrame(
         {
             "molecule_uid": [item.molecule_uid for item in bound.snapshot.observations],
@@ -148,19 +178,37 @@ def _membership(bound: BoundJob) -> tuple[pd.DataFrame, list[dict]]:
             ),
         }
     ).set_index("molecule_uid")
+    folds = [
+        (
+            _fold(fold.fold_name),
+            _held_out(fold.fold_name),
+            fold.split.split_id,
+            dict(fold.resolution.assignments),
+        )
+        for fold in bound.folds
+    ]
+    if final_split is not None:
+        folds.append(
+            (
+                FINAL_FOLD,
+                None,
+                final_split.split_id,
+                {item.molecule_uid: "train" for item in bound.snapshot.observations},
+            )
+        )
     frames, splits = [], []
-    for fold in bound.folds:
-        roles = pd.Series(dict(fold.resolution.assignments), name="role")
+    for fold_name, held_out, split_id, assignments in folds:
+        roles = pd.Series(assignments, name="role")
         frame = observations.loc[roles.index].rename_axis("molecule_uid")
         frame = frame.assign(role=roles.to_numpy())
-        frame.insert(0, "fold", _fold(fold.fold_name))
+        frame.insert(0, "fold", fold_name)
         frames.append(frame.reset_index())
         counts = frame.groupby(["role", "class_id"], dropna=False).size()
         splits.append(
             {
-                "fold": _fold(fold.fold_name),
-                "held_out": _held_out(fold.fold_name),
-                "split_id": fold.split.split_id,
+                "fold": fold_name,
+                "held_out": held_out,
+                "split_id": split_id,
                 "n_by_role": {
                     role: int(n) for role, n in frame["role"].value_counts().sort_index().items()
                 },
@@ -370,6 +418,7 @@ def train_and_publish(
     seed: int = 0,
     environment: EnvironmentRecord | None = None,
     rebuild_index: bool = True,
+    final_model: bool = False,
 ) -> PublishedTrainRun:
     """Train every model of a bound train job per fold and publish the run.
 
@@ -386,6 +435,11 @@ def train_and_publish(
         prevalence_draws / seed: Subsampling draws and their seed.
         environment: Recorded execution environment (captured by default).
         rebuild_index: Rebuild the workspace run / model index afterwards.
+        final_model: Also fit each model on every selected row (fold
+            ``"final"`` in ``model_ids`` and the records; no held-out
+            evaluation -- the folds estimate its performance), the model to
+            apply to new data with `apply_and_publish`. Not yet for torch
+            models (they need a validation role).
 
     Returns:
         The published run. Failures still publish a failed run manifest and
@@ -403,6 +457,14 @@ def train_and_publish(
     label_schema = bound.snapshot.label_schema
     positive_class = None if label_schema is None else label_schema.positive_class
     backends = {name: bound.plan.models[name].backend for name in job_spec.models}
+    final = None
+    if final_model:
+        torch_models = sorted(name for name, backend in backends.items() if backend == "torch")
+        if torch_models:
+            raise MLJobServiceError(
+                f"final models for torch models {torch_models} need a validation role (MLR-07)"
+            )
+        final = final_training_split(bound)
     job = ResolvedJob(
         plan=bound.plan,
         workspace=workspace,
@@ -418,9 +480,10 @@ def train_and_publish(
                 {"fold": _fold(fold.fold_name), "split_id": fold.split.split_id}
                 for fold in bound.folds
             ],
+            "final_split_id": None if final is None else final[0].split_id,
         },
         dataset_snapshot_id=bound.snapshot.snapshot_id,
-        split_id=_split_family_id(bound),
+        split_id=_split_family_id(bound, None if final is None else final[0]),
         seeds={"prevalence_subsampling": seed},
     )
     state: dict[str, Any] = {}
@@ -428,17 +491,13 @@ def train_and_publish(
     def operation(context: JobExecutionContext) -> JobOperationResult[None]:
         context.advance_phase("record_data")
         atomic_write_json(context.output_path(TAGS), tags)
-        membership, splits = _membership(bound)
+        membership, splits = _membership(bound, None if final is None else final[0])
         membership.to_parquet(context.output_path(MEMBERSHIP), index=False)
         atomic_write_json(context.output_path(SPLITS), splits)
         model_ids: dict[str, dict[str, str]] = {}
         models, predictions, metrics, curves, history = [], [], [], [], []
-        for run in iter_bound_train_job(
-            bound,
-            sklearn_options=sklearn_options,
-            torch_options=torch_options,
-            registry=registry,
-        ):
+
+        def publish(run: FoldRun) -> str:
             context.advance_phase(f"train:{run.model_name}:{_fold(run.fold_name)}")
             backend = backends[run.model_name]
             published = _publish_model(
@@ -455,7 +514,7 @@ def train_and_publish(
                 {
                     "model": run.model_name,
                     "fold": _fold(run.fold_name),
-                    "held_out": _held_out(run.fold_name),
+                    "held_out": None if run.fold_name == FINAL_FOLD else _held_out(run.fold_name),
                     "model_id": model_id,
                     "backend": backend,
                     "family": published.manifest.family,
@@ -464,6 +523,16 @@ def train_and_publish(
                     "train_class_counts": list(run.training.class_counts),
                 }
             )
+            history.extend(_history_rows(run, backend))
+            return model_id
+
+        for run in iter_bound_train_job(
+            bound,
+            sklearn_options=sklearn_options,
+            torch_options=torch_options,
+            registry=registry,
+        ):
+            model_id = publish(run)
             predictions.append(_prediction_rows(run, model_id))
             metrics.extend(
                 _metric_rows(
@@ -475,7 +544,15 @@ def train_and_publish(
                 )
             )
             curves.extend(_curve_rows(run))
-            history.extend(_history_rows(run, backend))
+        if final is not None:
+            for run in iter_bound_final_models(
+                bound,
+                final=final,
+                sklearn_options=sklearn_options,
+                torch_options=torch_options,
+                registry=registry,
+            ):
+                publish(run)
         context.advance_phase("record_evaluation")
         atomic_write_json(context.output_path(MODELS), models)
         pd.concat(predictions, ignore_index=True).to_parquet(
@@ -506,6 +583,251 @@ def train_and_publish(
         path=outcome.bundle.path,
         workspace=workspace,
         model_ids=state["model_ids"],
+        summary=state["summary"],
+        outcome=outcome,
+    )
+
+
+# Apply-run payloads.
+APPLIED_MOLECULES = "data/molecules.parquet"
+APPLIED_PREDICTIONS = "predictions/applied.parquet"
+APPLIED_MODEL = "model.json"
+APPLIED_COHORT = "applied"
+
+
+@dataclass(frozen=True)
+class PublishedApplyRun:
+    """One published apply run: a saved model's predictions on a dataset."""
+
+    run_id: str
+    path: Path
+    workspace: MLWorkspace
+    model_id: str
+    labeled: bool
+    summary: Mapping[str, Any]
+    outcome: JobExecutionOutcome
+
+    def read(self, payload: str) -> Any:
+        """One run payload (e.g. ``APPLIED_PREDICTIONS``): a DataFrame or parsed JSON."""
+        path = self.path / payload
+        return pd.read_parquet(path) if path.suffix == ".parquet" else json.loads(path.read_text())
+
+
+def _load_model(workspace: MLWorkspace, model_id: str, backend: str):
+    if backend == "sklearn":
+        from ..models.sklearn_artifacts import load_published_sklearn_model
+
+        return load_published_sklearn_model(workspace, model_id)
+    if backend == "torch":
+        from ..models.torch_artifacts import load_published_torch_model
+
+        return load_published_torch_model(workspace, model_id)
+    raise MLJobServiceError(f"no model loader for backend {backend!r}")
+
+
+def _check_applicable(model: Any, bound: BoundDataset) -> None:
+    """Refuse data the model was not fit on: channels, positions, classes."""
+    channels = tuple(channel.name for channel in bound.snapshot.input_schema.channels)
+    fitted_channels = tuple(model.transform.channel_names)
+    if channels != fitted_channels:
+        raise MLJobServiceError(
+            f"dataset channels {list(channels)} differ from the model's {list(fitted_channels)}"
+        )
+    coordinates = tuple(int(value) for value in bound.dataset.plan.coordinates)
+    fitted = tuple(int(value) for value in model.transform.coordinates)
+    if coordinates != fitted:
+        missing = sorted(set(fitted) - set(coordinates))
+        extra = sorted(set(coordinates) - set(fitted))
+        raise MLJobServiceError(
+            "dataset positions differ from the model's: "
+            f"{len(missing)} missing (first {missing[:5]}), {len(extra)} extra "
+            f"(first {extra[:5]})"
+        )
+    labels = bound.snapshot.label_schema
+    if labels is not None and tuple(labels.class_order) != tuple(model.label_schema.class_order):
+        raise MLJobServiceError(
+            f"dataset classes {list(labels.class_order)} differ from the model's "
+            f"{list(model.label_schema.class_order)}"
+        )
+
+
+def apply_and_publish(
+    plan,
+    job_name: str,
+    *,
+    model_id: str | None = None,
+    workspace: MLWorkspace | None = None,
+    project_dir: str | Path | None = None,
+    tags: Mapping[str, Any] | None = None,
+    policy=None,
+    prevalence: float | None = 0.10,
+    prevalence_draws: int = 50,
+    seed: int = 0,
+    environment: EnvironmentRecord | None = None,
+    rebuild_index: bool = True,
+) -> PublishedApplyRun:
+    """Apply one published model to a plan's apply-job dataset and publish the run.
+
+    The job (``action: apply``) names a dataset and a model: ``model:<id>``
+    for an exact published model, or a plan model key with ``model_id``
+    given here (typically a train run's ``model_ids[key]["final"]``). The
+    dataset must have the model's channels, positions and (when labeled)
+    classes. The run records the applied molecules, predictions and -- when
+    the dataset has labels -- metrics, curves and a summary as in a train run;
+    its manifest names the source model.
+
+    Args:
+        plan / job_name: The plan and its apply job.
+        model_id: The published model, when the job names a model key.
+        workspace / project_dir: Where the model lives and the run is published.
+        tags, prevalence, prevalence_draws, seed, environment, rebuild_index:
+            As `train_and_publish`.
+        policy: `PartitionReadPolicy` for reading the dataset.
+    """
+    if (workspace is None) == (project_dir is None):
+        raise MLJobServiceError("pass exactly one of workspace or project_dir")
+    if workspace is None:
+        workspace = resolve_ml_workspace(project_dir=project_dir)
+    if job_name not in plan.jobs:
+        raise MLJobServiceError(f"unknown job {job_name!r}")
+    job_spec = plan.jobs[job_name]
+    if job_spec.action != "apply":
+        raise MLJobServiceError(f"job {job_name!r} is a {job_spec.action!r} job, not apply")
+    if job_spec.model.startswith("model:"):
+        named = job_spec.model.removeprefix("model:")
+        if model_id is not None and model_id != named:
+            raise MLJobServiceError(f"job {job_name!r} names model {named}, not {model_id}")
+        model_id = named
+    elif model_id is None:
+        raise MLJobServiceError(
+            f"job {job_name!r} names model key {job_spec.model!r}: pass the published model_id"
+        )
+    selection = resolve_model_selection(
+        workspace, ModelSelectionRequest(kind="exact", model_id=model_id)
+    )
+    manifest = selection.manifest
+    model = _load_model(workspace, model_id, manifest.backend)
+    owner = {"experiment_dir": workspace.owner_root}
+    if workspace.scope_kind == "project":
+        owner = {"project_dir": workspace.owner_root}
+    bound = bind_ml_dataset(plan, job_spec.dataset, policy=policy, **owner)
+    _check_applicable(model, bound)
+    labeled = bound.snapshot.label_schema is not None
+    positive_class = model.label_schema.positive_class
+    environment = environment or capture_environment_record()
+    tags = _tags(tags)
+    job = ResolvedJob(
+        plan=plan,
+        workspace=workspace,
+        job_name=job_name,
+        environment=environment,
+        resolved_config={
+            "tags": tags,
+            "model_id": model_id,
+            "prevalence": prevalence,
+            "prevalence_draws": prevalence_draws,
+        },
+        dataset_snapshot_id=bound.snapshot.snapshot_id,
+        model_selections=(selection,),
+        seeds={"prevalence_subsampling": seed},
+    )
+    state: dict[str, Any] = {}
+
+    def operation(context: JobExecutionContext) -> JobOperationResult[None]:
+        context.advance_phase("record_data")
+        atomic_write_json(context.output_path(TAGS), tags)
+        atomic_write_json(
+            context.output_path(APPLIED_MODEL),
+            {
+                "model_id": model_id,
+                "model_key": manifest.model_key,
+                "backend": manifest.backend,
+                "family": manifest.family,
+                "originating_run_id": manifest.originating_run_id,
+                "split_id": manifest.split_id,
+            },
+        )
+        identity = bound.identity.copy()
+        identity.to_parquet(context.output_path(APPLIED_MOLECULES), index=False)
+        context.advance_phase("apply")
+        parts = [
+            apply_partition_model(
+                model,
+                batch,
+                phase="test" if labeled else "inference",
+                cohort=APPLIED_COHORT,
+                model_id=model_id,
+            )
+            for batch in bound.iter_batches()
+        ]
+        predictions = _concat_predictions(parts)
+        # Whole-dataset batches may carry an internal "train" role: label the
+        # cohort as what it is.
+        predictions = replace(predictions, split="test" if labeled else "inference")
+        run = FoldRun(
+            fold_name=APPLIED_COHORT,
+            model_name=manifest.model_key,
+            training=None,
+            predictions=predictions,
+            evaluation=evaluate_prediction_result(predictions) if labeled else None,
+        )
+        _prediction_rows(run, model_id).to_parquet(
+            context.output_path(APPLIED_PREDICTIONS), index=False
+        )
+        artifacts = [
+            JobArtifact(role="tags", relative_path=TAGS, media_type="application/json"),
+            JobArtifact(role="model", relative_path=APPLIED_MODEL, media_type="application/json"),
+            JobArtifact(
+                role="molecules",
+                relative_path=APPLIED_MOLECULES,
+                media_type="application/vnd.apache.parquet",
+            ),
+            JobArtifact(
+                role="predictions",
+                relative_path=APPLIED_PREDICTIONS,
+                media_type="application/vnd.apache.parquet",
+            ),
+        ]
+        summary: dict = {}
+        if labeled:
+            context.advance_phase("evaluate")
+            metrics = pd.DataFrame(
+                _metric_rows(
+                    run,
+                    positive_class=positive_class,
+                    prevalence=prevalence,
+                    draws=prevalence_draws,
+                    seed=seed,
+                )
+            )
+            metrics.to_parquet(context.output_path(METRICS), index=False)
+            curves = _curve_rows(run)
+            (pd.concat(curves, ignore_index=True) if curves else pd.DataFrame()).to_parquet(
+                context.output_path(CURVES), index=False
+            )
+            summary = _summary(metrics, positive_class)
+            atomic_write_json(context.output_path(SUMMARY), summary)
+            artifacts += [
+                JobArtifact(
+                    role=role,
+                    relative_path=path,
+                    media_type=media_type,
+                )
+                for role, path, media_type in _PAYLOADS
+                if role in {"metrics", "curves", "summary"}
+            ]
+        state["summary"] = summary
+        return JobOperationResult(value=None, artifacts=tuple(artifacts))
+
+    outcome = run_apply_job(job, operation)
+    if rebuild_index:
+        rebuild_workspace_indexes(workspace)
+    return PublishedApplyRun(
+        run_id=outcome.manifest.run_id,
+        path=outcome.bundle.path,
+        workspace=workspace,
+        model_id=model_id,
+        labeled=labeled,
         summary=state["summary"],
         outcome=outcome,
     )

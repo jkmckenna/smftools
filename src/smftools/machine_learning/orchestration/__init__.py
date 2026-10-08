@@ -15,6 +15,8 @@ from .binding import (
     FoldRun,
     bind_ml_dataset,
     bind_ml_job,
+    final_training_split,
+    iter_bound_final_models,
     iter_bound_train_job,
     run_bound_train_job,
     snapshot_from_selection,
@@ -42,7 +44,7 @@ from .planning import (
     resolve_plan_model,
 )
 from .resolution import resolve_model_selection
-from .runs import PublishedTrainRun, train_and_publish
+from .runs import PublishedApplyRun, PublishedTrainRun, apply_and_publish, train_and_publish
 from .service import (
     dry_run_job,
     run_apply_job,
@@ -69,6 +71,7 @@ __all__ = [
     "MLJobServiceError",
     "MLWorkflowDryRun",
     "MLWorkflowPlanningError",
+    "PublishedApplyRun",
     "PublishedTrainRun",
     "ModelMetricCandidate",
     "ModelSelectionRequest",
@@ -76,12 +79,15 @@ __all__ = [
     "ResolvedModelSelection",
     "SklearnTrainOptions",
     "TorchTrainOptions",
+    "apply_and_publish",
     "apply_partition_model",
     "bind_ml_dataset",
     "bind_ml_job",
     "dry_run_job",
     "evaluate_prediction_result",
     "explain_partition_model",
+    "final_training_split",
+    "iter_bound_final_models",
     "iter_bound_train_job",
     "resolve_model_selection",
     "plan_ml_workflow",
