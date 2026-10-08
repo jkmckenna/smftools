@@ -298,17 +298,28 @@ class ResolvedJob:
             if self.model_selections or self.source_run_ids:
                 raise MLJobServiceError("train jobs cannot consume fitted model or run selections")
         elif job.action in {"apply", "evaluate", "explain"}:
-            if len(self.model_selections) != 1:
+            # An explain job may cover one train run's fold models together
+            # (out-of-fold explanations, `MLR-03`): same key, same run.
+            if job.action == "explain" and len(self.model_selections) > 1:
+                keys = {item.manifest.model_key for item in self.model_selections}
+                runs = {item.manifest.originating_run_id for item in self.model_selections}
+                if len(keys) != 1 or len(runs) != 1:
+                    raise MLJobServiceError(
+                        "an explain job's models must share one model key and training run"
+                    )
+                if job.model is not None and job.model.startswith("model:"):
+                    raise MLJobServiceError("an exact model:<id> explain job takes one model")
+            elif len(self.model_selections) != 1:
                 raise MLJobServiceError(f"{job.action} requires exactly one resolved model")
-            selection = self.model_selections[0]
-            if selection.manifest.workspace_id != self.workspace.workspace_id:
-                raise MLJobServiceError("resolved model belongs to a different ML workspace")
-            if job.model is not None:
-                if job.model.startswith("model:"):
-                    if selection.model_id != job.model.removeprefix("model:"):
-                        raise MLJobServiceError("resolved model ID differs from the plan job")
-                elif selection.manifest.model_key != job.model:
-                    raise MLJobServiceError("resolved model key differs from the plan job")
+            for selection in self.model_selections:
+                if selection.manifest.workspace_id != self.workspace.workspace_id:
+                    raise MLJobServiceError("resolved model belongs to a different ML workspace")
+                if job.model is not None:
+                    if job.model.startswith("model:"):
+                        if selection.model_id != job.model.removeprefix("model:"):
+                            raise MLJobServiceError("resolved model ID differs from the plan job")
+                    elif selection.manifest.model_key != job.model:
+                        raise MLJobServiceError("resolved model key differs from the plan job")
             if self.source_run_ids:
                 raise MLJobServiceError(f"{job.action} source runs come from model provenance")
         elif job.action == "plot":

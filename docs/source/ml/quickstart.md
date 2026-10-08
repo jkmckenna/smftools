@@ -145,6 +145,27 @@ The apply run's manifest names the source model, and `model.json` its originatin
 Labeled data also gets metrics, curves and a summary; mismatched channels, positions or classes
 are refused, naming the difference. Final torch models wait for a validation role.
 
+To explain a run's model, out of fold -- each held-out molecule by the fold model that held it
+out:
+
+```python
+from smftools.machine_learning.orchestration import explain_run
+from smftools.machine_learning.orchestration import explanations
+
+explained = explain_run(run.run_id, model="nb", method="NaiveBayesLogOdds",
+                        project_dir="path/to/project", max_per_fold=2000)
+molecules, matrix = explained.attributions(fold)   # matrix: molecules x channels x positions
+explained.read(explanations.IMPORTANCE)            # per fold, channel, position
+explained.summary["nb"]["fold_consistency_spearman"]
+```
+
+Methods follow the model: `NaiveBayesLogOdds` (naive Bayes), `TreeSHAP` (random forest),
+`IntegratedGradients` and other Captum methods (torch) give per-molecule matrices;
+`LinearCoefficients` and `PermutationImportance` give position importance only. Classical
+attributions sum each position's transformed features (signal and indicators). Up to
+`max_per_fold` held-out molecules per fold are explained (class-stratified, seeded). The explain
+run names the fold models it used and is refused if the run's data have changed since training.
+
 For a whole-cohort analysis with no folds -- an embedding, clustering -- `bind_ml_dataset` reads
 every selected row of one dataset through the same selection (label tables, filters, `positions`,
 coordinate frames), and the plan may declare datasets only:

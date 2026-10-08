@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -470,3 +471,32 @@ def test_evaluation_service_consumes_predictions_without_training(monkeypatch) -
 
     assert result.predictions is predictions
     assert any(metric.name == "accuracy" for metric in result.metrics)
+
+
+def test_explain_jobs_take_several_fold_models_of_one_run_only(tmp_path: Path) -> None:
+    # MLR-03: out-of-fold explanations cover a train run's fold models together.
+    workspace = _workspace(tmp_path)
+    run_id = str(uuid.uuid4())
+    folds = tuple(
+        ResolvedModelSelection(
+            manifest=_model_manifest(
+                tmp_path, workspace, source_run_id=run_id, content=f"fold-{i}".encode()
+            ),
+            selection_kind="exact",
+        )
+        for i in range(3)
+    )
+    base = _resolved_job(tmp_path, "explain", selection=folds[0])
+
+    job = replace(base, model_selections=folds)
+    assert len(job.source_model_ids) == 3
+
+    other_run = ResolvedModelSelection(
+        manifest=_model_manifest(tmp_path, workspace, source_run_id=str(uuid.uuid4())),
+        selection_kind="exact",
+    )
+    with pytest.raises(MLJobServiceError, match="share one model key and training run"):
+        replace(base, model_selections=(*folds, other_run))
+    apply = _resolved_job(tmp_path, "apply", selection=folds[0])
+    with pytest.raises(MLJobServiceError, match="exactly one resolved model"):
+        replace(apply, model_selections=folds)
