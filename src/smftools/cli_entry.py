@@ -2353,6 +2353,184 @@ def experiment_motif_tracks_cmd(experiment_dir, **options):
     _run_motif_tracks({"experiment_dir": experiment_dir}, **options)
 
 
+def _motif_occupancy_options(command):
+    """Options shared by the project and experiment ``motif-occupancy`` commands."""
+    options = [
+        click.option(
+            "--plan",
+            "plan_path",
+            type=click.Path(exists=True, dir_okay=False, path_type=Path),
+            required=True,
+            help="ML plan whose dataset selects the molecules and carries the channels.",
+        ),
+        click.option("--dataset", required=True, help="Dataset name in the plan."),
+        click.option(
+            "--motif-hits",
+            type=click.Path(exists=True, path_type=Path),
+            required=True,
+            help="motif_hits.parquet from `smftools motifs scan`, or its output directory.",
+        ),
+        click.option(
+            "--output",
+            "-o",
+            "output_dir",
+            type=click.Path(file_okay=False, path_type=Path),
+            required=True,
+            help="Output directory (states are cached here and reused).",
+        ),
+        click.option(
+            "--tf-channel",
+            "tf_channels",
+            multiple=True,
+            help="Channel(s) of TF-sized footprints (e.g. HMM small_bound_stretch at all positions).",
+        ),
+        click.option(
+            "--medium-channel",
+            "medium_channels",
+            multiple=True,
+            help="Channel(s) of medium footprints.",
+        ),
+        click.option(
+            "--nucleosome-channel",
+            "nucleosome_channels",
+            multiple=True,
+            help="Channel(s) of nucleosome-sized or larger footprints (repeatable; combined).",
+        ),
+        click.option(
+            "--accessible-channel",
+            "accessible_channels",
+            multiple=True,
+            help="Channel(s) of accessible features.",
+        ),
+        click.option(
+            "--sites-channel",
+            required=True,
+            help="Channel of raw site calls; observed sites decide whether a read is informative.",
+        ),
+        click.option(
+            "--group-by", multiple=True, help="Identity or label-table column (repeatable)."
+        ),
+        click.option(
+            "--motif-reference",
+            default=None,
+            help="Reference of the motif instances (default: the dataset's frame).",
+        ),
+        click.option("--max-pvalue", type=float, default=None),
+        click.option("--family", "families", multiple=True),
+        click.option("--motif", "motifs", multiple=True),
+        click.option(
+            "--flank",
+            type=int,
+            default=10,
+            show_default=True,
+            help="Sites within this many bp of the motif count toward --min-sites.",
+        ),
+        click.option(
+            "--min-sites",
+            type=int,
+            default=2,
+            show_default=True,
+            help="Observed sites in motif +/- flank for a read to be informative.",
+        ),
+        click.option(
+            "--min-cover",
+            type=float,
+            default=0.5,
+            show_default=True,
+            help="Share of the motif a class must cover to name the state.",
+        ),
+        click.option("--workers", type=int, default=1, show_default=True),
+        click.option("--refresh", is_flag=True, help="Recompute even if cached states match."),
+    ]
+    for option in reversed(options):
+        command = option(command)
+    return command
+
+
+def _run_motif_occupancy(
+    scope,
+    plan_path,
+    dataset,
+    motif_hits,
+    output_dir,
+    tf_channels,
+    medium_channels,
+    nucleosome_channels,
+    accessible_channels,
+    sites_channel,
+    group_by,
+    motif_reference,
+    max_pvalue,
+    families,
+    motifs,
+    flank,
+    min_sites,
+    min_cover,
+    workers,
+    refresh,
+):
+    from .analysis.compute.motif_occupancy import OccupancyRules
+    from .machine_learning.plan import load_ml_plan
+    from .tools.motif_occupancy import run_motif_occupancy
+
+    roles = {
+        "tf_bound": list(tf_channels),
+        "medium_bound": list(medium_channels),
+        "nucleosome": list(nucleosome_channels),
+        "accessible": list(accessible_channels),
+    }
+    try:
+        record = run_motif_occupancy(
+            load_ml_plan(plan_path),
+            dataset,
+            output_dir,
+            motif_hits,
+            roles=roles,
+            sites=sites_channel,
+            **scope,
+            group_by=list(group_by) or None,
+            motif_reference=motif_reference,
+            max_pvalue=max_pvalue,
+            families=list(families) or None,
+            motifs=list(motifs) or None,
+            rules=OccupancyRules(flank=flank, min_sites=min_sites, min_cover=min_cover),
+            workers=workers,
+            refresh=refresh,
+        )
+    except (KeyError, ValueError) as exc:
+        raise click.ClickException(str(exc.args[0] if exc.args else exc)) from exc
+    state = "reused cached states" if record["states_reused"] else "classified"
+    informative = sum(n for s, n in record["state_counts"].items() if s != "uninformative")
+    total = sum(record["state_counts"].values()) or 1
+    click.echo(
+        f"{state}: {record['molecules']} molecules x {record['instances']} motif instances "
+        f"({informative / total:.0%} informative); wrote {output_dir}"
+    )
+
+
+@project_group.command("motif-occupancy")
+@click.argument("project_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@_motif_occupancy_options
+def project_motif_occupancy_cmd(project_dir, **options):
+    """Per-molecule state at every motif instance: TF-bound, medium, nucleosome,
+    accessible, other, or uninformative.
+
+    A read is informative at a motif when it spans the motif and has at least
+    --min-sites observed sites within --flank bp of it; its state is the class
+    covering most of the motif (at least --min-cover). Writes per-read states
+    and per-group fractions with Wilson intervals.
+    """
+    _run_motif_occupancy({"project_dir": project_dir}, **options)
+
+
+@experiment_group.command("motif-occupancy")
+@click.argument("experiment_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@_motif_occupancy_options
+def experiment_motif_occupancy_cmd(experiment_dir, **options):
+    """As ``project motif-occupancy``, for an experiment-scope plan."""
+    _run_motif_occupancy({"experiment_dir": experiment_dir}, **options)
+
+
 def _periodicity_options(command):
     """Options shared by the project and experiment ``periodicity`` commands."""
     options = [
