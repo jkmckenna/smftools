@@ -46,6 +46,10 @@ def _published_directories(root: Path) -> list[Path]:
         if path.is_dir()
         and not path.is_symlink()
         and path.name not in {STAGING_DIRNAME, LOCKS_DIRNAME}
+        # Published bundles are named by their ids; dot-directories are
+        # in-progress staging (the job service's ``runs/.work`` while another
+        # run is executing) and never bundles.
+        and not path.name.startswith(".")
     )
 
 

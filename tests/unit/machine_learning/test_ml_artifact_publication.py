@@ -313,6 +313,20 @@ def test_rebuild_indexes_is_deterministic_and_manifest_authoritative(tmp_path: P
     assert _read_json(model_index)["records"][0]["model_id"] == model.model_id
 
 
+def test_index_rebuild_skips_another_runs_staging(tmp_path: Path) -> None:
+    # Runs executing in parallel stage under runs/.work: never a bundle.
+    workspace = _workspace(tmp_path)
+    run, run_sources = _run_bundle(tmp_path, workspace)
+    publish_bundle(workspace, run, sources=run_sources)
+    in_flight = workspace.runs_root / ".work" / "other-run.abc123"
+    in_flight.mkdir(parents=True)
+    (in_flight / "resolved_plan.json").write_text("{}", encoding="utf-8")
+
+    run_index, _model_index = rebuild_workspace_indexes(workspace)
+
+    assert [record["run_id"] for record in _read_json(run_index)["records"]] == [RUN_ID]
+
+
 def test_index_rebuild_rejects_tampered_authoritative_bundle(tmp_path: Path) -> None:
     workspace = _workspace(tmp_path)
     model, sources = _model_bundle(tmp_path, workspace)
