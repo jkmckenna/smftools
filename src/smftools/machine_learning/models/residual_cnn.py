@@ -40,6 +40,9 @@ def _boolean(value: Any, path: str) -> bool:
     return value
 
 
+_OPTIONAL_DEFAULTS = {"mask_channels": False, "span_masking": False, "max_receptive_field": None}
+
+
 @dataclass(frozen=True)
 class ResidualCNNConfig:
     """Exact architecture parameters for a residual/dilated 1D CNN."""
@@ -55,6 +58,28 @@ class ResidualCNNConfig:
     output_dim: int = 1
     use_se: bool = True
     use_attention_pool: bool = True
+    # `MLR-08`, all off by default (and then left out of `to_dict`, so earlier
+    # architectures keep their identity):
+    # - mask_channels: the validity mask joins the input as one channel per
+    #   input channel, so "no site" and "site, unmodified" differ;
+    # - span_masking: features are kept (and pooled) across each molecule's
+    #   span -- first to last valid position -- not only where a channel is
+    #   valid, so context crosses positions between sparse sites;
+    # - max_receptive_field: refuse an architecture whose receptive field
+    #   exceeds it (and squeeze-excite, which pools the whole molecule).
+    mask_channels: bool = False
+    span_masking: bool = False
+    max_receptive_field: int | None = None
+
+    @property
+    def receptive_field(self) -> int:
+        """Theoretical receptive field in positions: the widest input window
+        one final-layer position (one detector) can see."""
+        return (
+            1
+            + (self.stem_kernel_size - 1)
+            + sum(2 * (self.kernel_size - 1) * dilation for dilation in self.dilations)
+        )
 
     def __post_init__(self) -> None:
         for name in (
@@ -92,12 +117,28 @@ class ResidualCNNConfig:
             "use_attention_pool",
             _boolean(self.use_attention_pool, "use_attention_pool"),
         )
+        object.__setattr__(self, "mask_channels", _boolean(self.mask_channels, "mask_channels"))
+        object.__setattr__(self, "span_masking", _boolean(self.span_masking, "span_masking"))
+        if self.max_receptive_field is not None:
+            limit = _positive_integer(self.max_receptive_field, "max_receptive_field")
+            if self.receptive_field > limit:
+                raise ResidualCNNConfigError(
+                    f"receptive field {self.receptive_field} exceeds max_receptive_field {limit}"
+                )
+            if self.use_se:
+                raise ResidualCNNConfigError(
+                    "a bounded receptive field needs use_se=False: squeeze-excite pools "
+                    "the whole molecule in every block"
+                )
 
     def to_dict(self) -> dict[str, Any]:
         """Return complete JSON-compatible constructor parameters."""
         payload = asdict(self)
         payload["block_channels"] = list(self.block_channels)
         payload["dilations"] = list(self.dilations)
+        for name, default in _OPTIONAL_DEFAULTS.items():
+            if payload[name] == default:
+                payload.pop(name)  # unset: earlier architectures keep their identity
         return payload
 
     @classmethod
@@ -116,8 +157,11 @@ class ResidualCNNConfig:
             "use_se",
             "use_attention_pool",
         }
-        if set(raw) != expected:
-            raise ResidualCNNConfigError(f"residual CNN fields must be exactly {sorted(expected)}")
+        if not expected <= set(raw) <= expected | set(_OPTIONAL_DEFAULTS):
+            raise ResidualCNNConfigError(
+                f"residual CNN fields must be exactly {sorted(expected)} plus optional "
+                f"{sorted(_OPTIONAL_DEFAULTS)}"
+            )
         return cls(
             in_channels=raw["in_channels"],
             stem_channels=raw["stem_channels"],
@@ -130,6 +174,7 @@ class ResidualCNNConfig:
             output_dim=raw["output_dim"],
             use_se=raw["use_se"],
             use_attention_pool=raw["use_attention_pool"],
+            **{name: raw.get(name, default) for name, default in _OPTIONAL_DEFAULTS.items()},
         )
 
 
@@ -248,7 +293,7 @@ class ResidualDilatedCNN1d(nn.Module):
         stem_padding = config.stem_kernel_size // 2
         self.stem = nn.Sequential(
             nn.Conv1d(
-                config.in_channels,
+                config.in_channels * (2 if config.mask_channels else 1),
                 config.stem_channels,
                 kernel_size=config.stem_kernel_size,
                 padding=stem_padding,
@@ -334,6 +379,10 @@ class ResidualDilatedCNN1d(nn.Module):
         masked = values.masked_fill(~valid, 0.0)
         if not torch.isfinite(masked).all():
             raise ValueError("residual CNN values must be finite at every valid position")
+        if self.config.mask_channels:
+            masked = torch.cat([masked, valid.to(masked.dtype)], dim=1)
+        if self.config.span_masking:
+            position_valid = _span(position_valid)
         return masked, position_valid
 
     @staticmethod
@@ -408,6 +457,80 @@ class ResidualDilatedCNN1d(nn.Module):
         if self.attn_pool is not None:
             pooled.append(self.attn_pool(features, position_mask=position_valid))
         return self.head(torch.cat(pooled, dim=1))
+
+
+def _span(position_valid):
+    """True from each row's first to last valid position (its read span)."""
+    positions = torch.arange(position_valid.shape[1], device=position_valid.device)
+    big = position_valid.shape[1]
+    first = torch.where(position_valid, positions, big).min(dim=1).values
+    last = torch.where(position_valid, positions, -1).max(dim=1).values
+    return (positions[None, :] >= first[:, None]) & (positions[None, :] <= last[:, None])
+
+
+def effective_span(
+    model,
+    values,
+    *,
+    observed_mask=None,
+    availability_mask=None,
+    design_mask=None,
+    padding_mask=None,
+    n_centers: int = 8,
+    masses: Sequence[float] = (0.5, 0.9),
+) -> dict[str, Any]:
+    """How far, in practice, a final-layer detector looks (`MLR-08`).
+
+    For ``n_centers`` positions spread over the input (kept a half receptive
+    field from the ends when the input is long enough), the gradient of the
+    summed final-layer features at that position with respect to the inputs,
+    in absolute value and summed over molecules and channels, gives an
+    influence profile by offset from the centre. The effective span at mass
+    ``m`` is the narrowest centred window (2w + 1 positions) holding ``m`` of
+    the total influence. Influence concentrates at a detector's centre, so it
+    is often well below the theoretical ``receptive_field``.
+    """
+    config = model.config
+    was_training = bool(model.training)
+    model.eval()
+    try:
+        values = values.detach().clone().requires_grad_(True)
+        n_positions = values.shape[-1]
+        half = config.receptive_field // 2
+        low, high = (
+            (half, n_positions - 1 - half) if n_positions > 2 * half else (0, n_positions - 1)
+        )
+        centers = sorted({int(round(c)) for c in np.linspace(low, high, n_centers)})
+        profile = np.zeros(2 * n_positions - 1)
+        offsets = np.arange(n_positions)
+        for center in centers:
+            values.grad = None
+            features = model.forward_features(
+                values,
+                observed_mask=observed_mask,
+                availability_mask=availability_mask,
+                design_mask=design_mask,
+                padding_mask=padding_mask,
+            )
+            features[:, :, center].sum().backward()
+            gradient = values.grad.detach().abs().sum(dim=(0, 1)).cpu().numpy()
+            profile[offsets - center + n_positions - 1] += gradient
+    finally:
+        model.zero_grad(set_to_none=True)
+        model.train(was_training)
+    result: dict[str, Any] = {"receptive_field": config.receptive_field, "n_centers": len(centers)}
+    total = profile.sum()
+    centre = n_positions - 1
+    for mass in masses:
+        key = f"effective_span_{int(round(mass * 100))}"
+        if total <= 0:
+            result[key] = None
+            continue
+        width = 0
+        while profile[centre - width : centre + width + 1].sum() < mass * total:
+            width += 1
+        result[key] = 2 * width + 1
+    return result
 
 
 def build_residual_cnn(config: ResidualCNNConfig):

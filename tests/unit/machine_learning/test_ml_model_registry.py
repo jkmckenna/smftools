@@ -83,6 +83,10 @@ def test_builtin_registry_is_explicit_and_deterministically_ordered() -> None:
         "bernoulli_nb_v1",
         "logistic_regression_v1",
         "random_forest_v1",
+        "rcnn_2_3_nucleosomes_v1",
+        "rcnn_4_6_nucleosomes_v1",
+        "rcnn_full_locus_v1",
+        "rcnn_subnucleosome_v1",
         "residual_dilated_cnn_v1",
     )
     assert BUILTIN_MODEL_REGISTRY.definition("bernoulli_nb").capabilities.incremental_fit

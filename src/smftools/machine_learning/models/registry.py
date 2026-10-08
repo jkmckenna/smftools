@@ -731,6 +731,47 @@ _RESIDUAL_CNN_RECIPE = ModelRecipe.create(
     supported_channel_roles=("*",),
 )
 
+# `MLR-08` detector-scale ladder: position-agnostic residual CNNs whose
+# detectors (final-layer positions) see at most a bounded window --
+# sub-nucleosome, 2-3, 4-6 nucleosomes, the full locus (positions are bp).
+# Alike except for dilations (and so depth); squeeze-excite off (it pools the
+# whole molecule); validity mask as input; features kept across each read.
+DETECTOR_SCALE_DILATIONS = {
+    "rcnn_subnucleosome": (1, 1, 2, 2, 3, 4),  # 113 bp
+    "rcnn_2_3_nucleosomes": (1, 2, 4, 8, 16, 32),  # 513 bp
+    "rcnn_4_6_nucleosomes": (1, 2, 4, 8, 16, 32, 64),  # 1,025 bp
+    "rcnn_full_locus": (1, 2, 4, 8, 16, 32, 64, 128, 256, 128),  # 5,121 bp
+}
+
+
+def _detector_scale_recipe(name: str, dilations: tuple[int, ...]) -> ModelRecipe:
+    shape = ResidualCNNConfig(
+        in_channels=1, dilations=dilations, block_channels=(64,) * len(dilations), use_se=False
+    )
+    config = ResidualCNNConfig(
+        in_channels=1,
+        dilations=dilations,
+        block_channels=(64,) * len(dilations),
+        use_se=False,
+        mask_channels=True,
+        span_masking=True,
+        max_receptive_field=shape.receptive_field,
+    )
+    return ModelRecipe.create(
+        name=f"{name}_v1",
+        version="1",
+        family="residual_dilated_cnn",
+        backend="torch",
+        parameters=config.to_dict(),
+        supported_modalities=_SUPPORTED_MODALITIES,
+        supported_channel_roles=("*",),
+    )
+
+
+_DETECTOR_SCALE_RECIPES = tuple(
+    _detector_scale_recipe(name, dilations) for name, dilations in DETECTOR_SCALE_DILATIONS.items()
+)
+
 BUILTIN_MODEL_REGISTRY = ModelRegistry(
     definitions=(
         ModelFamilyDefinition(
@@ -775,5 +816,6 @@ BUILTIN_MODEL_REGISTRY = ModelRegistry(
         _LOGISTIC_RECIPE,
         _FOREST_RECIPE,
         _RESIDUAL_CNN_RECIPE,
+        *_DETECTOR_SCALE_RECIPES,
     ),
 )

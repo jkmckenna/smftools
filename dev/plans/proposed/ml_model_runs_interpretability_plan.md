@@ -158,8 +158,8 @@ the stores.
 | `MLR-04` attribution clustermap | done (PR #704) | input layers beside attributions, shared row order, label / score / fold strips; detector catalogue figures |
 | `MLR-05` run comparison | done (PR #705) | select runs by tags; paired per-fold metrics, bootstrap intervals, figures |
 | `MLR-06` fold-matrix cache | proposed | read each task's data once for every model |
-| `MLR-07` validation role | implemented (`feature/ml-validation-fraction`) | a stratified validation fraction of each fold's training molecules (default) or held-out training experiments, for early stopping and tuning; the test experiment stays whole; final models too |
-| `MLR-08` detector-scale CNNs | proposed | position-agnostic residual dilated CNNs whose pattern detectors have a stated, enforced maximum span (receptive field): sub-nucleosome, 2-3, 4-6 nucleosomes, full locus; effective span measured per run |
+| `MLR-07` validation role | done (PR #706) | a stratified validation fraction of each fold's training molecules (default) or held-out training experiments, for early stopping and tuning; the test experiment stays whole; final models too |
+| `MLR-08` detector-scale CNNs | implemented (`feature/ml-detector-scale-cnns`) | position-agnostic residual dilated CNNs whose pattern detectors have a stated, enforced maximum span (receptive field): sub-nucleosome, 2-3, 4-6 nucleosomes, full locus; effective span measured per run |
 | `MLR-09` further neural families | proposed | MLP / transformer ported to registry configs; project-registered families |
 | `MLR-10` qualification | proposed | `nkg2a_final` region / model grid through `MLR-01`-`MLR-05`; parity with its current metrics |
 
@@ -422,7 +422,23 @@ bp: `RF = 1 + (stem_kernel - 1) + sum over blocks of 2 (kernel - 1) dilation`
   variant, merging): the channel's layer name records which.
 - Needs the validation role (`MLR-07`) for early stopping.
 
-Tests: with a sparse site channel, "no site" and "unmodified site" give
+As built: `ResidualCNNConfig` gains `receptive_field` (computed),
+`max_receptive_field` (refused when exceeded or with squeeze-excite),
+`mask_channels` (validity mask appended as input channels) and
+`span_masking` (features kept and pooled over each read's first-to-last valid
+span); all default off and are left out of `to_dict` when unset, so
+`residual_dilated_cnn_v1` and published models keep their identity.
+`effective_span` measures the 50 % / 90 % influence widths from gradients of
+final-layer features. Recipes `rcnn_subnucleosome_v1` (113 bp),
+`rcnn_2_3_nucleosomes_v1` (513), `rcnn_4_6_nucleosomes_v1` (1,025),
+`rcnn_full_locus_v1` (5,121): 64-channel blocks, squeeze-excite off, mask
+channels and span masking on, `max_receptive_field` = their span. Train runs
+record each residual CNN fold model's `detector_scale` (theoretical field,
+effective spans, measured on up to 32 held-out molecules) in `models.json`.
+The three input arms (sites / HMM / both) are plan choices (channels), not
+code.
+
+Tests (`test_ml_detector_scale_cnn.py`, `test_detector_scale_runs.py`): with a sparse site channel, "no site" and "unmodified site" give
 different features (mask as input); features propagate across positions
 between sites within the read span; the computed RF equals the formula; the effective span is at most the
 theoretical RF and, for a model whose kernels are fixed to concentrate at the

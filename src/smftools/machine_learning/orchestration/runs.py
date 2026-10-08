@@ -387,6 +387,50 @@ def _summary(metrics: pd.DataFrame, positive_class: str | None) -> dict[str, dic
     return summary
 
 
+def _detector_scale(run: FoldRun, source, n_molecules: int = 32) -> dict[str, Any]:
+    """For a residual CNN: its theoretical receptive field and effective span
+    (`effective_span`), measured on up to ``n_molecules`` molecules of the
+    fold's held-out (final model: validation) role. Empty for other models."""
+    from ..models.residual_cnn import ResidualCNNConfig
+
+    model = run.training.model
+    config = getattr(getattr(model, "model", None), "config", None)
+    if not isinstance(config, ResidualCNNConfig) or source is None:
+        return {}
+    from ..data.transforms import TorchFeatureTransform
+    from ..models.residual_cnn import effective_span
+
+    dataset, role = source
+    batch = next(iter(dataset.iter_batches(role)))
+    rows = slice(0, n_molecules)
+    head = replace(
+        batch,
+        order_indices=batch.order_indices[rows],
+        molecule_uids=batch.molecule_uids[rows],
+        read_ids=batch.read_ids[rows],
+        experiment_uids=batch.experiment_uids[rows],
+        modalities=batch.modalities[rows],
+        values=batch.values[rows],
+        labels=None if batch.labels is None else batch.labels[rows],
+        observed_mask=batch.observed_mask[rows],
+        availability_mask=batch.availability_mask[rows],
+        design_mask=batch.design_mask[rows] if batch.design_mask.ndim == 3 else batch.design_mask,
+        padding_mask=batch.padding_mask[rows],
+    )
+    transformed = TorchFeatureTransform(model.transform, device=model.resolved_device)(head)
+    measured = effective_span(
+        model.model,
+        transformed.values,
+        observed_mask=transformed.observed_mask,
+        availability_mask=transformed.availability_mask,
+        design_mask=transformed.design_mask,
+        padding_mask=transformed.padding_mask,
+    )
+    return {
+        "detector_scale": {**measured, "measured_on": role, "n_molecules": len(head.molecule_uids)}
+    }
+
+
 def _publish_model(run: FoldRun, backend: str, workspace, *, model_key, run_id, environment):
     if backend == "sklearn":
         from ..models.sklearn_artifacts import publish_sklearn_model as publish
@@ -497,6 +541,10 @@ def train_and_publish(
         atomic_write_json(context.output_path(SPLITS), splits)
         model_ids: dict[str, dict[str, str]] = {}
         models, predictions, metrics, curves, history = [], [], [], [], []
+        # Where each fold's detector span is measured (`MLR-08`).
+        datasets = {_fold(fold.fold_name): (fold.dataset, "test") for fold in bound.folds}
+        if final is not None:
+            datasets[FINAL_FOLD] = (final[1], "validation")
 
         def publish(run: FoldRun) -> str:
             context.advance_phase(f"train:{run.model_name}:{_fold(run.fold_name)}")
@@ -522,6 +570,7 @@ def train_and_publish(
                     "split_id": published.manifest.split_id,
                     "n_train": run.training.n_training_observations,
                     "train_class_counts": list(run.training.class_counts),
+                    **_detector_scale(run, datasets.get(_fold(run.fold_name))),
                 }
             )
             history.extend(_history_rows(run, backend))
