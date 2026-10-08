@@ -104,7 +104,14 @@ molecule UIDs, and
 - **per-molecule attributions**: a molecules x positions matrix (float32,
   chunked, with UIDs and frame positions), the positive-class contribution of
   each position to each molecule's score, from the fold model that held the
-  molecule out (out-of-fold) or the chosen model for applied data.
+  molecule out (out-of-fold) or the chosen model for applied data;
+- **detector catalogue** (convolutional models): what each final-layer
+  detector (channel) responds to -- its top-activating input windows (at the
+  detector's span) across the evaluation set, their mean pattern per input
+  channel, where on the locus they occur, how often in each class, and
+  detectors grouped by pattern similarity. Attributions say where a
+  molecule's score came from; the catalogue says what patterns the model
+  looks for (the CNN analogue of motif discovery).
 
 ### The attribution clustermap
 
@@ -136,12 +143,12 @@ the stores.
 |---|---|---|
 | `MLR-01` train-and-publish | proposed | one call: bind a plan job, train each model per fold, publish run / data / models / evaluation records and index; fixed-prevalence AUPRC (reweighted, subsampled) in smftools metrics |
 | `MLR-02` final models and apply | proposed | optional all-groups final model; apply a run to another dataset with records |
-| `MLR-03` explanation records | proposed | position importance and per-molecule attribution matrices per run and evaluation set, out-of-fold; fold consistency |
-| `MLR-04` attribution clustermap | proposed | input layers beside attributions, shared row order, label / score / fold strips |
+| `MLR-03` explanation records | proposed | position importance, per-molecule attribution matrices, and the CNN detector catalogue per run and evaluation set, out-of-fold; fold consistency |
+| `MLR-04` attribution clustermap | proposed | input layers beside attributions, shared row order, label / score / fold strips; detector catalogue figures |
 | `MLR-05` run comparison | proposed | select runs by tags; paired per-fold metrics, bootstrap intervals, figures |
 | `MLR-06` fold-matrix cache | proposed | read each task's data once for every model |
 | `MLR-07` validation role | proposed | inner validation groups inside each training fold (nested CV) for early stopping and tuning |
-| `MLR-08` receptive-field-bounded CNNs | proposed | position-agnostic residual dilated CNNs with a stated, enforced receptive field: sub-nucleosome, 2-3, 4-6 nucleosomes, full locus |
+| `MLR-08` detector-scale CNNs | proposed | position-agnostic residual dilated CNNs whose pattern detectors have a stated, enforced maximum span (receptive field): sub-nucleosome, 2-3, 4-6 nucleosomes, full locus; effective span measured per run |
 | `MLR-09` further neural families | proposed | MLP / transformer ported to registry configs; project-registered families |
 | `MLR-10` qualification | proposed | `nkg2a_final` region / model grid through `MLR-01`-`MLR-05`; parity with its current metrics |
 
@@ -173,16 +180,25 @@ the run; a schema mismatch is refused with the differing channel / positions.
 `explain_run(run, method, *, evaluation="held_out" | dataset selection,
 parameters, background=...)`; dispatches to `interpretability` by model
 capability; stores importance and the attribution matrix (chunked, UIDs,
-positions); out-of-fold by default.
+positions); out-of-fold by default. For convolutional runs, method
+`DetectorCatalogue` (parameters: top windows per detector, similarity
+threshold for grouping) reads final-layer activations before pooling.
 
 Tests: NB log-odds attributions equal the closed form; TreeSHAP rows sum to
 the model output minus the base value; each held-out molecule is explained by
-the fold model that held it out; fold consistency on a planted signal.
+the fold model that held it out; fold consistency on a planted signal; a CNN
+trained on a planted pattern has a detector whose top windows recover it, at
+the planted locations, enriched in the planted class.
 
 ### `MLR-04` -- attribution clustermap
 
+Detector catalogue figures: per detector (or group), the mean top-window
+pattern per input channel, its locus position histogram and class
+enrichment.
+
 Tests: panels share rows; strips match their rows; colour scale symmetric
-about 0; row orders as requested; figure written per explanation.
+about 0; row orders as requested; figure written per explanation; catalogue
+figures match the stored windows.
 
 ### `MLR-05` -- run comparison
 
@@ -201,19 +217,43 @@ Tests: inner validation groups are disjoint from the outer test group and from
 inner training; early stopping uses validation only; leave-one-group-out
 keeps its outer folds.
 
-### `MLR-08` -- receptive-field-bounded CNNs
+### `MLR-08` -- detector-scale CNNs
 
-Question: how much context does activity need? Models that see only
-sub-nucleosome features, 2-3 nucleosomes, 4-6, or the whole locus, and are
-otherwise alike.
+Question: how large must a single pattern detector be for activity to be
+readable -- sub-nucleosome, 2-3 nucleosomes, 4-6, or the whole locus -- with
+models otherwise alike?
 
-The existing `residual_dilated_cnn` is the base: convolutions then global
+The existing `residual_dilated_cnn` is the base: convolutions, then global
 average / max / content-attention pooling and a small head -- no positional
 encoding, no flatten over positions, so it learns what a feature looks like,
-not where it is. Inputs are on a bp grid (site calls with an observed mask),
-so receptive fields are in bp:
-`RF = 1 + (stem_kernel - 1) + sum over blocks of 2 (kernel - 1) dilation`.
+not where it is. Such a model is a bag of local detectors:
 
+- each final-layer position is a pattern detector that sees a window of the
+  input no wider than the **receptive field (RF)** -- the detector's maximum
+  span;
+- pooling summarises each detector over the whole molecule (average: how much
+  of the pattern; max: whether it occurs anywhere; attention: a
+  content-weighted sum) and discards where the detections were;
+- the head combines those summaries.
+
+So every model uses the whole molecule; the RF bounds the largest single
+pattern a detector can recognise, and so the largest distance across which the
+model can relate two features. The ladder varies that span.
+
+Inputs are on a bp grid (site calls with an observed mask), so spans are in
+bp: `RF = 1 + (stem_kernel - 1) + sum over blocks of 2 (kernel - 1) dilation`
+(the theoretical maximum).
+
+- **Effective span.** Influence concentrates at a detector's centre and falls
+  off towards its edges, so the effective span is often well below the
+  theoretical one. Each trained run records both: the theoretical RF, and the
+  effective span measured from gradients of final-layer detector outputs with
+  respect to the inputs on held-out molecules (the centred width holding 50 %
+  and 90 % of the |gradient| mass, averaged over detectors and positions). A
+  rung whose effective span falls far below its label is reported as such.
+- **Sparse sites.** A window of fixed width holds however many C (or GpC)
+  sites fall in it, which varies along the locus; spans are reported with the
+  site density they cover (sites per window, by locus position).
 - `ResidualCNNConfig` gains `receptive_field` (computed, recorded in the run
   manifest) and an optional `max_receptive_field` (refused when exceeded).
 - Squeeze-excite pools over the whole molecule inside every block, so a model
@@ -260,7 +300,9 @@ so receptive fields are in bp:
 
 Tests: with a sparse site channel, "no site" and "unmodified site" give
 different features (mask as input); features propagate across positions
-between sites within the read span; the computed RF equals the formula; perturbing one input position
+between sites within the read span; the computed RF equals the formula; the effective span is at most the
+theoretical RF and, for a model whose kernels are fixed to concentrate at the
+centre, measurably smaller; perturbing one input position
 changes pre-pooling features only within RF / 2 of it (empirical bound) for
 bounded recipes and anywhere with SE on; `max_receptive_field` refuses an
 over-wide config; translating a feature within the molecule leaves the
