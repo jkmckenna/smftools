@@ -25,8 +25,13 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-STAGES = ("preprocess", "hmm")
-STAGE_DIRS = {"preprocess": "preprocess_adata_outputs", "hmm": "hmm_adata_outputs"}
+STAGES = ("preprocess", "hmm", "hmm-fractions")
+FRACTIONS_SUBDIR = "molecule_fractions"
+STAGE_DIRS = {
+    "preprocess": "preprocess_adata_outputs",
+    "hmm": "hmm_adata_outputs",
+    "hmm-fractions": "hmm_adata_outputs",
+}
 
 
 def experiment_config(experiment_dir: str | Path, config_path: str | Path | None = None):
@@ -96,6 +101,150 @@ def _hmm_task_partial(spine_path: str, generation: str, record: dict, cfg) -> st
     return write_task_partial(generation, record["task_id"], tallies)
 
 
+def _hmm_task_molecules(spine_path: str, generation: str, record: dict, cfg) -> str:
+    """Re-materialize one HMM task and compute its reads' fractions (`HCE-10`)."""
+    import hashlib
+
+    import anndata as ad
+    import numpy as np
+    import zarr
+    from threadpoolctl import threadpool_limits
+
+    from smftools.informatics.partition_read import materialize
+
+    from .partitioned_hmm import (
+        FRACTION_LAYER_SUFFIXES,
+        _configured_model_specs,
+        molecule_fractions,
+        molecule_site_fractions,
+    )
+
+    generation = Path(generation)
+    store = zarr.open_group(str(generation / record["group_path"]), mode="r")
+    read_ids = ad.io.read_elem(store["obs"]).index.astype(str).tolist()
+    if not read_ids:
+        return ""
+    with threadpool_limits(limits=1):
+        adata = materialize(
+            spine_path,
+            references=record["reference"],
+            read_ids=read_ids,
+            start=int(record["core_start"]),
+            end=int(record["core_end"]),
+        )
+        core = np.ones(adata.n_vars, dtype=bool)
+        layers = [name for name in adata.layers if str(name).endswith(FRACTION_LAYER_SUFFIXES)]
+        columns = {
+            **molecule_fractions(adata, layers, core),
+            **molecule_site_fractions(
+                adata, record["reference"], core, cfg, _configured_model_specs(cfg)
+            ),
+        }
+    frame = pd.DataFrame(columns, index=adata.obs_names.astype(str))
+    frame.index.name = "read_id"
+    frame = frame.assign(
+        task_id=str(record["task_id"]),
+        barcode=str(record["barcode"]),
+        reference=str(record["reference"]),
+        core_start=int(record["core_start"]),
+        core_end=int(record["core_end"]),
+    )
+    name = hashlib.sha1(str(record["task_id"]).encode()).hexdigest()[:20]
+    path = generation / FRACTIONS_SUBDIR / "partials" / f"{name}.parquet"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    frame.to_parquet(path)
+    return path.relative_to(generation).as_posix()
+
+
+def _run_tasks(function, jobs, workers: int) -> list:
+    if workers > 1 and len(jobs) > 1:
+        from smftools.parallel_utils import configure_worker_threads
+
+        with ProcessPoolExecutor(
+            max_workers=min(workers, len(jobs)),
+            initializer=configure_worker_threads,
+            initargs=(1,),
+        ) as pool:
+            return list(pool.map(function, *zip(*jobs)))
+    return [function(*job) for job in jobs]
+
+
+def backfill_molecule_fractions(
+    experiment_dir: str | Path,
+    cfg,
+    *,
+    workers: int = 1,
+    refresh: bool = False,
+    figures: bool = True,
+) -> dict:
+    """Per-read HMM and raw fractions of a finished HMM generation (`HCE-10`).
+
+    What the HMM stage now stores per read (`HCE-06`, `HCE-08`, `HCE-09`):
+    ``<layer>_fraction`` over the read span, ``<layer>_site_fraction`` at the
+    model's observed sites and ``<model>_site_modified_fraction``. Written as
+    one table, ``<generation>/molecule_fractions/molecule_fractions.parquet``,
+    with the per-molecule violin and HMM-vs-raw scatter figures beside it
+    (``plots/features/``). The generation's own read table is not changed.
+    """
+    from smftools.cli.stage_artifacts import prepare_stage_plot_layout
+
+    from .partitioned_hmm import (
+        _configured_model_specs,
+        _plot_hmm_vs_raw_scatter,
+        _plot_molecule_fractions,
+    )
+
+    generation = current_generation(experiment_dir, "hmm-fractions")
+    if generation is None:
+        return {"stage": "hmm-fractions", "status": "no_generation"}
+    target = generation / FRACTIONS_SUBDIR
+    record = {"stage": "hmm-fractions", "generation": str(generation)}
+    if (target / "run.json").exists() and not refresh:
+        return {**record, "status": "exists"}
+    shutil.rmtree(target, ignore_errors=True)
+    records = pd.read_parquet(generation / "task_catalog.parquet").to_dict("records")
+    spine_path = str(generation / "spine.h5ad")
+    partials = _run_tasks(
+        _hmm_task_molecules,
+        [(spine_path, str(generation), item, cfg) for item in records],
+        workers,
+    )
+    frames = [pd.read_parquet(generation / path) for path in partials if path]
+    if not frames:
+        shutil.rmtree(target, ignore_errors=True)
+        return {**record, "status": "empty"}
+    table = pd.concat(frames)
+    table.to_parquet(target / "molecule_fractions.parquet")
+    shutil.rmtree(target / "partials", ignore_errors=True)
+    written = []
+    if figures:
+        layout = prepare_stage_plot_layout(target, stage="hmm", categories=("features",))
+        by_task = {task_id: frame for task_id, frame in table.groupby("task_id", sort=False)}
+        group_task = {str(item["group_path"]): str(item["task_id"]) for item in records}
+
+        def reader(path, columns):
+            task_id = group_task.get(Path(path).relative_to(generation).as_posix())
+            frame = by_task.get(task_id, pd.DataFrame())
+            return frame[[column for column in columns if column in frame]]
+
+        specs = _configured_model_specs(cfg)
+        _plot_molecule_fractions(records, generation, layout, specs=specs, obs_reader=reader)
+        _plot_hmm_vs_raw_scatter(records, generation, layout, specs=specs, obs_reader=reader)
+        written = sorted(p.name for p in layout.categories["features"].glob("*.png"))
+    (target / "run.json").write_text(
+        json.dumps(
+            {
+                "backfilled": True,
+                "reads": int(len(table)),
+                "columns": [c for c in table.columns if c.endswith("fraction")],
+                "figures": len(written),
+            },
+            indent=2,
+        )
+    )
+    return {**record, "status": "written", "figures": len(written)}
+
+
 def backfill_context_qc(
     experiment_dir: str | Path,
     stage: str,
@@ -114,6 +263,10 @@ def backfill_context_qc(
 
     if stage not in STAGES:
         raise ValueError(f"stage must be one of {STAGES}")
+    if stage == "hmm-fractions":
+        return backfill_molecule_fractions(
+            experiment_dir, cfg, workers=workers, refresh=refresh, figures=figures
+        )
     generation = current_generation(experiment_dir, stage)
     if generation is None:
         return {"stage": stage, "status": "no_generation"}
@@ -145,17 +298,7 @@ def backfill_context_qc(
 
         records = pd.read_parquet(generation / "task_catalog.parquet").to_dict("records")
         jobs = [(str(spine_path), str(generation), item, cfg) for item in records]
-        if workers > 1 and len(jobs) > 1:
-            from smftools.parallel_utils import configure_worker_threads
-
-            with ProcessPoolExecutor(
-                max_workers=min(workers, len(jobs)),
-                initializer=configure_worker_threads,
-                initargs=(1,),
-            ) as pool:
-                partials = list(pool.map(_hmm_task_partial, *zip(*jobs)))
-        else:
-            partials = [_hmm_task_partial(*job) for job in jobs]
+        partials = _run_tasks(_hmm_task_partial, jobs, workers)
         for item, partial in zip(records, partials, strict=True):
             item["context_qc_partial"] = partial
         written = write_hmm_context_qc(generation, records, spine.uns, cfg, layout=layout)

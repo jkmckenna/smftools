@@ -973,7 +973,7 @@ def _read_task_obs(path: Path, columns) -> pd.DataFrame:
     return obs[[column for column in columns if column in obs]]
 
 
-def _plot_molecule_fractions(records, output_dir: Path, layout, specs=()) -> None:
+def _plot_molecule_fractions(records, output_dir: Path, layout, specs=(), obs_reader=None) -> None:
     """Per barcode: each read's fraction in each feature, emission variants side by side.
 
     The HMM counterpart of preprocess's per-read modification-rate plots
@@ -1004,7 +1004,9 @@ def _plot_molecule_fractions(records, output_dir: Path, layout, specs=()) -> Non
             continue
         names = {f"{layer}_fraction": layer for layer in layers}
         names.update({f"{layer}{SITE_FEATURE_SUFFIX}": f"{layer}_sites" for layer in layers})
-        obs = _read_task_obs(output_dir / record["group_path"], [*names, *raw_panels])
+        obs = (obs_reader or _read_task_obs)(
+            output_dir / record["group_path"], [*names, *raw_panels]
+        )
         key = (
             str(record["reference"]),
             int(record["core_start"]),
@@ -1144,7 +1146,7 @@ def _plot_molecule_fractions(records, output_dir: Path, layout, specs=()) -> Non
         )
 
 
-def _plot_hmm_vs_raw_scatter(records, output_dir: Path, layout, specs=()) -> None:
+def _plot_hmm_vs_raw_scatter(records, output_dir: Path, layout, specs=(), obs_reader=None) -> None:
     """Per reference window and model: each read's HMM accessible fraction
     against its raw modified-site fraction, a panel per barcode, every
     variant overlaid (`HCE-08`)."""
@@ -1167,7 +1169,7 @@ def _plot_hmm_vs_raw_scatter(records, output_dir: Path, layout, specs=()) -> Non
             for base, members in models.items()
             for column in [f"{base}{SITE_FRACTION_SUFFIX}", *(c for _, c in members)]
         ]
-        obs = _read_task_obs(output_dir / record["group_path"], wanted)
+        obs = (obs_reader or _read_task_obs)(output_dir / record["group_path"], wanted)
         if obs.empty:
             continue
         key = (str(record["reference"]), int(record["core_start"]), int(record["core_end"]))
