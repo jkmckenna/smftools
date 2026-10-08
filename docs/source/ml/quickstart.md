@@ -104,6 +104,12 @@ for run in run_bound_train_job(bound):
     print(run.fold_name, run.model_name, run.evaluation.metrics)
 ```
 
+Position-agnostic CNNs with a bounded detector span come as recipes -- `rcnn_subnucleosome_v1`
+(113 bp), `rcnn_2_3_nucleosomes_v1` (513), `rcnn_4_6_nucleosomes_v1` (1,025),
+`rcnn_full_locus_v1` (5,121) -- e.g. `{"backend": "torch", "recipe": "rcnn_subnucleosome_v1"}`.
+Each fold model's run record notes its theoretical receptive field and measured effective span
+(`detector_scale` in `models.json`).
+
 Neural models stop early on a validation role. With leave-one-group-out, declare one inside each
 fold: the held-out experiment stays the test set, and a seeded fraction of the training
 experiments' molecules (stratified by experiment x class) becomes validation --
