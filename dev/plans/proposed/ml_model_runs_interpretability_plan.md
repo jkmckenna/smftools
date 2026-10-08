@@ -86,8 +86,8 @@ models/<model_id>/    each fold model (ModelManifest + skops / state dict),
                       `originating_run_id` pointing back at the run
 ```
 
-Planned additions: `models/final` (`MLR-02`), `applications/<id>/`
-(`MLR-02`), `explanations/<id>/` and figures (`MLR-03`, `MLR-04`). Not yet
+Since `MLR-02`: fold `final` models, and apply runs (their own runs, linked
+by `source_model_ids`). Planned: `explanations/<id>/` and figures (`MLR-03`, `MLR-04`). Not yet
 recorded: a content hash of a coordinate map (the plan hash covers its path).
 
 The workspace `index/` lists runs with their tags and headline metrics, so a
@@ -95,10 +95,12 @@ project can find "every model on task X" without walking directories.
 
 ### Applying a saved run
 
-`apply` takes a run (fold models, or the final model) and any dataset
-selection whose input schema matches (same channels, positions or a
-coordinate map): predictions, and metrics when labels exist, published as an
-`applications/<id>/` record under the run, linked to the data it scored.
+`apply` takes one published model (a run's final model, or a fold model)
+and any dataset selection whose input schema matches (same channels,
+positions -- through a coordinate map if needed -- and classes): predictions,
+and metrics when labels exist, published as an apply run whose manifest names
+the source model (runs are immutable, so it is not added inside the train
+run).
 
 ### Interpretability belongs to the run
 
@@ -149,8 +151,8 @@ the stores.
 
 | item | status | scope |
 |---|---|---|
-| `MLR-01` train-and-publish | implemented (`feature/ml-train-and-publish`) | one call: bind a plan job, train each model per fold, publish run / data / models / evaluation records and index; fixed-prevalence AUPRC (reweighted, subsampled) in smftools metrics |
-| `MLR-02` final models and apply | proposed | optional all-groups final model; apply a run to another dataset with records |
+| `MLR-01` train-and-publish | done (PR #700) | one call: bind a plan job, train each model per fold, publish run / data / models / evaluation records and index; fixed-prevalence AUPRC (reweighted, subsampled) in smftools metrics |
+| `MLR-02` final models and apply | implemented (`feature/ml-final-models-apply`) | optional all-groups final model; apply a run to another dataset with records |
 | `MLR-03` explanation records | proposed | position importance, per-molecule attribution matrices, and the CNN detector catalogue per run and evaluation set, out-of-fold; fold consistency |
 | `MLR-04` attribution clustermap | proposed | input layers beside attributions, shared row order, label / score / fold strips; detector catalogue figures |
 | `MLR-05` run comparison | proposed | select runs by tags; paired per-fold metrics, bootstrap intervals, figures |
@@ -187,9 +189,22 @@ which leave-one-group-out lacks until `MLR-07`; a failed run) and
 
 ### `MLR-02` -- final models and apply
 
-Tests: a final model is fit on every group; applying a run to another dataset
-with the same schema writes predictions and (with labels) metrics linked to
-the run; a schema mismatch is refused with the differing channel / positions.
+`train_and_publish(..., final_model=True)` fits each model on every selected
+row (fold `"final"`: model id, membership, split record; no held-out
+evaluation). `apply_and_publish(plan, job, model_id=...)` applies one
+published model to an apply job's dataset and publishes an apply run (not a
+record inside the immutable train run): manifest `source_model_ids`,
+`model.json` (originating train run), `data/molecules.parquet`,
+`predictions/applied.parquet`, and for labeled data metrics, curves and
+summary. Channels, positions and classes are checked first. Final torch
+models are refused until `MLR-07`. Applying a fold ensemble is left for
+later.
+
+Tests (`test_final_models_and_apply.py`): a final model is fit on every row
+and reloads; applying it to labeled data publishes predictions, metrics and
+lineage, indexed; unlabeled data gets predictions only; a re-applied fold
+model reproduces its held-out predictions; `model:<id>` jobs, a missing
+model id, a position mismatch (named) and final torch models are handled.
 
 ### `MLR-03` -- explanation records
 
