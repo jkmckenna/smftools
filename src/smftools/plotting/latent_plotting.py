@@ -983,6 +983,10 @@ def plot_latent_ordered_clustermap(
     position_labels=None,
     title="",
     save_path=None,
+    cluster_colors=None,
+    cluster_name="cluster",
+    cluster_legend=False,
+    extra_strips=None,
     separator_color="black",
     separator_width=0.8,
     figure_width=18.0,
@@ -1010,6 +1014,17 @@ def plot_latent_ordered_clustermap(
     from ones transferred by proximity. A figure that renders the two
     identically invites reading a transferred block as evidence for the
     clustering that produced it.
+
+    ``cluster_colors`` (label -> colour) fixes the block strip's colours, so a
+    caller can keep one cluster one colour across every figure of a set --
+    the default is computed from the labels present, which shifts when a unit
+    lacks a cluster. ``cluster_legend`` adds a legend for it (useful when the
+    block labels are too long to read in place). ``cluster_name`` titles that strip (e.g. "NDR state" when
+    the blocks are not clusters). ``extra_strips`` adds further per-molecule
+    strips beside it: mappings with ``name``, ``values`` (one per molecule,
+    unordered like ``labels``), optional ``colors`` (value -> colour) and
+    optional ``order`` (legend order). Runs of one value covering at least
+    3 % of the rows are labelled in place, and each extra strip gets a legend.
     """
     import matplotlib
 
@@ -1023,7 +1038,8 @@ def plot_latent_ordered_clustermap(
     if n_panels == 0:
         return None
 
-    strip_count = 1 + (1 if label_source is not None else 0)
+    extra_strips = list(extra_strips or [])
+    strip_count = 1 + (1 if label_source is not None else 0) + len(extra_strips)
     figure = plt.figure(figsize=(figure_width, figure_height))
     grid = figure.add_gridspec(
         2,
@@ -1083,11 +1099,15 @@ def plot_latent_ordered_clustermap(
         categories = list(colors)
         lookup = {value: index for index, value in enumerate(categories)}
         codes = np.array([[lookup.get(value, 0)] for value in values])
+        # Fixed colour range: without it imshow rescales to the codes present,
+        # and a strip missing some categories shifts every later colour.
         axis.imshow(
             codes,
             aspect="auto",
             interpolation="nearest",
             cmap=ListedColormap([colors[value] for value in categories]),
+            vmin=-0.5,
+            vmax=len(categories) - 0.5,
         )
         axis.set_xticks([])
         axis.tick_params(labelleft=False, length=0)
@@ -1096,7 +1116,10 @@ def plot_latent_ordered_clustermap(
 
     # Shared with `plot_leiden_composition` so a cluster is the same colour in
     # both figures -- they are meant to be read together.
-    cluster_categories = _strip(0, labels, "cluster", colors=cluster_color_map(labels))
+    block_colors = dict(cluster_colors) if cluster_colors else cluster_color_map(labels)
+    for value in sorted(set(labels) - set(block_colors)):
+        block_colors[value] = "#9E9E9E"
+    cluster_categories = _strip(0, labels, cluster_name, colors=block_colors)
     # Label the clusters in place: with 4-10 blocks a legend is redundant, and
     # an in-place label survives being cropped out of a legend-less thumbnail.
     strip_axis = figure.axes[-1]
@@ -1110,9 +1133,56 @@ def plot_latent_ordered_clustermap(
             fontsize=6,
             color="white",
         )
+    column = 1
     if label_source is not None:
         source_values = np.asarray(label_source, dtype=object).astype(str)[row_order]
-        _strip(1, source_values, "label source")
+        _strip(column, source_values, "label source")
+        column += 1
+    from matplotlib.patches import Patch
+
+    legends = []
+    if cluster_legend:
+        present_blocks = [label for label, _, _ in blocks]
+        legends.append(
+            (cluster_name, [Patch(facecolor=block_colors[v], label=v) for v in present_blocks])
+        )
+    for strip in extra_strips:
+        values = np.asarray(strip["values"], dtype=object).astype(str)[row_order]
+        colors = dict(strip.get("colors") or cluster_color_map(values))
+        for value in sorted(set(values) - set(colors)):
+            colors[value] = "#9E9E9E"
+        _strip(column, values, str(strip["name"]), colors=colors)
+        axis = figure.axes[-1]
+        # Label long runs in place (the numbers a reader matches to other figures).
+        minimum = max(1, int(0.03 * len(values)))
+        start = 0
+        for index in range(1, len(values) + 1):
+            if index == len(values) or values[index] != values[start]:
+                if index - start >= minimum:
+                    axis.text(
+                        0,
+                        (start + index) / 2 - 0.5,
+                        values[start],
+                        ha="center",
+                        va="center",
+                        fontsize=5,
+                        color="white",
+                    )
+                start = index
+        present = set(values)
+        order = [str(v) for v in (strip.get("order") or sorted(colors)) if str(v) in present]
+        legends.append((str(strip["name"]), [Patch(facecolor=colors[v], label=v) for v in order]))
+        column += 1
+    for index, (name, handles) in enumerate(legends):
+        figure.legend(
+            handles=handles,
+            title=name,
+            loc="upper left",
+            bbox_to_anchor=(0.91 + 0.085 * index, 0.88),  # room for long labels
+            fontsize=6,
+            title_fontsize=7,
+            frameon=False,
+        )
 
     figure.suptitle(title, fontsize=11)
     if save_path is None:
