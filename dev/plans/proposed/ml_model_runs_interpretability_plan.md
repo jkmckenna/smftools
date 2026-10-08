@@ -158,7 +158,7 @@ the stores.
 | `MLR-04` attribution clustermap | proposed | input layers beside attributions, shared row order, label / score / fold strips; detector catalogue figures |
 | `MLR-05` run comparison | proposed | select runs by tags; paired per-fold metrics, bootstrap intervals, figures |
 | `MLR-06` fold-matrix cache | proposed | read each task's data once for every model |
-| `MLR-07` validation role | proposed | inner validation groups inside each training fold (nested CV) for early stopping and tuning |
+| `MLR-07` validation role | proposed | a stratified validation fraction of each fold's training molecules (default) or held-out training experiments, for early stopping and tuning; the test experiment stays whole; final models too |
 | `MLR-08` detector-scale CNNs | proposed | position-agnostic residual dilated CNNs whose pattern detectors have a stated, enforced maximum span (receptive field): sub-nucleosome, 2-3, 4-6 nucleosomes, full locus; effective span measured per run |
 | `MLR-09` further neural families | proposed | MLP / transformer ported to registry configs; project-registered families |
 | `MLR-10` qualification | proposed | `nkg2a_final` region / model grid through `MLR-01`-`MLR-05`; parity with its current metrics |
@@ -265,9 +265,38 @@ with the snapshot, split or transform; results equal an uncached run.
 
 ### `MLR-07` -- validation role
 
-Tests: inner validation groups are disjoint from the outer test group and from
-inner training; early stopping uses validation only; leave-one-group-out
-keeps its outer folds.
+Test is always a whole held-out experiment (the estimate of performance on a
+new batch). Validation comes from the training experiments, for early
+stopping and tuning only:
+
+- **Molecule-level (default).** `leave_one_group_out` gains
+  `validation_fraction` (e.g. 0.15): in each fold, that fraction of the
+  training molecules becomes validation, stratified by group (experiment) x
+  class so every training experiment and class is represented in proportion;
+  seeded (`seed`), recorded per molecule in the run's membership.
+- **Group-level (option).** `validation: groups` holds out whole training
+  experiments instead (mirrors the test condition, at the cost of training
+  batches -- about a quarter with four training experiments); for comparison
+  on the CNN ladder (`MLR-08`).
+- **Final models** (`MLR-02`): the same fraction of every selected row, so
+  final torch models become possible (refused until now).
+- **Isolation rule.** Split manifests now refuse any group in two roles. With
+  a molecule-level fraction, train and validation share experiments; the rule
+  becomes: test is isolated from train and validation; train and validation
+  may share groups only when the split declares a molecule-level validation
+  fraction (recorded in the manifest).
+- **Caveat recorded with the run.** Molecule-level validation shares batch
+  effects with training, so validation loss is optimistic relative to a new
+  batch and early stopping may stop somewhat late; reported performance stays
+  honest (test is a whole experiment).
+
+Tests: test molecules never appear in train or validation, and test is one
+whole experiment per fold; the validation fraction is met within rounding per
+experiment x class; seeded and reproducible; the relaxed isolation rule
+accepts the declared shared groups and still refuses test leakage or an
+undeclared shared group; group-level validation holds out whole training
+experiments; early stopping reads validation only; a torch final model trains
+with the fraction; leave-one-group-out folds are unchanged without the option.
 
 ### `MLR-08` -- detector-scale CNNs
 
