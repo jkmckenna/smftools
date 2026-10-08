@@ -2957,6 +2957,20 @@ def motifs_group():
 @click.option(
     "--reference", "references", multiple=True, help="Only these references (repeatable)."
 )
+@click.option(
+    "--engine",
+    type=click.Choice(["builtin", "fimo"]),
+    default="builtin",
+    show_default=True,
+    help="builtin (no external tools) or FIMO (MEME suite; must be installed).",
+)
+@click.option(
+    "--fimo",
+    "fimo_path",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="FIMO executable for --engine fimo (default: fimo on PATH).",
+)
 @click.option("--refresh", is_flag=True, help="Rescan even if a matching scan exists.")
 def motifs_scan_cmd(
     motifs_path,
@@ -2970,6 +2984,8 @@ def motifs_scan_cmd(
     pseudocount,
     motif_ids,
     references,
+    engine,
+    fimo_path,
     refresh,
 ):
     """Scan reference sequences with every motif of a motif file, both strands.
@@ -2977,7 +2993,8 @@ def motifs_scan_cmd(
     Writes one table of motif instances -- motif, family, reference, 0-based
     half-open start/end on the forward strand, motif strand, log2-odds score,
     p-value, matched sequence. Exactly one of --experiment-dir, --project-dir
-    or --fasta chooses the sequences.
+    or --fasta chooses the sequences. --engine fimo runs FIMO with the same
+    background and pseudocount (its own default background is NRDB).
     """
     from smftools.tools.motifs import (
         experiment_sequences,
@@ -3007,6 +3024,8 @@ def motifs_scan_cmd(
         motif_ids=list(motif_ids) or None,
         references=list(references) or None,
         refresh=refresh,
+        engine=engine,
+        fimo=fimo_path,
     )
     state = "reused" if record["reused"] else "scanned"
     click.echo(

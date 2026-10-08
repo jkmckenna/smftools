@@ -137,16 +137,19 @@ def resolve_background(
     kind: str, motif_file: MotifFile, sequences: Mapping[str, str]
 ) -> np.ndarray:
     """Background base frequencies: ``uniform``, the motif file's, or the
-    scanned sequences' (ACGT only)."""
+    scanned sequences' (ACGT, both strands)."""
     if kind == "uniform":
         return np.full(4, 0.25)
     if kind == "motif":
         return motif_file.background.copy()
     if kind == "sequence":
+        # Both strands are scanned, so both are counted: the background is
+        # strand-symmetric (A = T, C = G), as FIMO makes it.
         joined = "".join(sequences.values()).upper()
         counts = np.array([joined.count(b) for b in BASES], dtype=float)
         if counts.sum() == 0:
             raise ValueError("no ACGT bases to estimate a background from")
+        counts = counts + counts[::-1]
         return (counts + 1) / (counts.sum() + 4)
     raise ValueError(f"background must be one of {BACKGROUNDS}")
 
