@@ -104,7 +104,27 @@ for run in run_bound_train_job(bound):
     print(run.fold_name, run.model_name, run.evaluation.metrics)
 ```
 
-Results come back in memory; they are not yet published as run artifacts.
+Results come back in memory. To keep them, `train_and_publish` runs the same job through the
+train job service and publishes one immutable run in the workspace (`project_outputs/ml/` for a
+project):
+
+```python
+from smftools.machine_learning.orchestration import train_and_publish
+from smftools.machine_learning.orchestration import runs
+
+run = train_and_publish(bound, project_dir="path/to/project", tags={"task": "b6_vs_nk/promoter"})
+run.run_id, run.model_ids["nb"]        # fold name -> published model id
+run.read(runs.METRICS)                 # per model, fold and metric
+run.summary["nb"]["roc_auc"]["mean"]   # mean over folds
+```
+
+The run holds the plan, environment and seeds; `data/membership.parquet` (every molecule's role
+and class per fold, so the training and evaluation sets are exact); `models.json` (each fold
+model, published as its own model bundle and reloadable with `load_published_sklearn_model` or
+`load_published_torch_model`); held-out predictions; metrics, including average precision at a
+fixed positive prevalence (`prevalence`, default 10 %); ROC / PR curves; training history; and a
+fold summary. The workspace run index (`index/runs.json`) lists every run with its tags and
+summary. A failed job still publishes a failed run manifest, then raises.
 
 For a whole-cohort analysis with no folds -- an embedding, clustering -- `bind_ml_dataset` reads
 every selected row of one dataset through the same selection (label tables, filters, `positions`,

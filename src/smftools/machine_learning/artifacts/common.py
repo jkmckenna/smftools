@@ -123,6 +123,58 @@ class EnvironmentRecord:
         )
 
 
+# Packages whose versions decide whether a fitted model reloads and predicts alike.
+_RECORDED_PACKAGES = ("numpy", "pandas", "scipy", "scikit-learn", "skops", "torch")
+
+
+def capture_environment_record() -> EnvironmentRecord:
+    """The running interpreter, platform, smftools commit and key packages.
+
+    ``code_revision`` is the smftools source checkout's commit (``unknown``
+    for an installed wheel); ``dirty_tree`` whether that checkout has
+    uncommitted changes. Packages that are not installed are omitted.
+    """
+    import platform
+    import subprocess
+    import sys
+    from importlib.metadata import PackageNotFoundError, version
+    from pathlib import Path
+
+    import smftools
+
+    source = Path(smftools.__file__).resolve().parent
+
+    def git(*args: str) -> str | None:
+        try:
+            completed = subprocess.run(
+                ["git", "-C", str(source), *args],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=True,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return completed.stdout.strip()
+
+    revision = git("rev-parse", "HEAD")
+    status = git("status", "--porcelain", "--untracked-files=no") if revision else None
+    dependencies = {}
+    for package in _RECORDED_PACKAGES:
+        try:
+            dependencies[package] = version(package)
+        except PackageNotFoundError:
+            continue
+    return EnvironmentRecord(
+        smftools_version=str(smftools.__version__),
+        python_version=sys.version.split()[0],
+        platform=platform.platform(),
+        code_revision=revision or "unknown",
+        dirty_tree=bool(status),
+        dependencies=dependencies,
+    )
+
+
 @dataclass(frozen=True)
 class ResolvedDefinition:
     """Named versioned definition with immutable resolved parameters."""

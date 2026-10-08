@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -482,3 +483,88 @@ def aggregate_fold_metrics(
             )
         )
     return tuple(summaries)
+
+
+@dataclass(frozen=True)
+class PrevalenceAveragePrecision:
+    """Average precision as if the positive class were ``prevalence`` of the rows.
+
+    Cohorts with different positive fractions then share one scale; divided by
+    ``prevalence`` (the ``normalized_*`` values), chance is 1.
+    """
+
+    prevalence: float
+    reweighted: float
+    subsampled: float
+    subsampled_sd: float
+    n_positive_subsampled: int
+    n_negative_subsampled: int
+    draws: int
+    seed: int
+
+    @property
+    def normalized_reweighted(self) -> float:
+        return self.reweighted / self.prevalence
+
+    @property
+    def normalized_subsampled(self) -> float:
+        return self.subsampled / self.prevalence
+
+
+def average_precision_at_prevalence(
+    truth: np.ndarray,
+    score: np.ndarray,
+    *,
+    prevalence: float = 0.10,
+    draws: int = 50,
+    seed: int = 0,
+) -> PrevalenceAveragePrecision | None:
+    """Average precision at a fixed positive prevalence, two ways.
+
+    ``reweighted``: every positive weighted by (p / (1 - p)) * (negatives /
+    positives) -- the expectation of subsampling, with every row and no
+    randomness. ``subsampled``: the class in excess drawn down to that
+    proportion (keeping as many rows as possible), ``draws`` times from
+    ``seed``; mean and SD. ``None`` when a class is absent.
+    """
+    metrics = require("sklearn.metrics", extra="ml-base", purpose="classification metrics")
+    if not 0 < prevalence < 1:
+        raise EvaluationContractError("prevalence must be in (0, 1)")
+    if isinstance(draws, bool) or draws < 1:
+        raise EvaluationContractError("draws must be a positive integer")
+    truth = np.asarray(truth, dtype=bool)
+    score = np.asarray(score, dtype=np.float64)
+    if truth.ndim != 1 or score.shape != truth.shape:
+        raise EvaluationContractError("truth and score must be equal-length vectors")
+    n_positive, n_negative = int(truth.sum()), int((~truth).sum())
+    if n_positive == 0 or n_negative == 0:
+        return None
+    odds = prevalence / (1 - prevalence)
+    weights = np.where(truth, odds * n_negative / n_positive, 1.0)
+    reweighted = float(metrics.average_precision_score(truth, score, sample_weight=weights))
+    wanted_positive = int(round(odds * n_negative))
+    if wanted_positive <= n_positive:
+        keep_positive, keep_negative = max(wanted_positive, 1), n_negative
+    else:
+        keep_positive, keep_negative = n_positive, max(int(round(n_positive / odds)), 1)
+    rng = np.random.default_rng(seed)
+    positives, negatives = np.flatnonzero(truth), np.flatnonzero(~truth)
+    values = []
+    for _ in range(draws):
+        rows = np.concatenate(
+            [
+                rng.choice(positives, keep_positive, replace=False),
+                rng.choice(negatives, keep_negative, replace=False),
+            ]
+        )
+        values.append(metrics.average_precision_score(truth[rows], score[rows]))
+    return PrevalenceAveragePrecision(
+        prevalence=float(prevalence),
+        reweighted=reweighted,
+        subsampled=float(np.mean(values)),
+        subsampled_sd=float(np.std(values)),
+        n_positive_subsampled=keep_positive,
+        n_negative_subsampled=keep_negative,
+        draws=int(draws),
+        seed=int(seed),
+    )

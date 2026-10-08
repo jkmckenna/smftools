@@ -7,6 +7,7 @@ from .common import (
     MLArtifactManifestError,
     ResolvedDefinition,
     SerializationPolicy,
+    capture_environment_record,
 )
 from .indexing import (
     rebuild_workspace_indexes,
@@ -51,6 +52,7 @@ __all__ = [
     "ResolvedDefinition",
     "RunManifest",
     "SerializationPolicy",
+    "capture_environment_record",
     "cleanup_abandoned_staging",
     "file_sha256",
     "new_run_id",
