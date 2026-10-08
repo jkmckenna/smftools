@@ -1,6 +1,6 @@
 # Motif scanning and per-molecule motif occupancy (`MOT`)
 
-**Status:** in progress. `MOT-01` merged, `MOT-02` implemented. One PR per item, in order.
+**Status:** in progress. `MOT-01`, `MOT-02` merged, `MOT-03` implemented. One PR per item, in order.
 
 ## Question
 
@@ -146,8 +146,8 @@ metadata.
 | item | status | scope |
 |---|---|---|
 | `MOT-01` motif files and the built-in scanner | merged | MEME parser (exact), numpy scanner, exact p-values, interval table; `smftools motifs scan` |
-| `MOT-02` FIMO engine | implemented, not merged | optional `engine: fimo`, background parity, same table |
-| `MOT-03` bulk class tracks with motif lanes | proposed | per group x reference: class fractions along the locus, motif lanes below, per-instance inside-vs-flank contrast table; `project|experiment motif-tracks` |
+| `MOT-02` FIMO engine | merged | optional `engine: fimo`, background parity, same table |
+| `MOT-03` bulk class tracks with motif lanes | implemented, not merged | per group x reference: class fractions along the locus, motif lanes below, per-instance inside-vs-flank contrast table; `project|experiment motif-tracks` |
 | `MOT-04` per-molecule occupancy | proposed | states per read x instance from HMM layers via a plan dataset; group fractions; `project|experiment motif-occupancy` |
 | `MOT-05` co-occupancy, comparisons, figures | proposed | pair tables, group tests, locus track, bars, heatmap, volcano |
 | `MOT-06` qualification | proposed | built-in vs FIMO agreement on real references; occupancy vs the earlier per-read TetO script on its data; NKG2A locus run |
@@ -238,6 +238,36 @@ region zooms. CLI `smftools project|experiment motif-tracks --plan --dataset
 Tests: class fractions equal a direct count; reads not spanning a position
 not counted; contrast on a constructed footprint over a motif; lanes never
 overlap; coordinates and orientation as `RPF`; figure per group x reference.
+
+As built: `analysis/compute/motif_tracks.py` (`TrackCounts`,
+`instance_contrast`, `pack_lanes`, `filter_hits`), `analysis/plot/motif_tracks.py`
+(`plot_motif_tracks`), `tools/motif_tracks.py` (`compute_tracks`,
+`run_motif_tracks`); CLI `smftools project|experiment motif-tracks --plan
+--dataset --motif-hits (parquet or scan dir) -o DIR [--channel ...]
+[--group-by ...] [--motif-reference] [--region NAME=START-END ...]
+[--regions-file] [--max-pvalue] [--family ...] [--motif ...] [--flank]
+[--contrast-track] [--highlight-top 10] [--label-top 15] [--min-spanning 10]
+[--layout groups|tracks] [--coordinate-origin --coordinate-reverse]
+[--workers] [--refresh] [--no-figures]`.
+
+- Every dataset channel is a track; the project declares which class layers
+  (and the HMM variant, by layer name) -- nothing is hard-coded.
+- Several groupings per pass (a figure set each). Counts are cached by plan,
+  dataset, referenced files, channels and groupings; motif filters, regions,
+  contrast and display options are not in the key and redraw from cache.
+- `min_spanning` (default 10) blanks positions with too few reads in the
+  figures and keeps such instances out of the outlined top-contrast set; the
+  tables keep everything.
+- Motif instances must be on the dataset's frame reference (or
+  `--motif-reference`); none there is an error naming what the table has.
+- Worker pools use the fork-safe initializer (`configure_worker_threads`).
+
+First real run (260923 panel, intact B6, the periodicity set's molecules,
+tracks: small / medium / large bound, putative nucleosome, all accessible;
+965 B6 motif instances, unfiltered): 4,121 molecules counted in 24 s with 8
+workers. In the promoter the TF-sized track rises around +60 to +75 bp
+(TSS-relative) for most enzymes, where the top-contrast instances are
+nuclear-receptor motifs (NR1I/VDR, NR3C) -- a lead for `MOT-04`.
 
 ### `MOT-04` — per-molecule occupancy
 

@@ -2155,6 +2155,204 @@ def _read_regions_file(path: Path) -> list[tuple[int, int]]:
     return regions
 
 
+def _named_regions(region_texts, regions_file) -> dict[str, tuple[int, int]]:
+    """``NAME=START-END`` or ``START-END`` texts, and a ``[name] start end`` file."""
+    regions: dict[str, tuple[int, int]] = {}
+    for text in region_texts:
+        name, _, bounds = text.rpartition("=")
+        start, end = _parse_region(bounds)
+        regions[name or f"{start}-{end}"] = (start, end)
+    if regions_file is not None:
+        for number, line in enumerate(regions_file.read_text().splitlines(), start=1):
+            fields = line.split("#", 1)[0].split()
+            if not fields:
+                continue
+            try:
+                start, end = (int(v) for v in fields[-2:])
+            except ValueError as exc:
+                raise click.BadParameter(
+                    f"{regions_file}:{number}: expected [name] start end"
+                ) from exc
+            regions[fields[0] if len(fields) >= 3 else f"{start}-{end}"] = (start, end)
+    return regions
+
+
+def _motif_tracks_options(command):
+    """Options shared by the project and experiment ``motif-tracks`` commands."""
+    options = [
+        click.option(
+            "--plan",
+            "plan_path",
+            type=click.Path(exists=True, dir_okay=False, path_type=Path),
+            required=True,
+            help="ML plan whose dataset selects the molecules; every channel is a track.",
+        ),
+        click.option("--dataset", required=True, help="Dataset name in the plan."),
+        click.option(
+            "--motif-hits",
+            type=click.Path(exists=True, path_type=Path),
+            required=True,
+            help="motif_hits.parquet from `smftools motifs scan`, or its output directory.",
+        ),
+        click.option(
+            "--output",
+            "-o",
+            "output_dir",
+            type=click.Path(file_okay=False, path_type=Path),
+            required=True,
+            help="Output directory (track counts are cached here and reused).",
+        ),
+        click.option(
+            "--channel", "channels", multiple=True, help="Tracks to use (default: every channel)."
+        ),
+        click.option(
+            "--group-by",
+            multiple=True,
+            help="Identity or label-table column (repeatable; each a set of figures).",
+        ),
+        click.option(
+            "--motif-reference",
+            default=None,
+            help="Reference of the motif instances (default: the dataset's frame).",
+        ),
+        click.option(
+            "--region",
+            "region_texts",
+            multiple=True,
+            help="Zoom: NAME=START-END in frame coordinates (repeatable).",
+        ),
+        click.option(
+            "--regions-file",
+            type=click.Path(exists=True, dir_okay=False, path_type=Path),
+            default=None,
+            help="Zooms from a file: [name] start end per line.",
+        ),
+        click.option(
+            "--max-pvalue", type=float, default=None, help="Motif instances at p <= this."
+        ),
+        click.option("--family", "families", multiple=True, help="Motif families (repeatable)."),
+        click.option("--motif", "motifs", multiple=True, help="Motif names or IDs (repeatable)."),
+        click.option(
+            "--flank", type=int, default=None, help="Contrast flank width (default: motif width)."
+        ),
+        click.option(
+            "--contrast-track", default=None, help="Track ranked for outlines (default: first)."
+        ),
+        click.option("--highlight-top", type=int, default=10, show_default=True),
+        click.option("--label-top", type=int, default=15, show_default=True),
+        click.option(
+            "--min-spanning",
+            type=int,
+            default=10,
+            show_default=True,
+            help="Draw (and rank) positions spanned by at least this many reads.",
+        ),
+        click.option(
+            "--layout",
+            type=click.Choice(["groups", "tracks"]),
+            default="groups",
+            show_default=True,
+            help="A panel per group (lines: tracks) or per track (lines: groups).",
+        ),
+        click.option("--coordinate-origin", type=float, default=None),
+        click.option("--coordinate-reverse", is_flag=True),
+        click.option("--workers", type=int, default=1, show_default=True),
+        click.option("--refresh", is_flag=True, help="Recount even if cached counts match."),
+        click.option("--no-figures", is_flag=True),
+    ]
+    for option in reversed(options):
+        command = option(command)
+    return command
+
+
+def _run_motif_tracks(
+    scope,
+    plan_path,
+    dataset,
+    motif_hits,
+    output_dir,
+    channels,
+    group_by,
+    motif_reference,
+    region_texts,
+    regions_file,
+    max_pvalue,
+    families,
+    motifs,
+    flank,
+    contrast_track,
+    highlight_top,
+    label_top,
+    min_spanning,
+    layout,
+    coordinate_origin,
+    coordinate_reverse,
+    workers,
+    refresh,
+    no_figures,
+):
+    from .machine_learning.plan import load_ml_plan
+    from .tools.motif_tracks import run_motif_tracks
+
+    try:
+        record = run_motif_tracks(
+            load_ml_plan(plan_path),
+            dataset,
+            output_dir,
+            motif_hits,
+            **scope,
+            group_by=list(group_by) or None,
+            channels=list(channels) or None,
+            motif_reference=motif_reference,
+            regions=_named_regions(region_texts, regions_file),
+            max_pvalue=max_pvalue,
+            families=list(families) or None,
+            motifs=list(motifs) or None,
+            flank=flank,
+            contrast_track=contrast_track,
+            highlight_top=highlight_top,
+            label_top=label_top,
+            min_spanning=min_spanning,
+            layout=layout,
+            coordinate_origin=coordinate_origin,
+            coordinate_reverse=coordinate_reverse,
+            workers=workers,
+            refresh=refresh,
+            figures=not no_figures,
+        )
+    except (KeyError, ValueError) as exc:
+        raise click.ClickException(str(exc.args[0] if exc.args else exc)) from exc
+    state = "reused cached counts" if record["tracks_reused"] else "counted"
+    click.echo(
+        f"{state}: {record['molecules']} molecules, {len(record['tracks'])} track(s), "
+        f"{record['motif_instances']} motif instance(s), {len(record['figures'])} figure(s); "
+        f"wrote {output_dir}"
+    )
+
+
+@project_group.command("motif-tracks")
+@click.argument("project_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@_motif_tracks_options
+def project_motif_tracks_cmd(project_dir, **options):
+    """Bulk HMM feature-class tracks per group, with motif instances in lanes below.
+
+    For each group and position: the fraction of reads spanning it that are in
+    each class (one track per dataset channel, e.g. HMM class layers at every
+    position). Motif instances from `smftools motifs scan` are drawn below;
+    per instance, the class fraction inside vs its flanks (contrast) is written
+    and the highest are outlined.
+    """
+    _run_motif_tracks({"project_dir": project_dir}, **options)
+
+
+@experiment_group.command("motif-tracks")
+@click.argument("experiment_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@_motif_tracks_options
+def experiment_motif_tracks_cmd(experiment_dir, **options):
+    """As ``project motif-tracks``, for an experiment-scope plan."""
+    _run_motif_tracks({"experiment_dir": experiment_dir}, **options)
+
+
 def _periodicity_options(command):
     """Options shared by the project and experiment ``periodicity`` commands."""
     options = [
