@@ -1,7 +1,6 @@
 # Barcode allowlist for multi-experiment runs (`BAL`)
 
-**Status:** in progress. `BAL-01` implemented and `BAL-02` qualified on
-`feature/barcode-allowlist`, cut from `9b32d20`; not yet merged.
+**Status:** completed. `BAL-01` merged (#639); `BAL-02` qualified.
 
 ## Problem
 
@@ -24,7 +23,7 @@ metadata is too late for the pooled model fits.
 
 | item | status | evidence |
 |---|---|---|
-| `BAL-01` `barcodes_to_include`: drop non-listed barcodes before raw extraction | implemented, not merged | `414d7fe`; `test_allowed_read_ids_keeps_only_listed_barcodes`, `test_unset_barcode_allowlist_leaves_raw_fingerprint_unchanged` |
+| `BAL-01` `barcodes_to_include`: drop non-listed barcodes before raw extraction | merged (#639) | `414d7fe`; `test_allowed_read_ids_keeps_only_listed_barcodes`, `test_unset_barcode_allowlist_leaves_raw_fingerprint_unchanged` |
 | `BAL-02` real-data qualification on a dual-modality run | qualified | see `BAL-02` below |
 
 ### `BAL-01` — as implemented
