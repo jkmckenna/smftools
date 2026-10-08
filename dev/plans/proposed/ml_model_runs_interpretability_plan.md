@@ -152,8 +152,9 @@ the stores.
 | item | status | scope |
 |---|---|---|
 | `MLR-01` train-and-publish | done (PR #700) | one call: bind a plan job, train each model per fold, publish run / data / models / evaluation records and index; fixed-prevalence AUPRC (reweighted, subsampled) in smftools metrics |
-| `MLR-02` final models and apply | implemented (`feature/ml-final-models-apply`) | optional all-groups final model; apply a run to another dataset with records |
-| `MLR-03` explanation records | proposed | position importance, per-molecule attribution matrices, and the CNN detector catalogue per run and evaluation set, out-of-fold; fold consistency |
+| `MLR-02` final models and apply | done (PR #701) | optional all-groups final model; apply a run to another dataset with records |
+| `MLR-03` explanation records | implemented (`feature/ml-explanation-records`) | out-of-fold position importance and per-molecule attribution matrices per run; fold consistency |
+| `MLR-03b` detector catalogue | proposed | CNN detector catalogue (split from `MLR-03`) |
 | `MLR-04` attribution clustermap | proposed | input layers beside attributions, shared row order, label / score / fold strips; detector catalogue figures |
 | `MLR-05` run comparison | proposed | select runs by tags; paired per-fold metrics, bootstrap intervals, figures |
 | `MLR-06` fold-matrix cache | proposed | read each task's data once for every model |
@@ -208,18 +209,38 @@ model id, a position mismatch (named) and final torch models are handled.
 
 ### `MLR-03` -- explanation records
 
-`explain_run(run, method, *, evaluation="held_out" | dataset selection,
-parameters, background=...)`; dispatches to `interpretability` by model
-capability; stores importance and the attribution matrix (chunked, UIDs,
-positions); out-of-fold by default. For convolutional runs, method
-`DetectorCatalogue` (parameters: top windows per detector, similarity
-threshold for grouping) reads final-layer activations before pooling.
+As built (`orchestration/explanations.py`): `explain_run(run_id, model=,
+method=, parameters=None, max_per_fold=2000, background_size=100, seed=0)`
+publishes an explain run whose manifest names the run's fold models (the
+explain service now accepts several models of one key and training run).
+Each fold's held-out molecules (class-stratified, seeded sample) are read
+batch by batch -- never the whole split -- and explained by that fold's
+model; background-dependent methods sample the fold's training molecules.
+Records: `request.json`, `data/molecules.parquet` (fold, model, matrix row,
+truth, out-of-fold score), `attributions/index.json` + `fold_NN.npy`
+(float32 molecules x channels x positions; classical attributions summed over
+each position's transformed features), `importance.parquet` (mean |a|, mean,
+mean per true class; or a global method's value), `consistency.parquet`
+(Spearman between folds), `summary.json` (mean consistency, top positions).
+The re-bound snapshot and fold splits must equal the run's. Evaluating an
+applied dataset, and layer methods (Grad-CAM), are left for later.
 
-Tests: NB log-odds attributions equal the closed form; TreeSHAP rows sum to
-the model output minus the base value; each held-out molecule is explained by
-the fold model that held it out; fold consistency on a planted signal; a CNN
-trained on a planted pattern has a detector whose top windows recover it, at
-the planted locations, enriched in the planted class.
+Tests (`test_explanation_records.py`): NB contributions plus the prior give
+the fold model's log posterior odds; TreeSHAP rows plus the base value give
+the stored out-of-fold probability; every held-out molecule is explained once
+by its fold's model; importance on the planted signal, fold consistency;
+seeded class-stratified sampling; a global method gives importance only;
+indexing; unknown model / method and changed data refused; integrated
+gradients for a torch run.
+
+### `MLR-03b` -- detector catalogue
+
+For convolutional runs, method `DetectorCatalogue` (parameters: top windows
+per detector, similarity threshold for grouping) reads final-layer
+activations before pooling, stored as an explain run like `MLR-03`.
+
+Tests: a CNN trained on a planted pattern has a detector whose top windows
+recover it, at the planted locations, enriched in the planted class.
 
 ### `MLR-04` -- attribution clustermap
 

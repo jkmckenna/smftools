@@ -37,6 +37,7 @@ from .contracts import (
     ResolvedJob,
     ResolvedModelSelection,
 )
+from .explanations import PublishedExplanationRun, explain_run
 from .planning import (
     MLWorkflowDryRun,
     MLWorkflowPlanningError,
@@ -72,6 +73,7 @@ __all__ = [
     "MLWorkflowDryRun",
     "MLWorkflowPlanningError",
     "PublishedApplyRun",
+    "PublishedExplanationRun",
     "PublishedTrainRun",
     "ModelMetricCandidate",
     "ModelSelectionRequest",
@@ -86,6 +88,7 @@ __all__ = [
     "dry_run_job",
     "evaluate_prediction_result",
     "explain_partition_model",
+    "explain_run",
     "final_training_split",
     "iter_bound_final_models",
     "iter_bound_train_job",
