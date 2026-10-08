@@ -1,6 +1,6 @@
 # Motif scanning and per-molecule motif occupancy (`MOT`)
 
-**Status:** in progress. `MOT-01`, `MOT-02` merged, `MOT-03` implemented. One PR per item, in order.
+**Status:** in progress. `MOT-01`–`MOT-03` merged, `MOT-04` implemented. One PR per item, in order.
 
 ## Question
 
@@ -147,8 +147,8 @@ metadata.
 |---|---|---|
 | `MOT-01` motif files and the built-in scanner | merged | MEME parser (exact), numpy scanner, exact p-values, interval table; `smftools motifs scan` |
 | `MOT-02` FIMO engine | merged | optional `engine: fimo`, background parity, same table |
-| `MOT-03` bulk class tracks with motif lanes | implemented, not merged | per group x reference: class fractions along the locus, motif lanes below, per-instance inside-vs-flank contrast table; `project|experiment motif-tracks` |
-| `MOT-04` per-molecule occupancy | proposed | states per read x instance from HMM layers via a plan dataset; group fractions; `project|experiment motif-occupancy` |
+| `MOT-03` bulk class tracks with motif lanes | merged | per group x reference: class fractions along the locus, motif lanes below, per-instance inside-vs-flank contrast table; `project|experiment motif-tracks` |
+| `MOT-04` per-molecule occupancy | implemented, not merged | states per read x instance from HMM layers via a plan dataset; group fractions; `project|experiment motif-occupancy` |
 | `MOT-05` co-occupancy, comparisons, figures | proposed | pair tables, group tests, locus track, bars, heatmap, volcano |
 | `MOT-06` qualification | proposed | built-in vs FIMO agreement on real references; occupancy vs the earlier per-read TetO script on its data; NKG2A locus run |
 
@@ -281,6 +281,46 @@ table and group fractions. CLI `smftools project|experiment motif-occupancy
 
 Tests: each state from a constructed read; uninformative when no sites;
 precedence; variants by prefix; group fractions equal a direct count.
+
+As built: `analysis/compute/motif_occupancy.py` (`STATES`, `OccupancyRules`,
+`resolve_instances`, `classify`, `group_occupancy`, `wilson`) and
+`tools/motif_occupancy.py` (`compute_occupancy`, `run_motif_occupancy`,
+`read_states`, `occupancy_tables`); CLI `smftools project|experiment
+motif-occupancy --plan --dataset --motif-hits -o DIR [--tf-channel ...]
+[--medium-channel ...] [--nucleosome-channel ...] [--accessible-channel ...]
+--sites-channel C [--group-by ...] [--motif-reference] [--max-pvalue]
+[--family ...] [--motif ...] [--flank 10] [--min-sites 2] [--min-cover 0.5]
+[--workers] [--refresh]`.
+
+- States: `uninformative`, `tf_bound`, `medium_bound`, `nucleosome`,
+  `accessible`, `other`. Informative = the read spans every motif position in
+  the class channels and has >= `min_sites` observed sites (the sites channel)
+  in motif +/- `flank`. The state is the class with the largest share of the
+  motif's positions if >= `min_cover`; ties go tf > medium > nucleosome >
+  accessible; spanned and informative but uncovered is `other` (e.g. a
+  footprint shorter than any class).
+- Channel roles are arguments, not layer names: a state may combine several
+  channels (nucleosome = putative nucleosome + large bound), and the HMM
+  variant is chosen by the channels the plan declares.
+- Instances not wholly inside the dataset's positions are dropped (counted in
+  `run.json`).
+- Outputs: `states.npz` (reads x instances, int8 codes + molecule UIDs, in the
+  dataset's order), `instances.parquet`, `reads.parquet` (identity + every
+  grouping), `occupancy.parquet` (per grouping, group, instance: counts per
+  state, informative reads, fraction per state of informative reads, Wilson
+  intervals for TF-bound and any-bound). Cached by plan, dataset, referenced
+  files, roles, sites channel, rules, groupings and a digest of the instances.
+
+First real run (260923 panel, intact B6, 965 instances at p < 1e-4, 4,121
+molecules, 8 workers): 43 s; 90 % of read x instance pairs informative;
+states nucleosome 56 %, accessible 21 %, other 6 %, medium 6 %, TF-bound
+1.4 %. Ranking instances by median TF-bound fraction across enzymes (>= 5
+enzymes, >= 100 informative reads, DddA11 excluded): a cluster at -417..-377
+(TSS-relative; GTF3A, ZNF, GRHL, PRDM/ZEB, SCRT, FLI/Ets motifs overlapping)
+at ~6 % TF-bound, every enzyme >= 3 %, against a median instance of 0.6 % --
+the region `MOT-03`'s contrast picked out, now per molecule; and FOXO /
+ZSCAN at +254..+266 (~6 %, one enzyme 1.4 %). Overlapping motifs share one
+footprint: the data name a bound site, not which TF.
 
 ### `MOT-05` — co-occupancy, comparisons, figures
 
