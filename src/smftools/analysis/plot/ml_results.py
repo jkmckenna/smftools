@@ -679,6 +679,17 @@ def plot_run_comparison(comparison: Any, output_path: str | Path, *, metric: str
             zorder=3,
         )
     for _index, row in summary.iterrows():
+        if pd.notna(row.get("fold_ci_low")):
+            # Between experiments (folds resampled): grey, under the molecule interval.
+            left.hlines(
+                y[row["entry"]],
+                row["fold_ci_low"],
+                row["fold_ci_high"],
+                color="#9E9E9E",
+                linewidth=4,
+                alpha=0.6,
+                zorder=2,
+            )
         left.errorbar(
             row["mean"],
             y[row["entry"]],
@@ -692,7 +703,10 @@ def plot_run_comparison(comparison: Any, output_path: str | Path, *, metric: str
     left.set_yticks(range(len(entries)), entries, fontsize=8)
     left.invert_yaxis()
     left.set_xlabel(metric)
-    left.set_title("per fold (points), mean and bootstrap interval", fontsize=9)
+    left.set_title(
+        "per fold (points); mean with molecule (black) and experiment (grey) intervals",
+        fontsize=9,
+    )
     left.legend(title="held out", fontsize=7, title_fontsize=7, loc="best", frameon=False)
     reference = comparison.settings.get("reference")
     for offset, fold in zip(offsets, folds):
@@ -705,6 +719,16 @@ def plot_run_comparison(comparison: Any, output_path: str | Path, *, metric: str
             zorder=3,
         )
     for _index, row in differences.iterrows():
+        if pd.notna(row.get("fold_ci_low")):
+            right.hlines(
+                y[row["entry"]],
+                row["fold_ci_low"],
+                row["fold_ci_high"],
+                color="#9E9E9E",
+                linewidth=4,
+                alpha=0.6,
+                zorder=2,
+            )
         right.errorbar(
             row["mean"],
             y[row["entry"]],

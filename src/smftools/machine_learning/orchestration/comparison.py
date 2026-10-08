@@ -12,7 +12,13 @@ reported at both levels:
   how many folds favour the entry;
 - within folds: a seeded bootstrap over molecules (resampled within each
   fold, stratified by class, the same resamples for every entry), giving
-  percentile intervals for each entry's fold-mean and each paired difference.
+  percentile intervals for each entry's fold-mean and each paired difference
+  (``ci_low`` / ``ci_high``) -- uncertainty from molecule sampling only;
+- between experiments: a bootstrap over held-out folds (``fold_ci_low`` /
+  ``fold_ci_high``) and, for paired differences, an exact sign-flip test over
+  the per-fold differences (``sign_flip_p``, two-sided) -- what a new batch
+  would see. With n folds the smallest attainable p is 2 / 2**n (5 folds:
+  0.0625).
 
 Metrics (positive class): ``roc_auc``, ``average_precision``,
 ``normalized_average_precision`` (over the fold's positive fraction) and
@@ -98,6 +104,41 @@ def _metric_functions(prevalence: float) -> dict[str, Callable[[np.ndarray, np.n
             average_precision(t, s, _prevalence_weights(t, prevalence)) / prevalence
         ),
     }
+
+
+def _fold_interval(
+    values: pd.Series, alpha: float, rng: np.random.Generator, draws: int = 2000
+) -> dict[str, float | None]:
+    """Percentile interval of the mean over held-out folds resampled with
+    replacement: between-experiment uncertainty."""
+    finite = values.dropna().to_numpy(dtype=float)
+    if finite.size < 2:
+        return {"fold_ci_low": None, "fold_ci_high": None}
+    means = rng.choice(finite, size=(draws, finite.size), replace=True).mean(axis=1)
+    return {
+        "fold_ci_low": float(np.quantile(means, alpha)),
+        "fold_ci_high": float(np.quantile(means, 1 - alpha)),
+    }
+
+
+def sign_flip_p(
+    differences: np.ndarray, *, max_exact: int = 16, draws: int = 20000
+) -> float | None:
+    """Two-sided paired sign-flip test of a mean difference across folds:
+    the share of sign patterns whose |mean| is at least the observed one --
+    every pattern up to ``max_exact`` folds, a seeded sample beyond."""
+    differences = np.asarray(differences, dtype=float)
+    differences = differences[np.isfinite(differences)]
+    n = differences.size
+    if n == 0:
+        return None
+    observed = abs(differences.mean())
+    if n <= max_exact:
+        signs = 1 - 2 * ((np.arange(2**n)[:, None] >> np.arange(n)) & 1)
+    else:
+        signs = np.random.default_rng(0).choice([-1, 1], size=(draws, n))
+    means = np.abs((signs * differences).mean(axis=1))
+    return float(np.mean(means >= observed - 1e-12))
 
 
 # --- selecting runs ---------------------------------------------------------------
@@ -328,6 +369,8 @@ def compare_runs(
     # A draw's fold-mean per entry; then the paired difference to the reference.
     draw_means = boot.groupby(["draw", "metric", "entry"])["value"].mean().unstack("entry")
     alpha = (1 - confidence) / 2
+    # Its own stream: the molecule bootstrap's draws stay as they were.
+    fold_rng = np.random.default_rng([seed, 1])
     summary_rows, difference_rows, fold_difference_rows = [], [], []
     for metric in metrics:
         values = fold_metrics[fold_metrics["metric"] == metric].pivot(
@@ -344,6 +387,7 @@ def compare_runs(
                     "n_folds": int(values[label].notna().sum()),
                     "ci_low": float(means[label].quantile(alpha)),
                     "ci_high": float(means[label].quantile(1 - alpha)),
+                    **_fold_interval(values[label], alpha, fold_rng),
                 }
             )
             if label == reference:
@@ -371,6 +415,8 @@ def compare_runs(
                     "ci_high": float(boot_difference.quantile(1 - alpha)),
                     "folds_better": int((per_fold > 0).sum()),
                     "n_folds": int(per_fold.notna().sum()),
+                    **_fold_interval(per_fold, alpha, fold_rng),
+                    "sign_flip_p": sign_flip_p(per_fold.to_numpy(dtype=float)),
                 }
             )
     entry_frame = pd.DataFrame(

@@ -213,9 +213,12 @@ comparison.write("project_outputs/ml_comparisons/regions")   # tables, settings,
 
 Entries are named by the tags that differ among the runs, then the model. Folds are matched by
 held-out group (folds not shared by every entry are dropped, with a warning); within each fold,
-metrics are recomputed on the molecules every entry predicted. Intervals come from a seeded
-bootstrap over molecules within folds (class-stratified, the same resamples for every entry);
-the spread across folds is reported beside them.
+metrics are recomputed on the molecules every entry predicted. Two kinds of interval are
+reported: `ci_low` / `ci_high` from a seeded bootstrap over molecules within folds
+(class-stratified, the same resamples for every entry) -- molecule sampling only -- and
+`fold_ci_low` / `fold_ci_high` from resampling held-out experiments, with an exact paired
+sign-flip test (`sign_flip_p`) on the per-fold differences: what a new batch would see. With
+n folds the smallest attainable `sign_flip_p` is 2 / 2**n (0.0625 for 5).
 
 For a whole-cohort analysis with no folds -- an embedding, clustering -- `bind_ml_dataset` reads
 every selected row of one dataset through the same selection (label tables, filters, `positions`,

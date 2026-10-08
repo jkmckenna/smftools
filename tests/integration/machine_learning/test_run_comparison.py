@@ -81,6 +81,11 @@ def test_fold_metrics_and_paired_differences_equal_direct_computation(runs) -> N
     mean = summary.loc[("full/nb", "roc_auc")]
     assert mean["ci_low"] <= mean["mean"] + 1e-9 and mean["n_folds"] == len(EXPERIMENTS)
     assert (comparison.folds.filter(like="dropped:") == 0).all().all()
+    # Between-experiment uncertainty beside the molecule bootstrap.
+    difference = comparison.differences.set_index(["entry", "metric"]).loc[("full/rf", "roc_auc")]
+    assert difference["fold_ci_low"] <= difference["mean"] <= difference["fold_ci_high"]
+    assert 2 / 2 ** len(EXPERIMENTS) <= difference["sign_flip_p"] <= 1
+    assert {"fold_ci_low", "fold_ci_high"} <= set(comparison.summary.columns)
 
 
 def test_the_bootstrap_is_seeded(runs) -> None:
