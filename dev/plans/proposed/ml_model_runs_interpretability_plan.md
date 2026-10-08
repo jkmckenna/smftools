@@ -141,8 +141,8 @@ the stores.
 | `MLR-05` run comparison | proposed | select runs by tags; paired per-fold metrics, bootstrap intervals, figures |
 | `MLR-06` fold-matrix cache | proposed | read each task's data once for every model |
 | `MLR-07` validation role | proposed | inner validation groups inside each training fold (nested CV) for early stopping and tuning |
-| `MLR-08` XGBoost and SVM | proposed | registry families: XGBoost (optional dependency, TreeSHAP), linear SVM with calibration |
-| `MLR-09` neural families | proposed | MLP and transformer (and a CNN beside the residual one) ported to registry configs / builders; project-registered families |
+| `MLR-08` receptive-field-bounded CNNs | proposed | position-agnostic residual dilated CNNs with a stated, enforced receptive field: sub-nucleosome, 2-3, 4-6 nucleosomes, full locus |
+| `MLR-09` further neural families | proposed | MLP / transformer ported to registry configs; project-registered families |
 | `MLR-10` qualification | proposed | `nkg2a_final` region / model grid through `MLR-01`-`MLR-05`; parity with its current metrics |
 
 ### `MLR-01` -- train-and-publish
@@ -201,18 +201,54 @@ Tests: inner validation groups are disjoint from the outer test group and from
 inner training; early stopping uses validation only; leave-one-group-out
 keeps its outer folds.
 
-### `MLR-08` -- XGBoost and SVM
+### `MLR-08` -- receptive-field-bounded CNNs
 
-Tests: each family trains, saves and reloads through the registry; XGBoost is
-skipped cleanly without its optional dependency; TreeSHAP works for XGBoost.
+Question: how much context does activity need? Models that see only
+sub-nucleosome features, 2-3 nucleosomes, 4-6, or the whole locus, and are
+otherwise alike.
 
-### `MLR-09` -- neural families
+The existing `residual_dilated_cnn` is the base: convolutions then global
+average / max / content-attention pooling and a small head -- no positional
+encoding, no flatten over positions, so it learns what a feature looks like,
+not where it is. Inputs are on a bp grid (site calls with an observed mask),
+so receptive fields are in bp:
+`RF = 1 + (stem_kernel - 1) + sum over blocks of 2 (kernel - 1) dilation`.
 
-Architectures as `models/<arch>.py` with a config dataclass, builder and
-registry recipe on the residual CNN's input contract (channel-first values,
-observed mask); a project may build a registry from the built-ins plus its own
-families and pass it to training (experimental architectures live in the
-project until they earn a place in smftools).
+- `ResidualCNNConfig` gains `receptive_field` (computed, recorded in the run
+  manifest) and an optional `max_receptive_field` (refused when exceeded).
+- Squeeze-excite pools over the whole molecule inside every block, so a model
+  with SE sees the full locus whatever its dilations: bounded models require
+  `use_se: false` (validated against `max_receptive_field`).
+- Recipes, alike in depth / width as far as the ladder allows (dilations grow
+  gradually -- large jumps leave gaps, "gridding"; a downsampling stage is the
+  alternative for the full locus):
+
+  | recipe | target | example dilations (kernel 5) | RF |
+  |---|---|---|---|
+  | `rcnn_subnucleosome` | < ~150 bp | 1, 1, 2, 2, 3, 4 | 113 bp |
+  | `rcnn_2_3_nucleosomes` | ~400-600 bp | 1, 2, 4, 8, 16, 32 | 513 bp |
+  | `rcnn_4_6_nucleosomes` | ~800-1,200 bp | 1, 2, 4, 8, 16, 32, 64 | 1,025 bp |
+  | `rcnn_full_locus` | >= 4.7 kb | 1, 2, 4, 8, 16, 32, 64, 128, 256, 128 | 5,121 bp |
+
+- At full-locus RF a CNN can infer absolute position from padding at the
+  molecule's edges: position-agnostic by design, not in effect -- the
+  comparison point, recorded as such.
+- Needs the validation role (`MLR-07`) for early stopping.
+
+Tests: the computed RF equals the formula; perturbing one input position
+changes pre-pooling features only within RF / 2 of it (empirical bound) for
+bounded recipes and anywhere with SE on; `max_receptive_field` refuses an
+over-wide config; translating a feature within the molecule leaves the
+prediction unchanged up to edge effects (position-agnostic); each recipe
+trains a few epochs, saves, reloads and explains (integrated gradients).
+
+### `MLR-09` -- further neural families
+
+MLP and transformer as `models/<arch>.py` with a config dataclass, builder
+and registry recipe on the residual CNN's input contract (channel-first
+values, observed mask); a project may build a registry from the built-ins
+plus its own families and pass it to training (experimental architectures
+live in the project until they earn a place in smftools).
 
 Tests: each family trains a few epochs on a fixture, saves and reloads with
 identical predictions, and explains with integrated gradients.
@@ -222,7 +258,8 @@ identical predictions, and explains with integrated gradients.
 The `nkg2a_final` cell already compared by hand (fresh B6 vs NK; full locus,
 E + P, E, P, intervening, downstream, E/P masked; NB, RF; NDR baselines)
 through `MLR-01`-`MLR-05`: metrics equal the project's current tables;
-attribution clustermaps for the RF and NB promoter / E + P models.
+attribution clustermaps for the RF and NB promoter / E + P models; then the
+receptive-field ladder on the full locus.
 
 ## Project side (`nkg2a_final`)
 
@@ -236,6 +273,7 @@ attribution clustermaps for the RF and NB promoter / E + P models.
 
 ## Out of scope
 
+- XGBoost and SVM families (not planned; the registry can take them later).
 - Hosted trackers (W&B / MLflow) and Hydra -- `ML-601` / `ML-602`, deferred.
 - Hyperparameter search beyond what the validation role enables.
 - Pretrained encoders (`ML-304`, gated).

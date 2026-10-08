@@ -78,7 +78,7 @@ A plan with no implementation branch yet.
 | `agent_files_plan.md` | restructuring the repo's `AGENTS.md`/`CLAUDE.md` files; explicitly not deployed |
 | `pipeline_throughput_implementation_plan.md` | `THR-01`–`THR-06` -- single-threaded, pool-collapse and redundant-scan bottlenecks found running `experiment batch full` (`F53`–`F57`, `F59`): alignment rescue, duplicate-detection group sizing, latent, raw extraction |
 | `generation_prune_scope_implementation_plan.md` | `EGL-03c` -- fan the existing read-only, dry-run-only prune planner (`EGL-03a`) out to a project and to an arbitrary directory of run roots; does not touch `EGL-03b` (deletion), still blocked |
-| `ml_model_runs_interpretability_plan.md` | `MLR-01`–`MLR-10` model runs as self-describing records (task, data, molecules per fold, fitted models, evaluation, curves), applying saved runs to new data, interpretability per run (position importance, per-molecule attributions, attribution clustermaps beside the input), run comparison, fold-matrix cache, validation role, XGBoost / SVM / neural families |
+| `ml_model_runs_interpretability_plan.md` | `MLR-01`–`MLR-10` model runs as self-describing records (task, data, molecules per fold, fitted models, evaluation, curves), applying saved runs to new data, interpretability per run (position importance, per-molecule attributions, attribution clustermaps beside the input), run comparison, fold-matrix cache, validation role, position-agnostic CNNs with bounded receptive fields (sub-nucleosome to full locus) |
 
 ## `logs/` — not tracked
 
