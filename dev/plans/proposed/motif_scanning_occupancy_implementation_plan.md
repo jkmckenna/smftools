@@ -48,7 +48,7 @@ p < 1e-4, both strands:
   for the same hit. With `--bfile --uniform--`, ~80 % of hits are shared; some
   FIMO hits (31 of 966) report negative scores with p < 1e-4, and minus-strand
   `matched_sequence` / soft-masked (lowercase) bases need checking before
-  matching it exactly. Agreement is qualified in `MOT-05`, not assumed.
+  matching it exactly. Agreement is qualified in `MOT-06`, not assumed.
 
 ## Design
 
@@ -75,6 +75,27 @@ file's content hash plus the motif ID, so cached scans follow the file.
   (0-based, half-open, reference coordinates), `motif_strand`, `score`,
   `pvalue`, `engine`, `motif_file_sha256`. Windows touching `N` are skipped;
   case is ignored.
+
+### Bulk feature-class tracks with motif lanes
+
+The first look, before any per-molecule classification: per group (sample /
+barcode, or any grouping) and reference, the fraction of reads in each HMM
+feature class at every position -- TF-sized footprint (`small_bound_stretch`),
+medium footprint, nucleosome (`putative_nucleosome` + `large_bound_stretch`),
+accessible (any accessible feature) -- over reads that span the position
+(Wilson band optional). Below the axis, the motif instances from the scan,
+packed into non-overlapping lanes, coloured by family; filtered by p-value,
+family list or top-N per region, labels for the strongest. Display
+coordinates as `RPF` (origin and orientation, e.g. TSS-relative, upstream
+left); a whole-locus figure plus zooms on named regions; one panel per group
+stacked on a shared x axis, or groups overlaid per class.
+
+To make "overlaps cleanly" measurable, a per-instance table: for each motif
+instance and group, the mean class fraction inside the motif vs in flanks of
+the same width either side (`contrast = inside - flanks`, and the share of
+reads spanning it), ranked -- instances where a TF-sized footprint sits on
+the motif and not around it rise to the top, and are outlined in the figure.
+Default and learned HMM layers can be drawn side by side (layer prefix).
 
 ### Occupancy states per molecule and motif instance
 
@@ -124,9 +145,10 @@ metadata.
 |---|---|---|
 | `MOT-01` motif files and the built-in scanner | proposed | MEME parser (exact), numpy scanner, exact p-values, interval table; `smftools motifs scan` |
 | `MOT-02` FIMO engine | proposed | optional `engine: fimo`, background parity, same table |
-| `MOT-03` per-molecule occupancy | proposed | states per read x instance from HMM layers via a plan dataset; group fractions; `project|experiment motif-occupancy` |
-| `MOT-04` co-occupancy, comparisons, figures | proposed | pair tables, group tests, locus track, bars, heatmap, volcano |
-| `MOT-05` qualification | proposed | built-in vs FIMO agreement on real references; occupancy vs the earlier per-read TetO script on its data; NKG2A locus run |
+| `MOT-03` bulk class tracks with motif lanes | proposed | per group x reference: class fractions along the locus, motif lanes below, per-instance inside-vs-flank contrast table; `project|experiment motif-tracks` |
+| `MOT-04` per-molecule occupancy | proposed | states per read x instance from HMM layers via a plan dataset; group fractions; `project|experiment motif-occupancy` |
+| `MOT-05` co-occupancy, comparisons, figures | proposed | pair tables, group tests, locus track, bars, heatmap, volcano |
+| `MOT-06` qualification | proposed | built-in vs FIMO agreement on real references; occupancy vs the earlier per-read TetO script on its data; NKG2A locus run |
 
 ### `MOT-01` — motif files and the built-in scanner
 
@@ -151,7 +173,23 @@ one) and `--max-stored-scores` high enough; parse into the same table.
 Tests (skipped without FIMO): same columns; on a fixture, hits equal the
 built-in engine within a stated tolerance.
 
-### `MOT-03` — per-molecule occupancy
+### `MOT-03` — bulk class tracks with motif lanes
+
+`analysis/compute/motif_tracks.py`: per group, position and class, reads in
+the class and reads spanning (from the HMM class layers through a plan
+dataset, streamed in blocks); per instance and group, inside / flank means
+and `contrast`. `analysis/plot/motif_tracks.py`: tracks (one panel per group
+or groups overlaid per class), motif lanes (greedy interval packing, family
+colours, labels), outlined high-contrast instances, display coordinates and
+region zooms. CLI `smftools project|experiment motif-tracks --plan --dataset
+--motif-hits PARQUET --group-by ... [--layer-prefix C_] [--region NAME|START-END]
+[--max-pvalue] [--families] [--coordinate-origin --coordinate-reverse]`.
+
+Tests: class fractions equal a direct count; reads not spanning a position
+not counted; contrast on a constructed footprint over a motif; lanes never
+overlap; coordinates and orientation as `RPF`; figure per group x reference.
+
+### `MOT-04` — per-molecule occupancy
 
 `analysis/compute/motif_occupancy.py`: given read x position layers (HMM
 class layers, observed sites) and instances, the state per read x instance.
@@ -164,12 +202,12 @@ table and group fractions. CLI `smftools project|experiment motif-occupancy
 Tests: each state from a constructed read; uninformative when no sites;
 precedence; variants by prefix; group fractions equal a direct count.
 
-### `MOT-04` — co-occupancy, comparisons, figures
+### `MOT-05` — co-occupancy, comparisons, figures
 
 As in Outputs. Tests: 2x2 tables equal direct counts; only reads
 informative for both instances counted; BH adjustment; figures written.
 
-### `MOT-05` — qualification
+### `MOT-06` — qualification
 
 Built-in vs FIMO on the NKG2A references with matched background (shared
 hits, score and p agreement, explained differences); the per-read

@@ -77,7 +77,7 @@ A plan with no implementation branch yet.
 | `agent_files_plan.md` | restructuring the repo's `AGENTS.md`/`CLAUDE.md` files; explicitly not deployed |
 | `pipeline_throughput_implementation_plan.md` | `THR-01`–`THR-06` -- single-threaded, pool-collapse and redundant-scan bottlenecks found running `experiment batch full` (`F53`–`F57`, `F59`): alignment rescue, duplicate-detection group sizing, latent, raw extraction |
 | `generation_prune_scope_implementation_plan.md` | `EGL-03c` -- fan the existing read-only, dry-run-only prune planner (`EGL-03a`) out to a project and to an arbitrary directory of run roots; does not touch `EGL-03b` (deletion), still blocked |
-| `motif_scanning_occupancy_implementation_plan.md` | `MOT-01`–`MOT-05` motif scanning (user-supplied motif file; built-in numpy engine, optional FIMO) and per-molecule motif occupancy from HMM classes (TF-sized, medium, nucleosome, accessible, uninformative), co-occupancy and group comparisons; an analysis + CLI, not a stage |
+| `motif_scanning_occupancy_implementation_plan.md` | `MOT-01`–`MOT-06` motif scanning (user-supplied motif file; built-in numpy engine, optional FIMO), bulk HMM-class tracks with motif lanes, and per-molecule motif occupancy from HMM classes (TF-sized, medium, nucleosome, accessible, uninformative), co-occupancy and group comparisons; an analysis + CLI, not a stage |
 
 ## `logs/` — not tracked
 
