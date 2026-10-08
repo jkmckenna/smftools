@@ -496,6 +496,28 @@ def test_table_rows_without_a_label_follow_missing(tmp_path: Path) -> None:
         )
 
 
+def test_table_labels_select_single_molecules_by_uid(tmp_path: Path) -> None:
+    project = _barcoded_project(tmp_path)
+    _write_labels(
+        project,
+        [
+            {"experiment_id": "deam", "barcode": 1, "label": "active"},
+            {"experiment_id": "deam", "barcode": 2, "label": "inactive"},
+        ],
+    )
+    every = plan_ml_dataset(
+        _table_plan(keys=["experiment_id", "barcode"]), "reads", project_dir=project
+    )
+    uids = every.identity_table["molecule_uid"].astype(str).tolist()
+    assert len(uids) == 2
+    # A molecule-keyed table lists one molecule; with missing: drop it alone remains.
+    _write_labels(project, [{"molecule_uid": uids[1], "label": "active"}])
+    chosen = plan_ml_dataset(_table_plan(keys=["molecule_uid"]), "reads", project_dir=project)
+    assert chosen.n_observations == 1
+    assert chosen.identity_table["molecule_uid"].astype(str).tolist() == [uids[1]]
+    assert chosen.identity_table["class_id"].tolist() == [1]
+
+
 def test_table_keys_must_be_unique_after_normalisation(tmp_path: Path) -> None:
     project = _barcoded_project(tmp_path)
     _write_labels(

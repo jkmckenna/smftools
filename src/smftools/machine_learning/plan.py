@@ -169,8 +169,18 @@ class LabelSpec:
 
 
 #: Molecule-identity fields a label table may be keyed on (`MLX-01`).
+# ``molecule_uid`` labels single molecules (with ``missing: drop``, a table
+# that lists only some molecules selects them, e.g. those covering a site).
 LABEL_TABLE_KEYS = frozenset(
-    {"experiment_id", "experiment_uid", "barcode", "sample", "reference", "physical_reference"}
+    {
+        "experiment_id",
+        "experiment_uid",
+        "barcode",
+        "sample",
+        "reference",
+        "physical_reference",
+        "molecule_uid",
+    }
 )
 
 
