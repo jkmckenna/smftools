@@ -996,7 +996,8 @@ def plot_latent_ordered_clustermap(
     """Render several layers of the same molecules side by side in one figure.
 
     ``panels`` is a sequence of mappings with ``name``, ``matrix``, ``cmap``,
-    optional ``vmin``/``vmax`` and optional ``positions``. Every matrix must
+    optional ``vmin``/``vmax``, optional ``positions`` and optional
+    ``column_separators`` (column indices to draw a vertical break before). Every matrix must
     share the row axis; they are drawn in the order given, all reordered by
     ``row_order``, so a row is the same molecule across all of them. Column
     counts may differ -- the raw panel is restricted to modification sites
@@ -1081,6 +1082,9 @@ def plot_latent_ordered_clustermap(
         # renders, silently, and this keeps one source of truth.
         for _label, start, stop in blocks[1:]:
             heat_axis.axhline(start - 0.5, color=separator_color, linewidth=separator_width)
+        # Optional column breaks (e.g. between the windows of a position mask).
+        for column in panel.get("column_separators", ()):
+            heat_axis.axvline(column - 0.5, color=separator_color, linewidth=separator_width)
         heat_axis.set_xlabel("Position")
         if index == 0:
             heat_axis.set_ylabel(f"Molecules (n={values.shape[0]})")

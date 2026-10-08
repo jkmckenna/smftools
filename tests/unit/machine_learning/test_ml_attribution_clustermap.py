@@ -164,3 +164,26 @@ def test_the_figure_renders_with_a_continuous_strip(tmp_path) -> None:
     assert path.is_file() and result["output_path"] == str(path)
     assert result["panels"] == ["C (input)", "C attribution"]
     assert ml_results.ATTRIBUTION_ORDERS == ("label", "score", "bins")
+
+
+def test_columns_follow_numeric_labels_with_breaks_between_windows(captured) -> None:
+    # Two windows (10-12 and 50-51) labelled TSS-relative, decreasing with the coordinate.
+    coordinates = [10, 11, 12, 50, 51]
+    labels = [100 - c for c in coordinates]  # 90, 89, 88, 50, 49
+    n = 6
+    molecules = _molecules(n)
+    attributions = np.tile(np.asarray(coordinates, dtype=float), (n, 1, 1))
+    result = plot_attribution_clustermap(
+        molecules,
+        attributions,
+        inputs=attributions.copy(),
+        channels=["C"],
+        coordinates=coordinates,
+        coordinate_labels=labels,
+    )
+    assert result["column_coordinates"] == [51, 50, 12, 11, 10]  # labels ascending
+    assert result["column_separators"] == [2]  # the 50 -> 12 jump
+    for panel in captured["panels"]:
+        assert panel["positions"] == [49, 50, 88, 89, 90]
+        assert panel["matrix"][0].tolist() == [51, 50, 12, 11, 10]
+        assert panel["column_separators"] == [2]

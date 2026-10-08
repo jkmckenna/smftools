@@ -543,7 +543,9 @@ def plot_attribution_clustermap(
     (`attribution_row_layout`). Attributions use a diverging scale symmetric
     about zero (``attribution_limit``, default the 99th percentile of
     absolute values). ``coordinate_labels`` relabels the position axis (e.g.
-    TSS-relative). At most ``max_rows`` molecules are drawn (a seeded,
+    TSS-relative); numeric labels also order the columns (ascending), and a
+    vertical separator marks every jump in the coordinates (between a position
+    mask's windows). Extra panels are drawn as given. At most ``max_rows`` molecules are drawn (a seeded,
     class-stratified sample).
 
     Returns the plot summary plus ``row_uids`` (drawn order) and
@@ -580,15 +582,31 @@ def plot_attribution_clustermap(
         finite = np.abs(attribution[np.isfinite(attribution)])
         limit = float(np.percentile(finite, 99)) if finite.size else 1.0
     limit = limit or 1.0
-    positions = list(coordinate_labels) if coordinate_labels is not None else list(coordinates)
+    # Columns in label order (e.g. TSS-relative, upstream to downstream) when
+    # the labels are numeric, else in coordinate order; a separator wherever
+    # the underlying coordinates jump (between windows of a position mask).
+    coordinates = np.asarray(list(coordinates))
+    labels_given = None if coordinate_labels is None else np.asarray(list(coordinate_labels))
+    sort_key = (
+        labels_given.astype(float)
+        if labels_given is not None and np.issubdtype(labels_given.dtype, np.number)
+        else coordinates.astype(float)
+    )
+    columns = np.argsort(sort_key, kind="stable")
+    ordered = coordinates[columns].astype(float)
+    separators = [int(i) for i in np.flatnonzero(np.abs(np.diff(ordered)) > 1) + 1]
+    positions = list((labels_given if labels_given is not None else coordinates)[columns])
+    inputs = None if inputs is None else np.asarray(inputs, dtype=float)[:, :, columns]
+    attribution = attribution[:, :, columns]
     panels = []
     for index, channel in enumerate(channels):
         if inputs is not None:
             panels.append(
                 {
                     "name": f"{channel} (input)",
-                    "matrix": np.asarray(inputs, dtype=float)[keep][:, index],
+                    "matrix": inputs[keep][:, index],
                     "positions": positions,
+                    "column_separators": separators,
                     "cmap": "viridis",
                     "vmin": 0.0,
                     "vmax": 1.0,
@@ -599,6 +617,7 @@ def plot_attribution_clustermap(
                 "name": f"{channel} attribution",
                 "matrix": attribution[:, index],
                 "positions": positions,
+                "column_separators": separators,
                 "cmap": "RdBu_r",
                 "vmin": -limit,
                 "vmax": limit,
@@ -643,6 +662,8 @@ def plot_attribution_clustermap(
     return {
         **result,
         "row_uids": subset["molecule_uid"].to_numpy()[row_order].tolist(),
+        "column_coordinates": coordinates[columns].tolist(),
+        "column_separators": separators,
         "blocks": blocks,
         "attribution_limit": limit,
     }
