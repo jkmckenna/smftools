@@ -125,7 +125,7 @@ def sign_flip_p(
     differences: np.ndarray, *, max_exact: int = 16, draws: int = 20000
 ) -> float | None:
     """Two-sided paired sign-flip test of a mean difference across folds:
-    the share of sign patterns whose |mean| is at least the observed one --
+    the share of sign patterns whose absolute mean is at least the observed one --
     every pattern up to ``max_exact`` folds, a seeded sample beyond."""
     differences = np.asarray(differences, dtype=float)
     differences = differences[np.isfinite(differences)]
