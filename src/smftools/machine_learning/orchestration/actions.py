@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from ..data.materialized_dataset import MLDatasetProtocol
 from ..data.partition_dataset import (
@@ -40,6 +40,7 @@ from ..training import (
     fit_torch_partition_model,
     fit_torch_partition_model_streaming,
 )
+from ..training.sklearn_backend import calibrate_sklearn_result
 from .contracts import MLJobServiceError
 
 _FittedModel = FittedSklearnModel | FittedTorchModel
@@ -66,6 +67,7 @@ class SklearnTrainOptions:
     seed: int = 0
     incremental: bool | None = None
     streaming: bool | None = None
+    calibration: str | None = None  # "sigmoid": Platt scaling on validation molecules
 
 
 @dataclass(frozen=True)
@@ -132,6 +134,14 @@ def train_partition_model(
                 "Use SklearnTrainOptions(streaming=False) to materialize the train split, which "
                 "is bounded by max_materialization_bytes."
             )
+        if options.calibration is not None:
+            fitted = train_partition_model(
+                dataset,
+                resolved_model,
+                sklearn_options=replace(options, calibration=None),
+                registry=registry,
+            )
+            return calibrate_sklearn_result(fitted, dataset, options.calibration)
         if use_streaming:
             if options.incremental is False:
                 raise MLJobServiceError(

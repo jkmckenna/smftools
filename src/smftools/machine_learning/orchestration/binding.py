@@ -441,6 +441,13 @@ def _job_models(
         sk_options = _with_balancing(
             sklearn_options or SklearnTrainOptions(), balancing, model_name
         )
+        if spec.calibration is not None:
+            if sk_options.calibration not in (None, spec.calibration):
+                raise MLJobServiceError(
+                    f"model {model_name!r}: training options declare calibration "
+                    f"{sk_options.calibration!r}, but the plan declares {spec.calibration!r}"
+                )
+            sk_options = replace(sk_options, calibration=spec.calibration)
         th_options = _with_balancing(torch_options or TorchTrainOptions(), balancing, model_name)
         yield (
             model_name,

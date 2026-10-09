@@ -230,6 +230,14 @@ Registered names today: `bernoulli_nb`, `logistic_regression`, `random_forest` (
 `residual_dilated_cnn` (torch). Optional `parameters`, `overrides`, and `initialization` refine a
 declaration; `initialization` defaults to `{"kind": "scratch"}`.
 
+An sklearn model may declare `"calibration": "sigmoid"`: after fitting, Platt scaling (with Platt's
+smoothed targets) of its positive-class log-odds is fitted on the fold's validation molecules, so
+the split needs a `validation_fraction` (or validation groups). Predictions, metrics and applied
+scores then use the calibrated probabilities. The ranking of molecules is unchanged, so AUROC and
+AUPRC are too, except that ties from saturated probabilities are broken by the exact log-odds.
+Naive Bayes in particular adds one log-likelihood ratio per site, so its raw probabilities are
+extreme on long reads. Explanations use the uncalibrated estimator.
+
 ## `jobs`
 
 Actions are `train`, `apply`, `evaluate`, `explain`, and `plot`. Each has its own required fields,

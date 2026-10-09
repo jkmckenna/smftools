@@ -268,6 +268,9 @@ class SplitSpec:
     validation_by: str = "molecules"
 
 
+# Probability calibrations a sklearn model may declare (`ModelSpec.calibration`).
+CALIBRATION_METHODS = frozenset({"sigmoid"})
+
 # Balancing methods that take a per-class training cap (`max_per_class`).
 CAPPED_BALANCE_METHODS = frozenset({"natural", "downsample", "class_weight"})
 
@@ -308,6 +311,9 @@ class ModelSpec:
     initialization: Mapping[str, Any] = field(
         default_factory=lambda: MappingProxyType({"kind": "scratch"})
     )
+    # sklearn only: "sigmoid" -- Platt scaling of the model's log-odds, fitted
+    # on each fold's validation molecules (the split needs validation_fraction).
+    calibration: str | None = None
 
 
 @dataclass(frozen=True)
@@ -359,6 +365,9 @@ class MLPlan:
             if split.get("validation_fraction") is None:
                 split.pop("validation_fraction", None)  # unset; keeps earlier hashes
                 split.pop("validation_by", None)
+        for model in payload["models"].values():
+            if model.get("calibration") is None:
+                model.pop("calibration", None)  # unset; keeps earlier hashes
         for profile in payload["balancing"].values():
             for role in profile.values():
                 for key in ("max_per_class", "seed"):
@@ -926,7 +935,15 @@ def _parse_model(raw: Any, path: str) -> ModelSpec:
     _check_keys(
         value,
         path=path,
-        allowed={"backend", "family", "recipe", "parameters", "overrides", "initialization"},
+        allowed={
+            "backend",
+            "family",
+            "recipe",
+            "parameters",
+            "overrides",
+            "initialization",
+            "calibration",
+        },
         required={"backend"},
     )
     backend = _required_string(value, "backend", path).lower()
@@ -950,6 +967,13 @@ def _parse_model(raw: Any, path: str) -> ModelSpec:
     }.items():
         if not isinstance(item, Mapping):
             _fail(f"{path}.{key}", "must be a mapping")
+    calibration = _optional_string(value, "calibration", path)
+    if calibration is not None:
+        calibration = calibration.lower()
+        if calibration not in CALIBRATION_METHODS:
+            _fail(f"{path}.calibration", f"must be one of {sorted(CALIBRATION_METHODS)}")
+        if backend != "sklearn":
+            _fail(f"{path}.calibration", "applies to sklearn models")
     return ModelSpec(
         backend=backend,
         family=family,
@@ -957,6 +981,7 @@ def _parse_model(raw: Any, path: str) -> ModelSpec:
         parameters=parameters,
         overrides=overrides,
         initialization=initialization,
+        calibration=calibration,
     )
 
 
@@ -1047,6 +1072,18 @@ def _validate_job_references(plan: MLPlan) -> None:
         for model in job.models:
             if model not in plan.models:
                 _fail(f"{path}.models", f"references unknown model {model!r}")
+            split = plan.splits.get(job.split) if job.split is not None else None
+            if (
+                plan.models[model].calibration is not None
+                and split is not None
+                and split.validation_fraction is None
+                and not split.validation_groups
+            ):
+                _fail(
+                    f"{path}.models",
+                    f"model {model!r} is calibrated on validation molecules, but split "
+                    f"{job.split!r} has no validation_fraction or validation_groups",
+                )
         if (
             job.model is not None
             and not job.model.startswith("model:")

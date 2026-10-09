@@ -641,7 +641,7 @@ def plot_attribution_clustermap(
         raise ValueError("cluster_on must be 'attributions' or 'inputs'")
     if cluster_on == "inputs" and inputs is None:
         raise ValueError("cluster_on='inputs' needs inputs")
-    row_order, blocks, labels = attribution_row_layout(
+    row_order, blocks, block_labels = attribution_row_layout(
         subset,
         attribution,
         order=order,
@@ -769,20 +769,29 @@ def plot_attribution_clustermap(
             panels,
             row_order=row_order,
             blocks=blocks,
-            labels=labels,
+            labels=block_labels,
             cluster_colors=bin_colors if order == "bins" else class_colors,
             cluster_name=bin_name if order == "bins" else "true class",
             cluster_legend=order == "bins",
             extra_strips=strips,
-            trace_groups={
-                "values": truth,
-                "colors": class_colors,
-                "order": list(
-                    dict.fromkeys(
-                        c for c in (positive_class, *sorted(set(truth))) if c in set(truth)
-                    )
-                ),
-            },
+            # Traces split by bin when the blocks are bins, else by true class.
+            trace_groups=(
+                {
+                    "values": block_labels,
+                    "colors": bin_colors or {},
+                    "order": [b for b, _start, _stop in blocks],
+                }
+                if order == "bins"
+                else {
+                    "values": truth,
+                    "colors": class_colors,
+                    "order": list(
+                        dict.fromkeys(
+                            c for c in (positive_class, *sorted(set(truth))) if c in set(truth)
+                        )
+                    ),
+                }
+            ),
             title=title,
             save_path=output_path,
         )
