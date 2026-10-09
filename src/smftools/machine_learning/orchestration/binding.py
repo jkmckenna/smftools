@@ -28,6 +28,7 @@ from ..data.partition_dataset import (
     ExperimentPartitionSource,
     PartitionDataset,
     PartitionReadPolicy,
+    PartitionRowCache,
     build_partition_data_plan,
 )
 from ..manifests import (
@@ -260,6 +261,14 @@ def bind_ml_job(
     )
     snapshot = snapshot_from_selection(plan, selection)
     partition_sources = _partition_sources(selection)
+    # One decoded-row cache for every fold (and the final split): each
+    # molecule is read from the stores once per bound job (`MLR-06`).
+    policy = policy or PartitionReadPolicy()
+    row_cache = (
+        PartitionRowCache(max_bytes=policy.effective_row_cache_bytes)
+        if policy.effective_row_cache_bytes > 0
+        else None
+    )
     folds = []
     for resolution in plan_ml_splits(plan, job.split, selection):
         split = resolution.to_manifest(snapshot)
@@ -275,7 +284,7 @@ def bind_ml_job(
                 fold_name=resolution.fold_name,
                 resolution=resolution,
                 split=split,
-                dataset=PartitionDataset(read_plan),
+                dataset=PartitionDataset(read_plan, row_cache=row_cache),
             )
         )
     return BoundJob(
@@ -487,7 +496,7 @@ def final_training_split(bound: BoundJob) -> tuple[SplitManifest, PartitionDatas
         policy=bound.folds[0].dataset.plan.policy,
         coordinate_maps=bound.selection.coordinate_maps,
     )
-    return split, PartitionDataset(read_plan)
+    return split, PartitionDataset(read_plan, row_cache=bound.folds[0].dataset.row_cache)
 
 
 def iter_bound_final_models(
