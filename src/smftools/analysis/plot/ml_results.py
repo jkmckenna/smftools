@@ -747,7 +747,8 @@ def plot_attribution_clustermap(
     truth = subset["truth"].astype(str).to_numpy()
     class_colors = {**_class_colors(truth, positive_class), **(class_colors or {})}
     strips = []
-    if order == "bins":
+    if order in ("bins", "score"):
+        # Blocks are bins (or one score-ordered block): show the class per row.
         strips.append({"name": "true class", "values": truth, "colors": class_colors})
     # Folds by their held-out group ("holdout=exp_a" -> "exp_a"): readable in place.
     held_out = subset["fold"].astype(str).str.split("=", n=1).str[-1].to_numpy()

@@ -435,3 +435,18 @@ def test_balanced_classes_and_class_colours(captured) -> None:
     )
     drawn = molecules.set_index("molecule_uid").loc[capped["row_uids"], "truth"]
     assert drawn.value_counts().to_dict() == {"active": 5, "inactive": 5}
+
+
+def test_score_order_keeps_a_true_class_strip(captured) -> None:
+    molecules = _molecules()
+    inputs, attributions = _tagged()
+    plot_attribution_clustermap(
+        molecules,
+        attributions,
+        inputs=inputs,
+        channels=["C"],
+        coordinates=list(range(POSITIONS)),
+        order="score",
+    )
+    strip = next(s for s in captured["extra_strips"] if s["name"] == "true class")
+    assert set(strip["values"]) == {"active", "inactive"}
