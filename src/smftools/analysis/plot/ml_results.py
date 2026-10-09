@@ -598,7 +598,8 @@ def plot_attribution_clustermap(
     absolute values). ``coordinate_labels`` relabels the position axis (e.g.
     TSS-relative); numeric labels also order the columns (ascending), and a
     vertical separator marks every jump in the coordinates (between a position
-    mask's windows). Extra panels are drawn as given. At most ``max_rows`` molecules are drawn (a seeded,
+    mask's windows). Extra panels are drawn as given, unless they carry
+    ``coordinates`` equal to the inputs': then they share the inputs' columns. At most ``max_rows`` molecules are drawn (a seeded,
     class-stratified sample).
 
     Returns the plot summary plus ``row_uids`` (drawn order) and
@@ -708,7 +709,19 @@ def plot_attribution_clustermap(
             }
         )
     for panel in extra_panels:
-        panels.append({**panel, "matrix": np.asarray(panel["matrix"], dtype=float)[keep]})
+        panel = dict(panel)
+        matrix = np.asarray(panel["matrix"], dtype=float)[keep]
+        extra_coordinates = panel.pop("coordinates", None)
+        if extra_coordinates is not None:
+            # On the input's positions: drawn on the same (ordered, dense)
+            # columns, labels and window breaks.
+            if [int(value) for value in extra_coordinates] != [int(v) for v in coordinates]:
+                raise ValueError(
+                    f"extra panel {panel.get('name')!r} coordinates differ from the inputs'"
+                )
+            matrix = matrix[:, column_order]
+            panel.update(positions=positions, column_separators=separators)
+        panels.append({**panel, "matrix": matrix})
     truth = subset["truth"].astype(str).to_numpy()
     class_colors = _class_colors(truth, positive_class)
     strips = []

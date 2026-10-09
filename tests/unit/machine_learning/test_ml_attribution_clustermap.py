@@ -341,3 +341,33 @@ def test_role_colours_reach_the_input_panel(captured) -> None:
     from matplotlib.colors import to_rgba
 
     assert captured["panels"][0]["cmap"](1.0) == pytest.approx(to_rgba("#2E7D32"))
+
+
+def test_extra_panels_on_the_inputs_positions_share_their_columns(captured) -> None:
+    coordinates = [10, 11, 12, 13, 14, 50, 51, 52, 53]
+    n = 6
+    molecules = _molecules(n)
+    inputs = np.full((n, 1, len(coordinates)), np.nan)
+    for site in (11, 13, 51, 53):
+        inputs[:, 0, coordinates.index(site)] = 1.0
+    hmm = np.tile(np.asarray(coordinates, dtype=float), (n, 1))
+    plot_attribution_clustermap(
+        molecules,
+        np.zeros_like(inputs),
+        inputs=inputs,
+        channels=["C"],
+        coordinates=coordinates,
+        extra_panels=[{"name": "accessible", "matrix": hmm, "coordinates": coordinates}],
+    )
+    extra = captured["panels"][-1]
+    assert extra["matrix"][0].tolist() == [11, 13, 51, 53]
+    assert extra["positions"] == [11, 13, 51, 53] and extra["column_separators"] == [2]
+    with pytest.raises(ValueError, match="coordinates differ"):
+        plot_attribution_clustermap(
+            molecules,
+            np.zeros_like(inputs),
+            inputs=inputs,
+            channels=["C"],
+            coordinates=coordinates,
+            extra_panels=[{"name": "x", "matrix": hmm, "coordinates": coordinates[::-1]}],
+        )
