@@ -526,10 +526,17 @@ def plot_attribution_clustermap(
     max_rows: int | None = 2000,
     seed: int = 0,
     attribution_limit: float | None = None,
+    columns: str = "observed",
     title: str = "",
     output_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Inputs beside per-position attributions, one row per molecule.
+
+    ``columns``: ``"observed"`` (default) keeps only positions observed in at
+    least one drawn molecule (for site channels, the sites -- other positions
+    are empty and carry no attribution), labelled with their real coordinates
+    and with separators only between mask windows; ``"all"`` draws every
+    position. Each panel's top trace is split by true class.
 
     ``molecules`` has one row per molecule (``molecule_uid``, ``fold``,
     ``truth``, ``score``), aligned with ``attributions`` (molecules x channels
@@ -592,12 +599,35 @@ def plot_attribution_clustermap(
         if labels_given is not None and np.issubdtype(labels_given.dtype, np.number)
         else coordinates.astype(float)
     )
-    columns = np.argsort(sort_key, kind="stable")
-    ordered = coordinates[columns].astype(float)
-    separators = [int(i) for i in np.flatnonzero(np.abs(np.diff(ordered)) > 1) + 1]
-    positions = list((labels_given if labels_given is not None else coordinates)[columns])
-    inputs = None if inputs is None else np.asarray(inputs, dtype=float)[:, :, columns]
-    attribution = attribution[:, :, columns]
+    if columns not in ("observed", "all"):
+        raise ValueError("columns must be 'observed' or 'all'")
+    column_order = np.argsort(sort_key, kind="stable")
+    ordered = coordinates[column_order].astype(float)
+    # Window breaks are found on the full coordinate list, before any column
+    # is dropped, so sparse sites never read as breaks.
+    breaks = np.flatnonzero(np.abs(np.diff(ordered)) > 1) + 1
+    if columns == "observed":
+        # Positions observed in at least one drawn molecule (any channel); with
+        # no inputs, positions with any non-zero attribution.
+        source = (
+            np.isfinite(np.asarray(inputs, dtype=float)[keep])
+            if inputs is not None
+            else attribution != 0
+        )
+        observed = source.any(axis=(0, 1))[column_order]
+        if not observed.any():
+            observed[:] = True
+        column_order = column_order[observed]
+        dense_index = np.cumsum(observed) - 1  # full position -> dense column
+        separators = sorted(
+            {int(dense_index[b - 1] + 1) for b in breaks if observed[b:].any()}
+            - {0, len(column_order)}
+        )
+    else:
+        separators = [int(b) for b in breaks]
+    positions = list((labels_given if labels_given is not None else coordinates)[column_order])
+    inputs = None if inputs is None else np.asarray(inputs, dtype=float)[:, :, column_order]
+    attribution = attribution[:, :, column_order]
     panels = []
     for index, channel in enumerate(channels):
         if inputs is not None:
@@ -654,6 +684,15 @@ def plot_attribution_clustermap(
             cluster_name=bin_name if order == "bins" else "true class",
             cluster_legend=order == "bins",
             extra_strips=strips,
+            trace_groups={
+                "values": truth,
+                "colors": class_colors,
+                "order": list(
+                    dict.fromkeys(
+                        c for c in (positive_class, *sorted(set(truth))) if c in set(truth)
+                    )
+                ),
+            },
             title=title,
             save_path=output_path,
         )
@@ -662,7 +701,8 @@ def plot_attribution_clustermap(
     return {
         **result,
         "row_uids": subset["molecule_uid"].to_numpy()[row_order].tolist(),
-        "column_coordinates": coordinates[columns].tolist(),
+        "column_coordinates": coordinates[column_order].tolist(),
+        "columns": columns,
         "column_separators": separators,
         "blocks": blocks,
         "attribution_limit": limit,

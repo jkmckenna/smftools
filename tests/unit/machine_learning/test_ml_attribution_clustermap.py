@@ -187,3 +187,72 @@ def test_columns_follow_numeric_labels_with_breaks_between_windows(captured) -> 
         assert panel["positions"] == [49, 50, 88, 89, 90]
         assert panel["matrix"][0].tolist() == [51, 50, 12, 11, 10]
         assert panel["column_separators"] == [2]
+
+
+def test_observed_columns_drop_empty_positions_and_keep_window_breaks(captured) -> None:
+    # Two windows (10-14, 50-53); only some positions are ever observed (sites).
+    coordinates = [10, 11, 12, 13, 14, 50, 51, 52, 53]
+    n = 6
+    molecules = _molecules(n)
+    inputs = np.full((n, 1, len(coordinates)), np.nan)
+    sites = [11, 13, 51, 53]
+    for site in sites:
+        inputs[:, 0, coordinates.index(site)] = 1.0
+    attributions = np.zeros_like(inputs)
+    attributions[:, 0, :] = np.asarray(coordinates, dtype=float)
+
+    dense = plot_attribution_clustermap(
+        molecules, attributions, inputs=inputs, channels=["C"], coordinates=coordinates
+    )
+    assert dense["columns"] == "observed"
+    assert dense["column_coordinates"] == sites
+    assert dense["column_separators"] == [2]  # between 13 and 51: the window break only
+    panel = captured["panels"][1]
+    assert panel["positions"] == sites and panel["matrix"][0].tolist() == sites
+
+    full = plot_attribution_clustermap(
+        molecules,
+        attributions,
+        inputs=inputs,
+        channels=["C"],
+        coordinates=coordinates,
+        columns="all",
+    )
+    assert full["column_coordinates"] == coordinates and full["column_separators"] == [5]
+    with pytest.raises(ValueError, match="columns"):
+        plot_attribution_clustermap(
+            molecules, attributions, channels=["C"], coordinates=coordinates, columns="some"
+        )
+
+
+def test_top_traces_are_split_by_true_class(captured) -> None:
+    molecules = _molecules()
+    inputs, attributions = _tagged()
+    plot_attribution_clustermap(
+        molecules,
+        attributions,
+        inputs=inputs,
+        channels=["C"],
+        coordinates=list(range(POSITIONS)),
+        positive_class="active",
+    )
+    groups = captured["trace_groups"]
+    assert groups["order"] == ["active", "inactive"]  # positive first, each once
+    assert sorted(groups["values"]) == sorted(molecules["truth"])
+    assert groups["colors"]["active"] == ml_results._POSITIVE_COLOR
+
+
+def test_split_traces_render(tmp_path) -> None:
+    molecules = _molecules()
+    inputs, attributions = _tagged()
+    path = tmp_path / "split.png"
+    plot_attribution_clustermap(
+        molecules,
+        attributions,
+        inputs=inputs,
+        channels=["C"],
+        coordinates=list(range(POSITIONS)),
+        positive_class="active",
+        output_path=path,
+    )
+    assert path.is_file()

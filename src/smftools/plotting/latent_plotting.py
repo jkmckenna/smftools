@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import os
+import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, Mapping, Sequence
 
@@ -987,6 +988,7 @@ def plot_latent_ordered_clustermap(
     cluster_name="cluster",
     cluster_legend=False,
     extra_strips=None,
+    trace_groups=None,
     separator_color="black",
     separator_width=0.8,
     figure_width=18.0,
@@ -1026,6 +1028,9 @@ def plot_latent_ordered_clustermap(
     unordered like ``labels``), optional ``colors`` (value -> colour) and
     optional ``order`` (legend order). Runs of one value covering at least
     3 % of the rows are labelled in place, and each extra strip gets a legend.
+    ``trace_groups`` (``values`` per molecule, unordered like ``labels``;
+    optional ``colors`` and ``order``) splits each panel's top trace into one
+    mean per group, e.g. per true class.
     A strip with ``"kind": "continuous"`` instead draws numeric ``values``
     through ``cmap`` (default ``viridis``) between ``vmin`` and ``vmax``
     (default: the values' range), with a three-step legend.
@@ -1038,6 +1043,10 @@ def plot_latent_ordered_clustermap(
 
     row_order = np.asarray(row_order, dtype=int)
     labels = np.asarray(labels, dtype=object).astype(str)[row_order]
+    if trace_groups is not None:
+        group_values = np.asarray(trace_groups["values"], dtype=object).astype(str)[row_order]
+        trace_colors = dict(trace_groups.get("colors") or {})
+        trace_order = [str(v) for v in (trace_groups.get("order") or sorted(set(group_values)))]
     n_panels = len(panels)
     if n_panels == 0:
         return None
@@ -1062,11 +1071,27 @@ def plot_latent_ordered_clustermap(
         panel_positions = panel.get("positions", position_labels)
 
         # Mean-across-molecules trace above each panel, so a block of the
-        # heatmap can be read against the population profile at the same x.
+        # heatmap can be read against the population profile at the same x --
+        # one trace per group (e.g. true class) when ``trace_groups`` is given.
         trace_axis = figure.add_subplot(grid[0, index])
-        with np.errstate(invalid="ignore"):
-            column_mean = np.nanmean(values, axis=0)
-        trace_axis.plot(np.arange(values.shape[1]), column_mean, linewidth=0.7, color="#264653")
+        x = np.arange(values.shape[1])
+        with np.errstate(invalid="ignore"), warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            if trace_groups is None:
+                trace_axis.plot(x, np.nanmean(values, axis=0), linewidth=0.7, color="#264653")
+            else:
+                for group in trace_order:
+                    rows = group_values == group
+                    if rows.any():
+                        trace_axis.plot(
+                            x,
+                            np.nanmean(values[rows], axis=0),
+                            linewidth=0.7,
+                            color=trace_colors.get(group, "#264653"),
+                            label=group,
+                        )
+                if index == 0:
+                    trace_axis.legend(fontsize=6, frameon=False, loc="upper left")
         trace_axis.set_xlim(0, max(values.shape[1] - 1, 1))
         trace_axis.set_title(name, fontsize=10)
         trace_axis.tick_params(labelbottom=False, labelsize=7)
