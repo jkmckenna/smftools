@@ -67,6 +67,7 @@ def test_fold_metrics_and_paired_differences_equal_direct_computation(runs) -> N
         [full.run_id, half.run_id], project_dir=project, reference="full/nb", n_bootstrap=50
     )
     assert list(comparison.entries["entry"]) == ["full/nb", "full/rf", "first_half/nb"]
+    assert list(comparison.entries["model_class"]) == ["additive", "tabular_nonlinear", "additive"]
     predictions = pd.read_parquet(full.path / "predictions/test.parquet")
     values = comparison.fold_metrics.set_index(["entry", "fold", "metric"])["value"]
     for (model, fold), rows in predictions.groupby(["model", "held_out"]):

@@ -172,7 +172,9 @@ explained.read(explanations.IMPORTANCE)            # per fold, channel, position
 explained.summary["nb"]["fold_consistency_spearman"]
 ```
 
-Methods follow the model: `NaiveBayesLogOdds` (naive Bayes), `TreeSHAP` (random forest),
+Without `method=`, each family's default is used (its `default_explanation`). Families also
+declare a model class -- `additive`, `tabular_nonlinear`, `spatial`, `global_sequence` -- recorded
+with each run's models and shown in comparisons. Methods follow the model: `NaiveBayesLogOdds` (naive Bayes), `TreeSHAP` (random forest),
 `IntegratedGradients` and other Captum methods (torch) give per-molecule matrices;
 `LinearCoefficients` and `PermutationImportance` give position importance only. Classical
 attributions sum each position's transformed features (signal and indicators). Up to

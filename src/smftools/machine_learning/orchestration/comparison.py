@@ -42,7 +42,7 @@ from smftools.readwrite import atomic_write_json
 
 from ..workspace import MLWorkspace, resolve_ml_workspace
 from .contracts import MLJobServiceError
-from .runs import PREDICTIONS, SPLITS, TAGS
+from .runs import MODELS, PREDICTIONS, SPLITS, TAGS
 
 DEFAULT_METRICS = (
     "roc_auc",
@@ -192,7 +192,7 @@ def select_runs(
 class RunComparison:
     """Per-fold metrics, summaries and paired differences of compared entries."""
 
-    entries: pd.DataFrame  # entry, run_id, model, tags
+    entries: pd.DataFrame  # entry, run_id, model, model_class, tags
     folds: pd.DataFrame  # fold, n, n_positive, dropped per entry
     fold_metrics: pd.DataFrame  # entry, fold, metric, value
     summary: pd.DataFrame  # entry, metric, mean, sd, n_folds, ci_low, ci_high
@@ -277,13 +277,25 @@ def compare_runs(
         if manifest["action"] != "train" or manifest["state"] != "completed":
             raise MLJobServiceError(f"run {run_id} is not a completed train run")
         tags = json.loads((path / TAGS).read_text())
+        classes = {
+            item["model"]: item.get("model_class")
+            for item in json.loads((path / MODELS).read_text())
+        }
         splits = {item["fold"]: item for item in json.loads((path / SPLITS).read_text())}
         table = pd.read_parquet(path / PREDICTIONS)
         for model in manifest["model_keys"]:
             if models is not None and model not in models:
                 continue
             rows = table[table["model"] == model]
-            entries.append({"run_id": run_id, "model": model, "tags": tags, "splits": splits})
+            entries.append(
+                {
+                    "run_id": run_id,
+                    "model": model,
+                    "model_class": classes.get(model),
+                    "tags": tags,
+                    "splits": splits,
+                }
+            )
             predictions.append(rows)
     if len(entries) < 1:
         raise MLJobServiceError("no runs / models to compare")
@@ -424,6 +436,7 @@ def compare_runs(
             "entry": labels,
             "run_id": [entry["run_id"] for entry in entries],
             "model": [entry["model"] for entry in entries],
+            "model_class": [entry["model_class"] for entry in entries],
             "tags": [entry["tags"] for entry in entries],
         }
     )

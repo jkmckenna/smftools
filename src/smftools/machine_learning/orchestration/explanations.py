@@ -319,7 +319,7 @@ def explain_run(
     run_id: str,
     *,
     model: str,
-    method: str,
+    method: str | None = None,
     workspace: MLWorkspace | None = None,
     project_dir: str | Path | None = None,
     parameters: Mapping[str, Any] | None = None,
@@ -337,7 +337,8 @@ def explain_run(
     Args:
         run_id: A completed train run in the workspace.
         model: The run's model key (e.g. ``"nb"``).
-        method: An interpretability method the model supports, e.g.
+        method: An interpretability method the model supports (default: the
+            model family's ``default_explanation``, `MLR-09`), e.g.
             ``NaiveBayesLogOdds`` (naive Bayes), ``TreeSHAP`` (random
             forest), ``LinearCoefficients`` / ``PermutationImportance``
             (global), ``IntegratedGradients`` (torch).
@@ -360,11 +361,8 @@ def explain_run(
         raise MLJobServiceError("pass exactly one of workspace or project_dir")
     if workspace is None:
         workspace = resolve_ml_workspace(project_dir=project_dir)
-    if method not in METHOD_CONTRACTS:
+    if method is not None and method not in METHOD_CONTRACTS:
         raise MLJobServiceError(f"unknown explanation method {method!r}")
-    contract = METHOD_CONTRACTS[method]
-    if contract.layer_policy == "required":
-        raise MLJobServiceError(f"{method} (layer attributions) is not recorded yet")
     manifest, run_path = _read_run(workspace, run_id)
     records = [
         item
@@ -373,6 +371,22 @@ def explain_run(
     ]
     if not records:
         raise MLJobServiceError(f"run {run_id} has no fold models for {model!r}")
+    if method is None:
+        from ..models.registry import BUILTIN_MODEL_REGISTRY
+
+        family = records[0]["family"]
+        method = (
+            BUILTIN_MODEL_REGISTRY.definition(family).default_explanation
+            if family in BUILTIN_MODEL_REGISTRY.names
+            else None
+        )
+        if method is None:
+            raise MLJobServiceError(f"family {family!r} has no default explanation; name a method")
+    if method not in METHOD_CONTRACTS:
+        raise MLJobServiceError(f"unknown explanation method {method!r}")
+    contract = METHOD_CONTRACTS[method]
+    if contract.layer_policy == "required":
+        raise MLJobServiceError(f"{method} (layer attributions) is not recorded yet")
     train_plan = parse_ml_plan(json.loads((run_path / "resolved_plan.json").read_text()))
     train_job = manifest["job_name"]
     document = train_plan.to_dict()

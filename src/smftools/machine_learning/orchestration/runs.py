@@ -567,6 +567,7 @@ def train_and_publish(
                     "model_id": model_id,
                     "backend": backend,
                     "family": published.manifest.family,
+                    "model_class": registry.definition(published.manifest.family).model_class,
                     "split_id": published.manifest.split_id,
                     "n_train": run.training.n_training_observations,
                     "train_class_counts": list(run.training.class_counts),

@@ -157,10 +157,10 @@ the stores.
 | `MLR-03b` detector catalogue | done (PR #714) | CNN detector catalogue (split from `MLR-03`) |
 | `MLR-04` attribution clustermap | done (PR #704) | input layers beside attributions, shared row order, label / score / fold strips; detector catalogue figures |
 | `MLR-05` run comparison | done (PR #705) | select runs by tags; paired per-fold metrics, bootstrap intervals, figures |
-| `MLR-06` fold-matrix cache | implemented (`feature/ml-snapshot-cache`) | read each task's data once for every model |
+| `MLR-06` fold-matrix cache | done (PR #715) | read each task's data once for every model |
 | `MLR-07` validation role | done (PR #706) | a stratified validation fraction of each fold's training molecules (default) or held-out training experiments, for early stopping and tuning; the test experiment stays whole; final models too |
 | `MLR-08` detector-scale CNNs | done (PR #709) | position-agnostic residual dilated CNNs whose pattern detectors have a stated, enforced maximum span (receptive field): sub-nucleosome, 2-3, 4-6 nucleosomes, full locus; effective span measured per run |
-| `MLR-09` model classes and the zoo | proposed | a capability class per registry family (additive, tabular non-linear, spatial, global sequence); class-aware defaults; MLP, multiscale CNN and transformer recipes; per-task zoo declarations |
+| `MLR-09` model classes and the zoo | part 1 implemented (`feature/ml-model-classes`): classes and default explanations; new families pending | a capability class per registry family (additive, tabular non-linear, spatial, global sequence); class-aware defaults; MLP, multiscale CNN and transformer recipes; per-task zoo declarations |
 | `MLR-10` qualification | in progress | `nkg2a_final` region / model grid through `MLR-01`-`MLR-05`; parity with its current metrics |
 | `MLR-11` pretraining and fine-tuning | proposed | encoder / head split; a `pretrain` action (masked-site reconstruction, autoencoder, VAE) publishing head-less encoders; fine-tuning through `initialization`; pretraining-corpus leakage policy; transfer benchmark (absorbs `ML-304`) |
 
@@ -518,6 +518,13 @@ should span:
 - A project may register its own families (with a class) and pass the
   registry to training; experimental ones live in the project until they earn
   a place in smftools.
+
+Part 1 as built: `MODEL_CLASSES`; `ModelFamilyDefinition.model_class` and
+`default_explanation` (optional, validated; every built-in declares both --
+nb / logistic regression additive, random forest tabular non-linear,
+residual CNN spatial); `models.json` records each model's class;
+`compare_runs` entries carry it; `explain_run` defaults its method to the
+family's. Pending: MLP, multiscale CNN and transformer families.
 
 Tests: every built-in family declares a class; runs, index and comparisons
 carry it; default explanation per class; each new family trains a few epochs
