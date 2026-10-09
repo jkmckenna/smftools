@@ -247,6 +247,10 @@ for batch in bound.iter_batches():
     ...
 ```
 
+A bound job's folds share one decoded-row cache, so each molecule is read from the stores once
+however many folds and models the job has (`PartitionReadPolicy(row_cache_bytes=...)`; the default
+is the materialization budget, `0` turns it off). Results equal an uncached read.
+
 ### sklearn streams by default
 
 For families declaring `incremental_fit` — `bernoulli_nb` today — training reads in bounded batches

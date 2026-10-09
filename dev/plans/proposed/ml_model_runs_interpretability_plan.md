@@ -154,10 +154,10 @@ the stores.
 | `MLR-01` train-and-publish | done (PR #700) | one call: bind a plan job, train each model per fold, publish run / data / models / evaluation records and index; fixed-prevalence AUPRC (reweighted, subsampled) in smftools metrics |
 | `MLR-02` final models and apply | done (PR #701) | optional all-groups final model; apply a run to another dataset with records |
 | `MLR-03` explanation records | done (PR #702) | out-of-fold position importance and per-molecule attribution matrices per run; fold consistency |
-| `MLR-03b` detector catalogue | implemented (`feature/ml-detector-catalogue`) | CNN detector catalogue (split from `MLR-03`) |
+| `MLR-03b` detector catalogue | done (PR #714) | CNN detector catalogue (split from `MLR-03`) |
 | `MLR-04` attribution clustermap | done (PR #704) | input layers beside attributions, shared row order, label / score / fold strips; detector catalogue figures |
 | `MLR-05` run comparison | done (PR #705) | select runs by tags; paired per-fold metrics, bootstrap intervals, figures |
-| `MLR-06` fold-matrix cache | proposed | read each task's data once for every model |
+| `MLR-06` fold-matrix cache | implemented (`feature/ml-snapshot-cache`) | read each task's data once for every model |
 | `MLR-07` validation role | done (PR #706) | a stratified validation fraction of each fold's training molecules (default) or held-out training experiments, for early stopping and tuning; the test experiment stays whole; final models too |
 | `MLR-08` detector-scale CNNs | done (PR #709) | position-agnostic residual dilated CNNs whose pattern detectors have a stated, enforced maximum span (receptive field): sub-nucleosome, 2-3, 4-6 nucleosomes, full locus; effective span measured per run |
 | `MLR-09` model classes and the zoo | proposed | a capability class per registry family (additive, tabular non-linear, spatial, global sequence); class-aware defaults; MLP, multiscale CNN and transformer recipes; per-task zoo declarations |
@@ -310,7 +310,21 @@ scikit-learn's (with ties and weights).
 
 ### `MLR-06` -- fold-matrix cache
 
-Tests: a second model reuses the cache (no store reads); the cache key changes
+As built: a **decoded-row cache** rather than per-fold matrices. A row's
+decoded content depends only on its molecule (and the snapshot's positions,
+channels, coordinate maps), not on its split, so `PartitionRowCache`, shared
+by every fold, final split and model of a bound job, answers the reader's
+`_read_batch`: each molecule is decoded from the stores once per bound job,
+and batching is unchanged, so results equal an uncached read exactly.
+`PartitionReadPolicy.row_cache_bytes` (default: the materialization budget;
+0 disables) caps it; past the cap rows are read as before. Not persisted
+across processes (a later run of the same task reads again) -- a disk layer
+in the workspace `datasets/` is a possible follow-up.
+
+Tests (`test_row_cache.py`): every molecule decoded once over 3 folds x 2
+models (vs > 3x without the cache); predictions equal an uncached run; a
+capped cache stays within budget with equal results; a cache refuses a
+different snapshot / positions. The plan's original tests: a second model reuses the cache (no store reads); the cache key changes
 with the snapshot, split or transform; results equal an uncached run.
 
 ### `MLR-07` -- validation role

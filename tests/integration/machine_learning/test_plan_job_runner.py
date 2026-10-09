@@ -212,7 +212,11 @@ def test_workers_split_blocks_so_each_is_read_once(
     monkeypatch.setattr(reader, "materialize", counting)
     # Blocks of two batches, so a block holds batches of different workers.
     probe = bind_ml_job(_plan(), "train", project_dir=project).folds[0].dataset.plan
-    policy = PartitionReadPolicy(batch_size=8, max_block_bytes=probe.bytes_per_row * 8 * 2)
+    # No row cache: this counts store decodes per pass (MLR-06's cache would
+    # serve the second pass from memory).
+    policy = PartitionReadPolicy(
+        batch_size=8, max_block_bytes=probe.bytes_per_row * 8 * 2, row_cache_bytes=0
+    )
     dataset = bind_ml_job(_plan(), "train", project_dir=project, policy=policy).folds[0].dataset
 
     calls.clear()

@@ -122,8 +122,23 @@ class PartitionReadPolicy:
     query_memory_mb: int = DEFAULT_QUERY_MEMORY_MB
     lazy: bool | None = None
     max_block_bytes: int = DEFAULT_BLOCK_MEMORY_BYTES
+    # Shared decoded-row cache for a bound job's datasets (`MLR-06`): bytes it
+    # may hold; None = the materialization budget, 0 = no cache.
+    row_cache_bytes: int | None = None
+
+    @property
+    def effective_row_cache_bytes(self) -> int:
+        return (
+            self.max_materialization_bytes if self.row_cache_bytes is None else self.row_cache_bytes
+        )
 
     def __post_init__(self) -> None:
+        if self.row_cache_bytes is not None and (
+            isinstance(self.row_cache_bytes, bool)
+            or not isinstance(self.row_cache_bytes, int)
+            or self.row_cache_bytes < 0
+        ):
+            raise MLPartitionDataError("row_cache_bytes must be a non-negative integer or null")
         _positive_integer(self.batch_size, "batch_size")
         _positive_integer(self.max_block_bytes, "max_block_bytes")
         _positive_integer(self.max_batch_bytes, "max_batch_bytes")
@@ -614,11 +629,80 @@ def _design_columns(var, reference: str, site_context: str) -> np.ndarray | None
     return None
 
 
+def _row_identity(plan: MLPartitionDataPlan) -> tuple:
+    """What a decoded row depends on, besides its molecule."""
+    maps = tuple(
+        sorted(
+            (name, hashlib.sha256(np.ascontiguousarray(array).tobytes()).hexdigest())
+            for name, array in (plan.coordinate_maps or {}).items()
+        )
+    )
+    return (
+        plan.dataset.snapshot_id,
+        plan.dataset.input_schema.schema_hash,
+        hashlib.sha256(np.asarray(plan.coordinates, dtype=np.int64).tobytes()).hexdigest(),
+        maps,
+    )
+
+
+class PartitionRowCache:
+    """Decoded rows by molecule, shared by every split read from one dataset
+    snapshot (`MLR-06`).
+
+    A row's decoded content depends only on its molecule (and the snapshot's
+    positions, channels and coordinate maps), never on the split or batch it
+    is read in, so every fold, final split and model of a job can share it:
+    each molecule is read from the stores once. Batching is unchanged -- the
+    cache only answers ``_read_batch`` -- so results equal an uncached read.
+    Rows stop being added once ``max_bytes`` is reached (later ones are read
+    as before).
+    """
+
+    def __init__(self, *, max_bytes: int):
+        self.max_bytes = int(max_bytes)
+        self.key: tuple | None = None
+        self.bytes = 0
+        self.hits = 0
+        self.misses = 0
+        self._rows: dict[str, tuple[np.ndarray, ...]] = {}
+
+    def __len__(self) -> int:
+        return len(self._rows)
+
+    def bind(self, key: tuple) -> None:
+        """Tie the cache to one row identity; refuse a different one."""
+        if self.key is None:
+            self.key = key
+        elif self.key != key:
+            raise MLPartitionDataError(
+                "a partition row cache is shared only by datasets of one snapshot, "
+                "positions, channels and coordinate maps"
+            )
+
+    def get(self, molecule_uid: str) -> tuple[np.ndarray, ...] | None:
+        row = self._rows.get(molecule_uid)
+        if row is None:
+            self.misses += 1
+        else:
+            self.hits += 1
+        return row
+
+    def put(self, molecule_uid: str, row: tuple[np.ndarray, ...]) -> None:
+        size = sum(array.nbytes for array in row)
+        if molecule_uid in self._rows or self.bytes + size > self.max_bytes:
+            return
+        self._rows[molecule_uid] = row
+        self.bytes += size
+
+
 class PartitionDataset:
     """Read deterministic batches or bounded sklearn-ready split matrices."""
 
-    def __init__(self, plan: MLPartitionDataPlan):
+    def __init__(self, plan: MLPartitionDataPlan, *, row_cache: PartitionRowCache | None = None):
         self.plan = plan
+        self.row_cache = row_cache
+        if row_cache is not None:
+            row_cache.bind(_row_identity(plan))
 
     def iter_batches(
         self,
@@ -714,6 +798,32 @@ class PartitionDataset:
     def _read_batch(self, entries: Sequence[PartitionReadEntry]) -> MLPartitionBatch:
         schema = self.plan.dataset.input_schema
         n_rows = len(entries)
+        if self.row_cache is None:
+            values, observed, availability, design, padding = self._decode_rows(entries)
+        else:
+            values, observed, availability, design, padding = self._cached_rows(entries)
+        return self._assemble_batch(
+            entries, values, observed, availability, design, padding, n_rows
+        )
+
+    def _cached_rows(self, entries: Sequence[PartitionReadEntry]) -> tuple[np.ndarray, ...]:
+        """Rows from the shared cache; only the missing molecules are decoded."""
+        cache = self.row_cache
+        cached = [cache.get(entry.molecule_uid) for entry in entries]
+        missing = [index for index, row in enumerate(cached) if row is None]
+        if missing:
+            decoded = self._decode_rows([entries[index] for index in missing])
+            for position, index in enumerate(missing):
+                row = tuple(array[position].copy() for array in decoded)
+                cached[index] = row
+                cache.put(entries[index].molecule_uid, row)
+        return tuple(np.stack([row[part] for row in cached]) for part in range(5))
+
+    def _decode_rows(self, entries: Sequence[PartitionReadEntry]) -> tuple[np.ndarray, ...]:
+        """Read and decode rows from the stores: values, observed, availability,
+        design (per row) and padding, in ``entries`` order."""
+        schema = self.plan.dataset.input_schema
+        n_rows = len(entries)
         n_positions = schema.n_positions
         n_channels = len(schema.channels)
         values = np.full((n_rows, n_positions, n_channels), np.nan, dtype=np.float32)
@@ -745,7 +855,19 @@ class PartitionDataset:
                     design,
                     padding,
                 )
+        return values, observed, availability, design, padding
 
+    def _assemble_batch(
+        self,
+        entries: Sequence[PartitionReadEntry],
+        values: np.ndarray,
+        observed: np.ndarray,
+        availability: np.ndarray,
+        design: np.ndarray,
+        padding: np.ndarray,
+        n_rows: int,
+    ) -> MLPartitionBatch:
+        schema = self.plan.dataset.input_schema
         labels: np.ndarray | None
         if self.plan.dataset.label_schema is None:
             labels = None
