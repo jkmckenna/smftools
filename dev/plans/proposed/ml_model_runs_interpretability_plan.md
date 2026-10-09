@@ -154,7 +154,7 @@ the stores.
 | `MLR-01` train-and-publish | done (PR #700) | one call: bind a plan job, train each model per fold, publish run / data / models / evaluation records and index; fixed-prevalence AUPRC (reweighted, subsampled) in smftools metrics |
 | `MLR-02` final models and apply | done (PR #701) | optional all-groups final model; apply a run to another dataset with records |
 | `MLR-03` explanation records | done (PR #702) | out-of-fold position importance and per-molecule attribution matrices per run; fold consistency |
-| `MLR-03b` detector catalogue | proposed | CNN detector catalogue (split from `MLR-03`) |
+| `MLR-03b` detector catalogue | implemented (`feature/ml-detector-catalogue`) | CNN detector catalogue (split from `MLR-03`) |
 | `MLR-04` attribution clustermap | done (PR #704) | input layers beside attributions, shared row order, label / score / fold strips; detector catalogue figures |
 | `MLR-05` run comparison | done (PR #705) | select runs by tags; paired per-fold metrics, bootstrap intervals, figures |
 | `MLR-06` fold-matrix cache | proposed | read each task's data once for every model |
@@ -240,8 +240,23 @@ For convolutional runs, method `DetectorCatalogue` (parameters: top windows
 per detector, similarity threshold for grouping) reads final-layer
 activations before pooling, stored as an explain run like `MLR-03`.
 
-Tests: a CNN trained on a planted pattern has a detector whose top windows
-recover it, at the planted locations, enriched in the planted class.
+As built (`orchestration/detectors.py`): `detector_catalogue_run(run_id,
+model=, max_per_fold=2000, top_windows=50, window=None, group_similarity=0.8)`,
+an explain run like `MLR-03`. Per molecule and detector only the maximum
+activation and its position are kept (a full activation map would be GBs);
+top windows are one per molecule, sized by the fold model's recorded 90 %
+effective span; detectors are grouped by Spearman correlation of their
+per-molecule maxima. Records: maxima, windows, mean patterns, a detector table
+(AUROC alone, log2 enrichment of top windows, centre position mean / SD,
+group) and `plot_detector_catalogue` (the largest fold's most predictive
+detectors). The fixture project gained `signal`, `n_positions` and
+`reads_per_barcode`.
+
+Tests (`test_detector_catalogue.py`): a CNN trained on a planted motif (at
+random positions in active molecules) has, in every fold, a most-predictive
+detector whose mean pattern is the motif (correlation > 0.7; observed: exact),
+AUROC > 0.75, spread centres, enriched top windows; windows one per molecule
+and ranked; classical models refused.
 
 ### `MLR-04` -- attribution clustermap
 

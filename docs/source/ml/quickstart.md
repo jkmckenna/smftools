@@ -198,6 +198,20 @@ plot_explanation(explained, "by_ndr_state.png", order="bins", bins=ndr_state_of(
 diverging scale symmetric about zero. Extra panels and strips must be aligned with the pooled
 molecules.
 
+For a CNN, the detector catalogue describes what each final-layer detector responds to, out of
+fold: its top windows (one per molecule, at its effective span), their mean input pattern,
+where on the locus they sit, the detector's AUROC on its own, top-window enrichment, and
+groups of redundant detectors:
+
+```python
+from smftools.machine_learning.orchestration import detector_catalogue_run
+from smftools.machine_learning.orchestration import detectors
+
+catalogue = detector_catalogue_run(run.run_id, model="cnn_sub", project_dir="path/to/project")
+catalogue.read(detectors.DETECTORS)   # per fold and detector
+catalogue.read(detectors.WINDOWS)     # each detector's top molecules and positions
+```
+
 To compare models across runs -- on the same held-out experiments, molecule for molecule:
 
 ```python
