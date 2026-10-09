@@ -163,6 +163,7 @@ the stores.
 | `MLR-09` model classes and the zoo | part 1 done (PR #716); part 2 (`conv_scanner`) implemented (`feature/ml-conv-scanner`); MLP / transformer pending | a capability class per registry family (additive, tabular non-linear, spatial, global sequence); class-aware defaults; MLP, multiscale CNN and transformer recipes; per-task zoo declarations |
 | `MLR-10` qualification | in progress | `nkg2a_final` region / model grid through `MLR-01`-`MLR-05`; parity with its current metrics |
 | `MLR-11` pretraining and fine-tuning | proposed | encoder / head split; a `pretrain` action (masked-site reconstruction, autoencoder, VAE) publishing head-less encoders; fine-tuning through `initialization`; pretraining-corpus leakage policy; transfer benchmark (absorbs `ML-304`) |
+| `MLR-12` equal-size training | implemented (`feature/ml-train-size-cap`) | `balancing.train.max_per_class` and a cohort `seed`, so datasets of different sizes (e.g. DAFseq vs EMseq) train on equal per-class counts and learning curves repeat draws; counts per fold model in `models.json`; a job's balancing now reaches explicitly passed training options (it was dropped before) |
 
 ### `MLR-01` -- train-and-publish
 

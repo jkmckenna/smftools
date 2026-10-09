@@ -189,8 +189,6 @@ def test_mask_and_input_shape_errors_fail_before_convolution() -> None:
     invalid[0, 0, 0] = float("nan")
     with pytest.raises(ValueError, match="must be finite"):
         model(invalid)
-    with pytest.raises(ValueError, match="at least one valid position"):
-        model(values, observed_mask=torch.zeros_like(values, dtype=torch.bool))
 
 
 def test_resolved_recipe_reconstructs_exact_architecture_and_state_dict() -> None:

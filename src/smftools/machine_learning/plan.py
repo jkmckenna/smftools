@@ -268,11 +268,23 @@ class SplitSpec:
     validation_by: str = "molecules"
 
 
+# Balancing methods that take a per-class training cap (`max_per_class`).
+CAPPED_BALANCE_METHODS = frozenset({"natural", "downsample", "class_weight"})
+
+
 @dataclass(frozen=True)
 class BalanceRoleSpec:
-    """Balancing method for one split role."""
+    """Balancing method for one split role.
+
+    Training only: ``max_per_class`` caps every class at that many molecules
+    (with ``downsample``, each class gets the smaller of the cap and the
+    smallest class), so runs on differently sized data train on equal counts;
+    ``seed`` draws the cohort independently of the job seed (repeat draws).
+    """
 
     method: str
+    max_per_class: int | None = None
+    seed: int | None = None
 
 
 @dataclass(frozen=True)
@@ -347,6 +359,11 @@ class MLPlan:
             if split.get("validation_fraction") is None:
                 split.pop("validation_fraction", None)  # unset; keeps earlier hashes
                 split.pop("validation_by", None)
+        for profile in payload["balancing"].values():
+            for role in profile.values():
+                for key in ("max_per_class", "seed"):
+                    if role.get(key) is None:
+                        role.pop(key, None)  # unset; keeps earlier hashes
         for dataset in payload["datasets"].values():
             for key in ("positions", "coordinate_frame"):
                 if dataset.get(key) is None:
@@ -859,7 +876,8 @@ def _parse_split(raw: Any, path: str) -> SplitSpec:
 
 def _parse_balance_role(raw: Any, path: str, *, training: bool) -> BalanceRoleSpec:
     value = _as_mapping(raw, path)
-    _check_keys(value, path=path, allowed={"method"}, required={"method"})
+    allowed_keys = {"method", "max_per_class", "seed"} if training else {"method"}
+    _check_keys(value, path=path, allowed=allowed_keys, required={"method"})
     method = _required_string(value, "method", path).lower()
     allowed = (
         {"natural", "class_weight", "weighted_sampler", "downsample", "upsample"}
@@ -868,7 +886,21 @@ def _parse_balance_role(raw: Any, path: str, *, training: bool) -> BalanceRoleSp
     )
     if method not in allowed:
         _fail(f"{path}.method", f"must be one of {sorted(allowed)}")
-    return BalanceRoleSpec(method=method)
+    limits = {}
+    for key in ("max_per_class", "seed"):
+        item = value.get(key)
+        if item is None:
+            continue
+        minimum = 1 if key == "max_per_class" else 0
+        if isinstance(item, bool) or not isinstance(item, int) or item < minimum:
+            _fail(f"{path}.{key}", f"must be an integer >= {minimum}")
+        limits[key] = item
+    if "max_per_class" in limits and method not in CAPPED_BALANCE_METHODS:
+        _fail(
+            f"{path}.max_per_class",
+            f"applies to methods {sorted(CAPPED_BALANCE_METHODS)}, not {method!r}",
+        )
+    return BalanceRoleSpec(method=method, **limits)
 
 
 def _parse_balancing(raw: Any, path: str) -> BalancingSpec:

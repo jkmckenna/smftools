@@ -29,7 +29,7 @@ from typing import Any
 
 from smftools.optional_imports import require
 
-from .residual_cnn import AttentionPooling1d, MaskedConvInputs
+from .residual_cnn import AttentionPooling1d, MaskedConvInputs, pooling_mask
 
 torch = require("torch", extra="ml-base", purpose="convolutional scanner models")
 nn = torch.nn
@@ -269,13 +269,13 @@ class ConvScanner1d(MaskedConvInputs, nn.Module):
         if self.config.adaptive_bins:
             pooled = F.adaptive_max_pool1d(features, self.config.adaptive_bins).flatten(1)
             return self.head(pooled)
-        mask = valid[:, None, :]
+        mask = pooling_mask(valid)[:, None, :]
         parts = []
         for kind in self.config.pooling:
             if kind == "max":
                 parts.append(features.masked_fill(~mask, float("-inf")).max(dim=-1).values)
             elif kind == "avg":
-                parts.append(features.sum(dim=-1) / mask.sum(dim=-1).clamp(min=1))
+                parts.append(features.sum(dim=-1) / valid[:, None, :].sum(dim=-1).clamp(min=1))
             else:
                 parts.append(self.attn_pool(features, position_mask=valid))
         return self.head(torch.cat(parts, dim=1))

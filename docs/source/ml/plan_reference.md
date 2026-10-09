@@ -196,6 +196,22 @@ prevalence, and asking for anything else is an error rather than a warning.
 Note `weighted_sampler` is Torch-only, and it cannot be combined with streaming training because it
 samples with replacement across the whole split.
 
+Train also takes `max_per_class` (with `natural`, `downsample` or `class_weight`) and `seed`:
+
+```python
+{"capped": {"train": {"method": "downsample", "max_per_class": 2000, "seed": 1}}}
+```
+
+`max_per_class` caps every class at that many training molecules per fold. With `downsample`, each
+class gets the smaller of the cap and the smallest class. Use it to compare datasets of different
+sizes on equal terms, or to draw learning curves (one profile per size). `seed` draws the training
+cohort independently of the job seed, so repeat draws change only the cohort. The counts actually
+trained are recorded per fold model (`n_train`, `train_class_counts` in the run's `models.json`).
+Test and validation sets are never capped.
+
+A job's balancing profile applies even when training options are passed explicitly (as Torch
+training always does). Options that declare a *different* balancing are refused.
+
 ## `models`
 
 | Backend | Required key | Forbidden key |

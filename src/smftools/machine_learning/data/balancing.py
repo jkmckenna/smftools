@@ -14,7 +14,7 @@ import numpy as np
 from smftools.optional_imports import require
 
 from ..contracts import LabelSchema
-from ..plan import BalancingSpec
+from ..plan import CAPPED_BALANCE_METHODS, BalancingSpec
 from .partition_dataset import MLMaterializedPartitionData, MLPartitionDataPlan
 
 ML_BALANCE_RESOLUTION_VERSION = 1
@@ -85,18 +85,27 @@ def _balanced_class_weights(counts: tuple[int, ...]) -> np.ndarray:
     )
 
 
-def _resampled_indices(labels: np.ndarray, method: str, seed: int) -> np.ndarray:
+def _resampled_indices(
+    labels: np.ndarray, method: str, seed: int, max_per_class: int | None = None
+) -> np.ndarray:
     rng = np.random.default_rng(seed)
     class_ids = tuple(sorted(set(map(int, labels))))
     by_class = {class_id: np.flatnonzero(labels == class_id) for class_id in class_ids}
-    target = (
-        min(len(indices) for indices in by_class.values())
-        if method == "downsample"
-        else max(len(indices) for indices in by_class.values())
-    )
+    if method in {"downsample", "upsample"}:
+        target = (
+            min(len(indices) for indices in by_class.values())
+            if method == "downsample"
+            else max(len(indices) for indices in by_class.values())
+        )
+        if max_per_class is not None:
+            target = min(target, max_per_class)
+        targets = dict.fromkeys(class_ids, target)
+    else:  # natural / class_weight under a cap: each class capped on its own
+        targets = {c: min(len(by_class[c]), max_per_class) for c in class_ids}
     selected = []
     for class_id in class_ids:
         indices = by_class[class_id]
+        target = targets[class_id]
         selected.append(
             rng.choice(
                 indices,
@@ -127,6 +136,7 @@ class BalanceResolution:
     selected_indices: np.ndarray
     class_weights: np.ndarray | None
     sample_weights: np.ndarray | None
+    max_per_class: int | None = None
 
     def __post_init__(self) -> None:
         if self.schema_version != ML_BALANCE_RESOLUTION_VERSION:
@@ -181,7 +191,9 @@ class BalanceResolution:
             raise MLBalanceError("resolution_id does not match balancing provenance")
 
     def _identity_dict(self) -> dict[str, Any]:
+        capped = {} if self.max_per_class is None else {"max_per_class": self.max_per_class}
         return {
+            **capped,
             "schema_version": self.schema_version,
             "dataset_snapshot_id": self.dataset_snapshot_id,
             "split_id": self.split_id,
@@ -237,6 +249,7 @@ def _resolve_from_labels(
     split_id: str,
     purpose: str,
     allow_evaluation_resampling: bool,
+    max_per_class: int | None = None,
 ) -> BalanceResolution:
     """Resolve a balance from labels and identities alone.
 
@@ -258,13 +271,17 @@ def _resolve_from_labels(
     molecule_uids = tuple(str(item) for item in molecule_uids)
     if len(molecule_uids) != len(labels):
         raise MLBalanceError("molecule identities and labels must have the same length")
-    weights = _balanced_class_weights(counts)
-    class_weights = weights if method in {"class_weight", "weighted_sampler"} else None
-    sample_weights = weights[labels] if method == "weighted_sampler" else None
-    if method in {"downsample", "upsample"}:
-        indices = _resampled_indices(labels, method, seed)
+    if max_per_class is not None and method not in CAPPED_BALANCE_METHODS:
+        raise MLBalanceError(f"max_per_class does not apply to {method!r} balancing")
+    if method in {"downsample", "upsample"} or max_per_class is not None:
+        indices = _resampled_indices(labels, method, seed, max_per_class)
     else:
         indices = np.arange(len(labels), dtype=np.int64)
+    # Class weights balance the classes as trained (after any cap).
+    trained_counts = tuple(int(np.count_nonzero(labels[indices] == c)) for c in range(len(counts)))
+    weights = _balanced_class_weights(trained_counts)
+    class_weights = weights if method in {"class_weight", "weighted_sampler"} else None
+    sample_weights = weights[labels] if method == "weighted_sampler" else None
     result_counts = tuple(
         int(np.count_nonzero(labels[indices] == item)) for item in range(len(counts))
     )
@@ -272,6 +289,7 @@ def _resolve_from_labels(
     selected_uids = [molecule_uids[index] for index in indices]
     selected_molecule_digest = _sha256({"molecule_uids": selected_uids})
     identity = {
+        **({} if max_per_class is None else {"max_per_class": max_per_class}),
         "schema_version": ML_BALANCE_RESOLUTION_VERSION,
         "dataset_snapshot_id": dataset_snapshot_id,
         "split_id": split_id,
@@ -305,6 +323,7 @@ def _resolve_from_labels(
         selected_indices=indices,
         class_weights=class_weights,
         sample_weights=sample_weights,
+        max_per_class=max_per_class,
     )
 
 
@@ -318,6 +337,7 @@ def _resolve(
     split_id: str,
     purpose: str,
     allow_evaluation_resampling: bool,
+    max_per_class: int | None = None,
 ) -> BalanceResolution:
     return _resolve_from_labels(
         data.labels,
@@ -330,6 +350,7 @@ def _resolve(
         split_id=split_id,
         purpose=purpose,
         allow_evaluation_resampling=allow_evaluation_resampling,
+        max_per_class=max_per_class,
     )
 
 
@@ -364,17 +385,19 @@ def resolve_role_balance_from_plan(
     entries = plan.entries_for(role)
     if any(entry.class_id is None for entry in entries):
         raise MLBalanceError("balancing requires supervised labels")
+    spec = role_specs[role]
     return _resolve_from_labels(
         np.asarray([entry.class_id for entry in entries], dtype=np.int64),
         tuple(entry.molecule_uid for entry in entries),
         role,
         label_schema,
-        method=role_specs[role].method,
-        seed=seed,
+        method=spec.method,
+        seed=seed if spec.seed is None else spec.seed,
         dataset_snapshot_id=dataset_snapshot_id,
         split_id=split_id,
         purpose="primary",
         allow_evaluation_resampling=False,
+        max_per_class=spec.max_per_class,
     )
 
 
@@ -395,16 +418,17 @@ def resolve_role_balance(
     }
     if data.split not in role_specs:
         raise MLBalanceError(f"unsupported split role {data.split!r}")
-    method = role_specs[data.split].method
+    spec = role_specs[data.split]
     return _resolve(
         data,
         label_schema,
-        method=method,
-        seed=seed,
+        method=spec.method,
+        seed=seed if spec.seed is None else spec.seed,
         dataset_snapshot_id=dataset_snapshot_id,
         split_id=split_id,
         purpose="primary",
         allow_evaluation_resampling=False,
+        max_per_class=spec.max_per_class,
     )
 
 
