@@ -256,3 +256,118 @@ def test_split_traces_render(tmp_path) -> None:
         output_path=path,
     )
     assert path.is_file()
+
+
+def test_input_colours_follow_the_channel_role() -> None:
+    from matplotlib.colors import to_rgba
+
+    green = ml_results._input_cmap("accessibility")
+    red = ml_results._input_cmap("endogenous_methylation")
+    assert green(1.0) == pytest.approx(to_rgba("#2E7D32"))
+    assert red(1.0) == pytest.approx(to_rgba("#C62828"))
+    assert green(0.0) == pytest.approx(to_rgba(ml_results._INPUT_ZERO))
+    assert green.get_bad() == pytest.approx(to_rgba(ml_results._UNOBSERVED))
+    assert ml_results._input_cmap(None).name.startswith("viridis")
+
+
+def test_rows_within_a_block_can_follow_the_score(captured) -> None:
+    molecules = _molecules()
+    inputs, attributions = _tagged()
+    plot_attribution_clustermap(
+        molecules,
+        attributions,
+        inputs=inputs,
+        channels=["C"],
+        coordinates=list(range(POSITIONS)),
+        positive_class="active",
+        within="score",
+    )
+    order = captured["row_order"]
+    for _label, start, stop in captured["blocks"]:
+        scores = molecules["score"].to_numpy()[order[start:stop]]
+        assert np.all(np.diff(scores) <= 0)
+
+
+def test_rows_can_cluster_on_the_inputs(captured) -> None:
+    molecules = _molecules()
+    _inputs, attributions = _tagged()
+    # Two input patterns, interleaved; attributions are noise.
+    inputs = np.zeros((N, 1, POSITIONS))
+    inputs[::2, 0, : POSITIONS // 2] = 1
+    inputs[1::2, 0, POSITIONS // 2 :] = 1
+    plot_attribution_clustermap(
+        molecules,
+        attributions,
+        inputs=inputs,
+        channels=["C"],
+        coordinates=list(range(POSITIONS)),
+        positive_class="active",
+        cluster_on="inputs",
+    )
+    order = captured["row_order"]
+    for _label, start, stop in captured["blocks"]:
+        pattern = (order[start:stop] % 2).tolist()
+        assert sum(a != b for a, b in zip(pattern, pattern[1:])) == 1  # two runs
+
+
+def test_bad_orderings_are_refused() -> None:
+    molecules = _molecules()
+    _inputs, attributions = _tagged()
+    with pytest.raises(ValueError, match="within"):
+        plot_attribution_clustermap(
+            molecules, attributions, channels=["C"], coordinates=list(range(POSITIONS)), within="x"
+        )
+    with pytest.raises(ValueError, match="needs inputs"):
+        plot_attribution_clustermap(
+            molecules,
+            attributions,
+            channels=["C"],
+            coordinates=list(range(POSITIONS)),
+            cluster_on="inputs",
+        )
+
+
+def test_role_colours_reach_the_input_panel(captured) -> None:
+    molecules = _molecules()
+    inputs, attributions = _tagged()
+    plot_attribution_clustermap(
+        molecules,
+        attributions,
+        inputs=inputs,
+        channels=["C"],
+        coordinates=list(range(POSITIONS)),
+        channel_roles=["accessibility"],
+    )
+    from matplotlib.colors import to_rgba
+
+    assert captured["panels"][0]["cmap"](1.0) == pytest.approx(to_rgba("#2E7D32"))
+
+
+def test_extra_panels_on_the_inputs_positions_share_their_columns(captured) -> None:
+    coordinates = [10, 11, 12, 13, 14, 50, 51, 52, 53]
+    n = 6
+    molecules = _molecules(n)
+    inputs = np.full((n, 1, len(coordinates)), np.nan)
+    for site in (11, 13, 51, 53):
+        inputs[:, 0, coordinates.index(site)] = 1.0
+    hmm = np.tile(np.asarray(coordinates, dtype=float), (n, 1))
+    plot_attribution_clustermap(
+        molecules,
+        np.zeros_like(inputs),
+        inputs=inputs,
+        channels=["C"],
+        coordinates=coordinates,
+        extra_panels=[{"name": "accessible", "matrix": hmm, "coordinates": coordinates}],
+    )
+    extra = captured["panels"][-1]
+    assert extra["matrix"][0].tolist() == [11, 13, 51, 53]
+    assert extra["positions"] == [11, 13, 51, 53] and extra["column_separators"] == [2]
+    with pytest.raises(ValueError, match="coordinates differ"):
+        plot_attribution_clustermap(
+            molecules,
+            np.zeros_like(inputs),
+            inputs=inputs,
+            channels=["C"],
+            coordinates=coordinates,
+            extra_panels=[{"name": "x", "matrix": hmm, "coordinates": coordinates[::-1]}],
+        )

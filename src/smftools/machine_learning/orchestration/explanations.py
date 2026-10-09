@@ -448,7 +448,7 @@ def explain_run(
         rng = np.random.default_rng(seed)
         atomic_write_json(context.output_path(TAGS), tags)
         molecules, importance, index_folds = [], [], []
-        channels = coordinates = None
+        channels = coordinates = channel_roles = None
         positive = None
         for number, record in enumerate(records):
             fold_name = record["fold"]
@@ -508,6 +508,7 @@ def explain_run(
             )
             result = explain_partition_model(fitted, data, request, background=background)
             channels = [channel.name for channel in fitted.input_schema.channels]
+            channel_roles = [channel.biological_role for channel in fitted.input_schema.channels]
             coordinates = [int(value) for value in fitted.transform.coordinates]
             matrix = _position_matrix(result, fitted)
             entry = {
@@ -586,6 +587,7 @@ def explain_run(
             context.output_path(ATTRIBUTION_INDEX),
             {
                 "channels": channels,
+                "channel_roles": channel_roles,
                 "coordinates": coordinates,
                 "axes": ["molecule", "channel", "position"],
                 "value": (
@@ -701,6 +703,9 @@ def plot_explanation(
     request = explained.read(REQUEST)
     options.setdefault("positive_class", request["target_class"])
     options.setdefault(
+        "channel_roles", index.get("channel_roles") or _source_roles(explained, index)
+    )
+    options.setdefault(
         "title",
         f"{explained.model}: {explained.method}, out-of-fold ({explained.source_run_id[:8]})",
     )
@@ -713,3 +718,17 @@ def plot_explanation(
         output_path=output_path,
         **options,
     )
+
+
+def _source_roles(explained: PublishedExplanationRun, index: Mapping[str, Any]) -> list | None:
+    """Channel roles from the source run's plan (records made before roles
+    were stored in the attribution index)."""
+    try:
+        path = explained.workspace.runs_root / explained.source_run_id
+        plan = parse_ml_plan(json.loads((path / "resolved_plan.json").read_text()))
+        job = json.loads((path / "run_manifest.json").read_text())["job_name"]
+        dataset = plan.datasets[plan.jobs[job].dataset]
+        roles = {channel.name: channel.biological_role for channel in dataset.channels}
+        return [roles.get(name) for name in index["channels"]]
+    except (OSError, KeyError, ValueError):
+        return None

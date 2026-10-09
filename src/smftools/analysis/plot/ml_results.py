@@ -453,6 +453,29 @@ def _class_colors(classes: Sequence[str], positive_class: str | None) -> dict[st
     return colors
 
 
+# Input colours by a channel's biological role (zero: the latent figures' cream).
+_INPUT_ZERO = "#F1ECE2"
+_ROLE_COLORS = {"accessib": "#2E7D32", "methyl": "#C62828"}
+_UNOBSERVED = "#D9D9D9"
+
+
+def _input_cmap(role: str | None):
+    """Accessibility green, methylation red (from cream), else viridis;
+    unobserved positions light grey."""
+    from matplotlib.colors import LinearSegmentedColormap
+
+    colour = next(
+        (value for key, value in _ROLE_COLORS.items() if role and key in role.lower()), None
+    )
+    cmap = (
+        LinearSegmentedColormap.from_list(f"input_{role}", [_INPUT_ZERO, colour])
+        if colour
+        else plt.get_cmap("viridis").copy()
+    )
+    cmap.set_bad(_UNOBSERVED)
+    return cmap
+
+
 def attribution_row_layout(
     molecules: pd.DataFrame,
     attributions: np.ndarray,
@@ -461,8 +484,14 @@ def attribution_row_layout(
     positive_class: str | None = None,
     bins: Sequence[Any] | None = None,
     bin_order: Sequence[Any] | None = None,
+    within: str = "hierarchical",
+    cluster_values: np.ndarray | None = None,
 ) -> tuple[np.ndarray, list[tuple[str, int, int]], np.ndarray]:
     """Row order, blocks and per-row block labels for an attribution clustermap.
+
+    ``within`` orders rows inside each block: ``"hierarchical"`` (clustered on
+    ``cluster_values`` -- default the attributions -- e.g. the inputs) or
+    ``"score"`` (out-of-fold score, highest first).
 
     ``order``: ``"label"`` -- blocks by true class (``positive_class`` first),
     rows clustered within each block on their attributions; ``"score"`` -- one
@@ -473,8 +502,13 @@ def attribution_row_layout(
 
     if order not in ATTRIBUTION_ORDERS:
         raise ValueError(f"order must be one of {ATTRIBUTION_ORDERS}")
+    if within not in ("hierarchical", "score"):
+        raise ValueError("within must be 'hierarchical' or 'score'")
     n_rows = len(molecules)
-    points = np.nan_to_num(np.asarray(attributions, dtype=float).reshape(n_rows, -1))
+    source = attributions if cluster_values is None else cluster_values
+    # Unobserved inputs sit halfway, so they neither join nor split clusters.
+    points = np.nan_to_num(np.asarray(source, dtype=float).reshape(n_rows, -1), nan=0.5)
+    scores = np.nan_to_num(molecules["score"].to_numpy(dtype=float), nan=-np.inf)
     if order == "score":
         scores = molecules["score"].to_numpy(dtype=float)
         row_order = np.argsort(-np.nan_to_num(scores, nan=-np.inf), kind="stable")
@@ -501,7 +535,10 @@ def attribution_row_layout(
         members = np.flatnonzero(labels == value)
         if members.size == 0:
             continue
-        parts.append(members[hierarchical_block_order(points[members])])
+        if within == "score":
+            parts.append(members[np.argsort(-scores[members], kind="stable")])
+        else:
+            parts.append(members[hierarchical_block_order(points[members])])
         blocks.append((value, cursor, cursor + members.size))
         cursor += members.size
     return np.concatenate(parts).astype(int), blocks, labels
@@ -527,6 +564,9 @@ def plot_attribution_clustermap(
     seed: int = 0,
     attribution_limit: float | None = None,
     columns: str = "observed",
+    within: str = "hierarchical",
+    cluster_on: str = "attributions",
+    channel_roles: Sequence[str] | None = None,
     title: str = "",
     output_path: str | Path | None = None,
 ) -> dict[str, Any]:
@@ -537,6 +577,12 @@ def plot_attribution_clustermap(
     are empty and carry no attribution), labelled with their real coordinates
     and with separators only between mask windows; ``"all"`` draws every
     position. Each panel's top trace is split by true class.
+
+    Rows within each class (or bin) block: ``within="hierarchical"``
+    (clustered on ``cluster_on``: ``"attributions"`` or ``"inputs"``) or
+    ``"score"`` (highest out-of-fold score first). ``channel_roles`` (one per
+    channel) colour the inputs: accessibility green, methylation red, others
+    viridis; unobserved positions light grey.
 
     ``molecules`` has one row per molecule (``molecule_uid``, ``fold``,
     ``truth``, ``score``), aligned with ``attributions`` (molecules x channels
@@ -552,7 +598,8 @@ def plot_attribution_clustermap(
     absolute values). ``coordinate_labels`` relabels the position axis (e.g.
     TSS-relative); numeric labels also order the columns (ascending), and a
     vertical separator marks every jump in the coordinates (between a position
-    mask's windows). Extra panels are drawn as given. At most ``max_rows`` molecules are drawn (a seeded,
+    mask's windows). Extra panels are drawn as given, unless they carry
+    ``coordinates`` equal to the inputs': then they share the inputs' columns. At most ``max_rows`` molecules are drawn (a seeded,
     class-stratified sample).
 
     Returns the plot summary plus ``row_uids`` (drawn order) and
@@ -576,6 +623,10 @@ def plot_attribution_clustermap(
         keep = np.sort(np.asarray(chosen, dtype=int))
     subset = molecules.iloc[keep].reset_index(drop=True)
     attribution = attributions[keep]
+    if cluster_on not in ("attributions", "inputs"):
+        raise ValueError("cluster_on must be 'attributions' or 'inputs'")
+    if cluster_on == "inputs" and inputs is None:
+        raise ValueError("cluster_on='inputs' needs inputs")
     row_order, blocks, labels = attribution_row_layout(
         subset,
         attribution,
@@ -583,6 +634,10 @@ def plot_attribution_clustermap(
         positive_class=positive_class,
         bins=None if bins is None else np.asarray(bins, dtype=object)[keep],
         bin_order=bin_order,
+        within=within,
+        cluster_values=None
+        if cluster_on == "attributions"
+        else np.asarray(inputs, dtype=float)[keep],
     )
     limit = attribution_limit
     if limit is None:
@@ -637,7 +692,7 @@ def plot_attribution_clustermap(
                     "matrix": inputs[keep][:, index],
                     "positions": positions,
                     "column_separators": separators,
-                    "cmap": "viridis",
+                    "cmap": _input_cmap(None if channel_roles is None else channel_roles[index]),
                     "vmin": 0.0,
                     "vmax": 1.0,
                 }
@@ -654,7 +709,19 @@ def plot_attribution_clustermap(
             }
         )
     for panel in extra_panels:
-        panels.append({**panel, "matrix": np.asarray(panel["matrix"], dtype=float)[keep]})
+        panel = dict(panel)
+        matrix = np.asarray(panel["matrix"], dtype=float)[keep]
+        extra_coordinates = panel.pop("coordinates", None)
+        if extra_coordinates is not None:
+            # On the input's positions: drawn on the same (ordered, dense)
+            # columns, labels and window breaks.
+            if [int(value) for value in extra_coordinates] != [int(v) for v in coordinates]:
+                raise ValueError(
+                    f"extra panel {panel.get('name')!r} coordinates differ from the inputs'"
+                )
+            matrix = matrix[:, column_order]
+            panel.update(positions=positions, column_separators=separators)
+        panels.append({**panel, "matrix": matrix})
     truth = subset["truth"].astype(str).to_numpy()
     class_colors = _class_colors(truth, positive_class)
     strips = []
