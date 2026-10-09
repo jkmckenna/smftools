@@ -371,3 +371,67 @@ def test_extra_panels_on_the_inputs_positions_share_their_columns(captured) -> N
             coordinates=coordinates,
             extra_panels=[{"name": "x", "matrix": hmm, "coordinates": coordinates[::-1]}],
         )
+
+
+def test_extra_panels_can_sit_before_their_channel(captured) -> None:
+    molecules = _molecules()
+    rng = np.random.default_rng(2)
+    attributions = rng.normal(size=(N, 2, POSITIONS))
+    inputs = (rng.random((N, 2, POSITIONS)) < 0.5).astype(float)
+    hmm = {"matrix": rng.random((N, POSITIONS)), "coordinates": list(range(POSITIONS))}
+    plot_attribution_clustermap(
+        molecules,
+        attributions,
+        inputs=inputs,
+        channels=["GpC", "CpG"],
+        coordinates=list(range(POSITIONS)),
+        extra_panels=[
+            {**hmm, "name": "GpC hmm", "before": "GpC"},
+            {**hmm, "name": "CpG hmm", "before": "CpG"},
+            {**hmm, "name": "other"},
+        ],
+    )
+    assert [panel["name"] for panel in captured["panels"]] == [
+        "GpC hmm",
+        "GpC (input)",
+        "GpC attribution",
+        "CpG hmm",
+        "CpG (input)",
+        "CpG attribution",
+        "other",
+    ]
+    with pytest.raises(ValueError, match="no channel"):
+        plot_attribution_clustermap(
+            molecules,
+            attributions,
+            channels=["GpC", "CpG"],
+            coordinates=list(range(POSITIONS)),
+            extra_panels=[{**hmm, "name": "x", "before": "C"}],
+        )
+
+
+def test_balanced_classes_and_class_colours(captured) -> None:
+    molecules = _molecules()  # 20 active, 40 inactive
+    inputs, attributions = _tagged()
+    result = plot_attribution_clustermap(
+        molecules,
+        attributions,
+        inputs=inputs,
+        channels=["C"],
+        coordinates=list(range(POSITIONS)),
+        balance_classes=True,
+        class_colors={"active": "#C62828", "inactive": "#F28C28"},
+    )
+    drawn = molecules.set_index("molecule_uid").loc[result["row_uids"], "truth"]
+    assert drawn.value_counts().to_dict() == {"active": 20, "inactive": 20}
+    assert captured["cluster_colors"] == {"active": "#C62828", "inactive": "#F28C28"}
+    capped = plot_attribution_clustermap(
+        molecules,
+        attributions,
+        channels=["C"],
+        coordinates=list(range(POSITIONS)),
+        balance_classes=True,
+        max_rows=10,
+    )
+    drawn = molecules.set_index("molecule_uid").loc[capped["row_uids"], "truth"]
+    assert drawn.value_counts().to_dict() == {"active": 5, "inactive": 5}
