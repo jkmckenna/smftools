@@ -450,3 +450,28 @@ def test_score_order_keeps_a_true_class_strip(captured) -> None:
     )
     strip = next(s for s in captured["extra_strips"] if s["name"] == "true class")
     assert set(strip["values"]) == {"active", "inactive"}
+
+
+def test_bins_split_the_traces_by_bin(captured) -> None:
+    molecules = _molecules()
+    inputs, attributions = _tagged()
+    groups = np.where(
+        np.arange(N) % 3 == 0,
+        "WT active",
+        np.where(np.arange(N) % 3 == 1, "WT inactive", "enh-del"),
+    )
+    colors = {"WT active": "#C62828", "WT inactive": "#F28C28", "enh-del": "#6A1B9A"}
+    plot_attribution_clustermap(
+        molecules,
+        attributions,
+        inputs=inputs,
+        channels=["C"],
+        coordinates=list(range(POSITIONS)),
+        order="bins",
+        bins=groups,
+        bin_order=list(colors),
+        bin_colors=colors,
+    )
+    traces = captured["trace_groups"]
+    assert traces["order"] == list(colors) and traces["colors"] == colors
+    assert set(traces["values"]) == set(colors)
