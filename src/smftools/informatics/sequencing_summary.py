@@ -176,6 +176,10 @@ def read_demux_status(
     return result
 
 
+# `demux_type` values that carry no end evidence, which the summary may fill.
+NO_CALL = frozenset({"", "nan", "None", "unknown", "unclassified"})
+
+
 def attach_demux_status(
     obs: pd.DataFrame,
     status: pd.DataFrame,
@@ -184,18 +188,20 @@ def attach_demux_status(
 ) -> int:
     """Attach summary-derived status to ``obs``, returning the rows filled.
 
-    Does not overwrite an existing `demux_type` unless asked. The `BM` route is
-    a classifier assertion and this one is a score threshold, so where both
-    exist the assertion is the better evidence -- but the provenance column
+    Does not overwrite an existing `demux_type` call unless asked. The `BM`
+    route is a classifier assertion and this one is a score threshold, so where
+    both exist the assertion is the better evidence -- but the provenance column
     records which produced each value either way, so a mixed column is still
-    interpretable rather than ambiguous.
+    interpretable rather than ambiguous. ``unclassified`` is not a call: it is
+    what an already-demultiplexed input whose BAM tags carry no end evidence
+    gets (barcode known, ends not), so the summary's per-end scores fill it.
     """
     indexed = status.drop_duplicates("read_id").set_index("read_id")
     aligned = indexed.reindex(obs.index.astype(str))
 
     if "demux_type" in obs.columns and not overwrite:
         existing = obs["demux_type"].astype(str)
-        fill = existing.isin(["", "nan", "None", "unknown"]) | existing.isna()
+        fill = existing.isin(list(NO_CALL)) | existing.isna()
         if not fill.any():
             logger.info(
                 "demux_type already populated for every read; keeping it and not applying "

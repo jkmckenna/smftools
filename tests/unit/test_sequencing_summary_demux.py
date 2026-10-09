@@ -191,6 +191,21 @@ def test_an_existing_demux_type_is_not_overwritten():
     assert list(obs["demux_type"]) == ["double"]
 
 
+def test_unclassified_is_filled_but_a_call_is_kept():
+    """An already-demuxed input's BAM tags name the barcode but not its ends:
+    `unclassified` there is no evidence, so the summary's scores decide."""
+    obs = pd.DataFrame(
+        {"demux_type": ["unclassified", "unclassified", "mismatch", "single"]},
+        index=["r0", "r1", "r2", "r3"],
+    )
+    status = _status_frame(["r0", "r1", "r2", "r3"], ["double", "single", "double", "double"])
+    filled = attach_demux_status(obs, status)
+
+    assert filled == 2
+    assert list(obs["demux_type"]) == ["double", "single", "mismatch", "single"]
+    assert list(obs["demux_type_source"])[:2] == [SOURCE, SOURCE]
+
+
 def test_overwrite_is_available_when_asked():
     obs = pd.DataFrame({"demux_type": ["double"]}, index=["r0"])
     attach_demux_status(obs, _status_frame(["r0"], ["single"]), overwrite=True)
