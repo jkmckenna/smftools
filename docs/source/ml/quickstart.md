@@ -197,7 +197,10 @@ plot_explanation(explained, "by_ndr_state.png", order="bins", bins=ndr_state_of(
 ```
 
 `order` is `"label"` (default), `"score"` (highest first) or `"bins"`; attributions use a
-diverging scale symmetric about zero. Extra panels and strips must be aligned with the pooled
+diverging scale symmetric about zero. Columns are the positions observed in at least one drawn
+molecule (`columns="observed"`, the default -- for site channels, the sites; `"all"` draws every
+position), labelled with real coordinates and separated only at mask-window breaks; the trace
+above each panel is split by true class. Extra panels and strips must be aligned with the pooled
 molecules.
 
 For a CNN, the detector catalogue describes what each final-layer detector responds to, out of
