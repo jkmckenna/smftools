@@ -774,3 +774,76 @@ def plot_run_comparison(comparison: Any, output_path: str | Path, *, metric: str
     figure.suptitle(f"{metric}: {len(entries)} models, {len(folds)} held-out folds", fontsize=11)
     figure.tight_layout()
     _save(figure, output_path)
+
+
+def plot_detector_catalogue(
+    detectors: pd.DataFrame,
+    patterns: np.ndarray,
+    *,
+    channels: Sequence[str],
+    top: int = 16,
+    title: str = "",
+    output_path: str | Path,
+) -> list[int]:
+    """One fold's most predictive detectors (by distance of AUROC from 0.5), one row each:
+    the mean input pattern over its top windows (channels x offsets from the
+    detector's position; white where never observed), its AUROC, top-window
+    enrichment and where its windows sit on the locus. ``patterns``: detectors
+    x channels x window, as `detector_catalogue_run` stores it. Returns the
+    detectors drawn, in order."""
+    ranked = (
+        detectors.assign(strength=(detectors["auroc"] - 0.5).abs())
+        .sort_values("strength", ascending=False)
+        .head(top)
+    )
+    chosen = ranked["detector"].astype(int).tolist()
+    if not chosen:
+        raise ValueError("no detectors to plot")
+    width = patterns.shape[-1]
+    half = width // 2
+    figure, axes = plt.subplots(
+        len(chosen),
+        2,
+        figsize=(10, 0.55 * len(chosen) * max(1, len(channels)) + 1.2),
+        gridspec_kw={"width_ratios": (4, 1.4)},
+        squeeze=False,
+    )
+    for row, (_index, item) in enumerate(ranked.iterrows()):
+        detector = int(item["detector"])
+        pattern_axis, text_axis = axes[row]
+        pattern_axis.imshow(
+            patterns[detector],
+            aspect="auto",
+            interpolation="nearest",
+            cmap="viridis",
+            vmin=0.0,
+            vmax=1.0,
+            extent=(-half - 0.5, half + 0.5, len(channels) - 0.5, -0.5),
+        )
+        pattern_axis.axvline(0, color="white", linewidth=0.6)
+        pattern_axis.set_yticks(range(len(channels)), channels, fontsize=6)
+        pattern_axis.set_ylabel(
+            f"d{detector} (g{int(item['group'])})", fontsize=7, rotation=0, labelpad=22
+        )
+        if row < len(chosen) - 1:
+            pattern_axis.tick_params(labelbottom=False)
+        enrichment = item.get("log2_enrichment")
+        text_axis.axis("off")
+        text_axis.text(
+            0,
+            0.5,
+            f"AUROC {item['auroc']:.2f}"
+            + (f" | log2 enr {enrichment:+.2f}" if pd.notna(enrichment) else "")
+            + (
+                f"\ncentre {item['centre_mean']:.0f} +/- {item['centre_sd']:.0f}"
+                if pd.notna(item.get("centre_mean"))
+                else ""
+            ),
+            fontsize=7,
+            va="center",
+        )
+    axes[-1][0].set_xlabel("offset from the detector's position")
+    figure.suptitle(title or "detector catalogue", fontsize=10)
+    figure.tight_layout()
+    _save(figure, output_path)
+    return chosen

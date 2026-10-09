@@ -38,6 +38,7 @@ from .contracts import (
     ResolvedJob,
     ResolvedModelSelection,
 )
+from .detectors import detector_catalogue_run
 from .explanations import PublishedExplanationRun, explain_run, plot_explanation
 from .planning import (
     MLWorkflowDryRun,
@@ -88,6 +89,7 @@ __all__ = [
     "bind_ml_dataset",
     "bind_ml_job",
     "compare_runs",
+    "detector_catalogue_run",
     "dry_run_job",
     "evaluate_prediction_result",
     "explain_partition_model",

@@ -36,15 +36,24 @@ def _signal(rng: np.random.Generator, active: bool) -> np.ndarray:
     return calls
 
 
-def _write_experiment(root: Path, experiment_id: str, rng: np.random.Generator) -> dict:
+def _write_experiment(
+    root: Path,
+    experiment_id: str,
+    rng: np.random.Generator,
+    *,
+    signal=None,
+    n_positions: int = N_POSITIONS,
+    reads_per_barcode: int = READS_PER_BARCODE,
+) -> dict:
+    signal = signal or _signal
     run_root = root / experiment_id
     preprocess = run_root / "preprocess_adata_outputs"
     read_ids = [
         f"{experiment_id}_{barcode}_{index}"
         for barcode in ("b1", "b2")
-        for index in range(READS_PER_BARCODE)
+        for index in range(reads_per_barcode)
     ]
-    barcodes = ["barcode01"] * READS_PER_BARCODE + ["barcode02"] * READS_PER_BARCODE
+    barcodes = ["barcode01"] * reads_per_barcode + ["barcode02"] * reads_per_barcode
     obs = pd.DataFrame(
         {
             "Reference_strand": pd.Categorical(["chr1+"] * len(read_ids)),
@@ -52,10 +61,8 @@ def _write_experiment(root: Path, experiment_id: str, rng: np.random.Generator) 
         },
         index=read_ids,
     )
-    source = ad.AnnData(
-        X=np.vstack([_signal(rng, active=True), _signal(rng, active=False)]), obs=obs
-    )
-    source.var_names = [str(position) for position in range(N_POSITIONS)]
+    source = ad.AnnData(X=np.vstack([signal(rng, active=True), signal(rng, active=False)]), obs=obs)
+    source.var_names = [str(position) for position in range(n_positions)]
     source.var["chr1+_C_site"] = True
     paths = write_experiment_store(
         source, preprocess, experiment=experiment_id, modality="deaminase"
@@ -75,10 +82,10 @@ def _write_experiment(root: Path, experiment_id: str, rng: np.random.Generator) 
             "Reference_strand": "chr1+",
             "Sample": barcodes,
             "Barcode": barcodes,
-            "activity": ["active"] * READS_PER_BARCODE + ["inactive"] * READS_PER_BARCODE,
+            "activity": ["active"] * reads_per_barcode + ["inactive"] * reads_per_barcode,
             # A raw molecule index records each read's aligned span.
             "reference_start": 0,
-            "reference_end": N_POSITIONS,
+            "reference_end": n_positions,
         }
     ).to_parquet(molecule_index / "part.parquet", index=False)
     # As the pipeline's read index: which store partition holds each read.
@@ -86,7 +93,7 @@ def _write_experiment(root: Path, experiment_id: str, rng: np.random.Generator) 
         {
             "molecule_uid": uids,
             "group_path": [f"store/chr1/{barcode}" for barcode in barcodes],
-            "group_row": list(range(READS_PER_BARCODE)) * 2,
+            "group_row": list(range(reads_per_barcode)) * 2,
         }
     ).to_parquet(read_index / "part.parquet", index=False)
     # The written-store catalog as partitioned preprocess writes it (F66).
@@ -96,7 +103,7 @@ def _write_experiment(root: Path, experiment_id: str, rng: np.random.Generator) 
     raw = run_root / "raw_outputs"
     raw.mkdir(parents=True, exist_ok=True)
     (raw / "spine.h5ad").touch()
-    pd.DataFrame({"reference": ["chr1+"], "max_end": [N_POSITIONS]}).to_parquet(
+    pd.DataFrame({"reference": ["chr1+"], "max_end": [n_positions]}).to_parquet(
         raw / "interval_catalog.parquet", index=False
     )
     return {
@@ -117,10 +124,28 @@ def _write_experiment(root: Path, experiment_id: str, rng: np.random.Generator) 
     }
 
 
-def make_ml_project(tmp_path: Path) -> Path:
-    """The registered project under ``tmp_path / "project"``."""
+def make_ml_project(
+    tmp_path: Path,
+    *,
+    signal=None,
+    n_positions: int = N_POSITIONS,
+    reads_per_barcode: int = READS_PER_BARCODE,
+) -> Path:
+    """The registered project under ``tmp_path / "project"``. ``signal(rng,
+    active)`` returns one barcode's ``reads_per_barcode x n_positions`` calls
+    (default: the half-and-half signal above)."""
     rng = np.random.default_rng(0)
-    entries = {name: _write_experiment(tmp_path / "runs", name, rng) for name in EXPERIMENTS}
+    entries = {
+        name: _write_experiment(
+            tmp_path / "runs",
+            name,
+            rng,
+            signal=signal,
+            n_positions=n_positions,
+            reads_per_barcode=reads_per_barcode,
+        )
+        for name in EXPERIMENTS
+    }
     root = tmp_path / "project"
     init_project(root)
     registry = load_registry(root)
