@@ -53,6 +53,7 @@ Registered architectures, recipes, and artifact persistence.
    smftools.machine_learning.models.positional
    smftools.machine_learning.models.protocols
    smftools.machine_learning.models.registry
+   smftools.machine_learning.models.conv_scanner
    smftools.machine_learning.models.residual_cnn
    smftools.machine_learning.models.rnn
    smftools.machine_learning.models.sklearn_artifacts

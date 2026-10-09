@@ -75,19 +75,26 @@ def _input_schema(*, modality: str = "deaminase") -> InputSchema:
 def test_builtin_registry_is_explicit_and_deterministically_ordered() -> None:
     assert BUILTIN_MODEL_REGISTRY.names == (
         "bernoulli_nb",
+        "conv_scanner",
         "logistic_regression",
         "random_forest",
         "residual_dilated_cnn",
     )
     assert BUILTIN_MODEL_REGISTRY.recipe_names == (
+        "adaptive_scanner_k51_v1",
         "bernoulli_nb_v1",
+        "downsampling_scanner_v1",
         "logistic_regression_v1",
+        "motif_scanner_k151_v1",
+        "motif_scanner_k21_v1",
+        "motif_scanner_k51_v1",
         "random_forest_v1",
         "rcnn_2_3_nucleosomes_v1",
         "rcnn_4_6_nucleosomes_v1",
         "rcnn_full_locus_v1",
         "rcnn_subnucleosome_v1",
         "residual_dilated_cnn_v1",
+        "two_layer_scanner_v1",
     )
     assert BUILTIN_MODEL_REGISTRY.definition("bernoulli_nb").capabilities.incremental_fit
     assert not BUILTIN_MODEL_REGISTRY.definition("random_forest").capabilities.incremental_fit

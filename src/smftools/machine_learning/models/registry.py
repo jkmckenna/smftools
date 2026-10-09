@@ -17,6 +17,7 @@ from ..contracts import (
     InputSchema,
     PredictorCapabilities,
 )
+from .conv_scanner import ConvScannerConfig, build_conv_scanner
 from .residual_cnn import ResidualCNNConfig, build_residual_cnn
 
 ML_MODEL_RECIPE_VERSION = 1
@@ -794,6 +795,49 @@ _DETECTOR_SCALE_RECIPES = tuple(
     _detector_scale_recipe(name, dilations) for name, dilations in DETECTOR_SCALE_DILATIONS.items()
 )
 
+# `MLR-09` convolutional scanners: small, interpretable spatial models -- one or
+# two conv layers with few filters, or a downsampling stack -- pooled per
+# filter (global max: "does the pattern occur anywhere"; adaptive bins: where).
+CONV_SCANNER_RECIPES = {
+    "motif_scanner_k21": {"filters": (16,), "kernel_sizes": (21,)},
+    "motif_scanner_k51": {"filters": (16,), "kernel_sizes": (51,)},
+    "motif_scanner_k151": {"filters": (16,), "kernel_sizes": (151,)},
+    "adaptive_scanner_k51": {"filters": (16,), "kernel_sizes": (51,), "adaptive_bins": 16},
+    "two_layer_scanner": {
+        "filters": (16, 16),
+        "kernel_sizes": (15, 9),
+        "downsample": 4,
+        "pooling": ("max", "avg"),
+    },
+    "downsampling_scanner": {
+        "filters": (32, 32, 32, 32),
+        "kernel_sizes": (9, 9, 9, 9),
+        "downsample": 4,
+        "pooling": ("max", "avg"),
+    },
+}
+
+
+def _build_conv_scanner(config: ConvScannerConfig) -> Any:
+    return build_conv_scanner(config)
+
+
+def _conv_scanner_recipe(name: str, fields: Mapping[str, Any]) -> ModelRecipe:
+    return ModelRecipe.create(
+        name=f"{name}_v1",
+        version="1",
+        family="conv_scanner",
+        backend="torch",
+        parameters=ConvScannerConfig(in_channels=1, **fields).to_dict(),
+        supported_modalities=_SUPPORTED_MODALITIES,
+        supported_channel_roles=("*",),
+    )
+
+
+_CONV_SCANNER_RECIPES = tuple(
+    _conv_scanner_recipe(name, fields) for name, fields in CONV_SCANNER_RECIPES.items()
+)
+
 BUILTIN_MODEL_REGISTRY = ModelRegistry(
     definitions=(
         ModelFamilyDefinition(
@@ -840,6 +884,17 @@ BUILTIN_MODEL_REGISTRY = ModelRegistry(
             model_class="spatial",
             default_explanation="IntegratedGradients",
         ),
+        ModelFamilyDefinition(
+            name="conv_scanner",
+            backend="torch",
+            architecture_schema_version=1,
+            config_type=ConvScannerConfig,
+            builder=_build_conv_scanner,
+            capabilities=_torch_residual_capabilities(),
+            default_recipe="motif_scanner_k21_v1",
+            model_class="spatial",
+            default_explanation="IntegratedGradients",
+        ),
     ),
     recipes=(
         _BERNOULLI_RECIPE,
@@ -847,5 +902,6 @@ BUILTIN_MODEL_REGISTRY = ModelRegistry(
         _FOREST_RECIPE,
         _RESIDUAL_CNN_RECIPE,
         *_DETECTOR_SCALE_RECIPES,
+        *_CONV_SCANNER_RECIPES,
     ),
 )

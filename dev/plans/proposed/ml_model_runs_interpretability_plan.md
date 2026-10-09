@@ -160,7 +160,7 @@ the stores.
 | `MLR-06` fold-matrix cache | done (PR #715) | read each task's data once for every model |
 | `MLR-07` validation role | done (PR #706) | a stratified validation fraction of each fold's training molecules (default) or held-out training experiments, for early stopping and tuning; the test experiment stays whole; final models too |
 | `MLR-08` detector-scale CNNs | done (PR #709) | position-agnostic residual dilated CNNs whose pattern detectors have a stated, enforced maximum span (receptive field): sub-nucleosome, 2-3, 4-6 nucleosomes, full locus; effective span measured per run |
-| `MLR-09` model classes and the zoo | part 1 implemented (`feature/ml-model-classes`): classes and default explanations; new families pending | a capability class per registry family (additive, tabular non-linear, spatial, global sequence); class-aware defaults; MLP, multiscale CNN and transformer recipes; per-task zoo declarations |
+| `MLR-09` model classes and the zoo | part 1 done (PR #716); part 2 (`conv_scanner`) implemented (`feature/ml-conv-scanner`); MLP / transformer pending | a capability class per registry family (additive, tabular non-linear, spatial, global sequence); class-aware defaults; MLP, multiscale CNN and transformer recipes; per-task zoo declarations |
 | `MLR-10` qualification | in progress | `nkg2a_final` region / model grid through `MLR-01`-`MLR-05`; parity with its current metrics |
 | `MLR-11` pretraining and fine-tuning | proposed | encoder / head split; a `pretrain` action (masked-site reconstruction, autoencoder, VAE) publishing head-less encoders; fine-tuning through `initialization`; pretraining-corpus leakage policy; transfer benchmark (absorbs `ML-304`) |
 
@@ -518,6 +518,35 @@ should span:
 - A project may register its own families (with a class) and pass the
   registry to training; experimental ones live in the project until they earn
   a place in smftools.
+
+Part 2 as built -- **convolutional scanners** (`models/conv_scanner.py`,
+family `conv_scanner`, class `spatial`), motivated by the `MLR-10` ladder
+(detector span barely mattered; ~16 detectors sufficed at the
+sub-nucleosome span) and its catalogue (strong detectors fired at single
+positions -- with mask channels the C-site layout is a sequence fingerprint,
+so position leaks into "position-agnostic" models):
+
+- a stack of conv layers (`filters`, `kernel_sizes`, `dilations`), optional
+  max-pool `downsample` between layers, per-filter pooling (`max`, `avg`,
+  `attention`, or `adaptive_bins` for coarse position), a linear (or
+  `head_hidden`) head; mask channels / span masking via the residual CNN's
+  shared `MaskedConvInputs`; `receptive_field` and `feature_stride`, which
+  effective spans and detector catalogues use to map feature positions back
+  to input positions (and any CNN with a receptive field now records its
+  detector scale);
+- recipes `motif_scanner_k21/k51/k151_v1` (one layer, 16 filters, max pool,
+  linear: 0.7-4.9k parameters), `adaptive_scanner_k51_v1` (1.9k),
+  `two_layer_scanner_v1` (2.9k, receptive field 50, stride 4),
+  `downsampling_scanner_v1` (28.7k, ~744 bp, stride 64).
+- Tests: formulas, validation, round trip, shapes, translation invariance of
+  global max vs position-awareness of adaptive bins, effective span with
+  downsampling; on a planted motif a 1-layer scanner's filter weights *are*
+  the motif in every fold, catalogue / IG / detector scale work, downsampled
+  catalogue positions stay in the molecule.
+- Project grid to run: inputs (C + mask; C without mask; HMM accessible at
+  every position; HMM accessible + footprint length) x scanners -- the HMM
+  inputs carry no site-layout fingerprint, so filters must learn shapes that
+  can occur anywhere.
 
 Part 1 as built: `MODEL_CLASSES`; `ModelFamilyDefinition.model_class` and
 `default_explanation` (optional, validated; every built-in declares both --

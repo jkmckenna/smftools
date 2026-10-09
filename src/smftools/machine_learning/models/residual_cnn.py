@@ -276,7 +276,77 @@ class AttentionPooling1d(nn.Module):
         return torch.sum(values * weights, dim=-1)
 
 
-class ResidualDilatedCNN1d(nn.Module):
+class MaskedConvInputs:
+    """Validity masking shared by the CNN families (`MLR-08`, `MLR-09`).
+
+    Needs ``self.config`` with ``in_channels``, ``mask_channels`` and
+    ``span_masking``. Invalid values are zeroed; with ``mask_channels`` the
+    validity mask joins the input; ``position_valid`` is per position (or, with
+    ``span_masking``, each read's first-to-last valid span).
+    """
+
+    def _masked_inputs(
+        self,
+        values,
+        *,
+        observed_mask=None,
+        availability_mask=None,
+        design_mask=None,
+        padding_mask=None,
+    ):
+        if values.ndim != 3:
+            raise ValueError("CNN values must have (batch, channel, position) axes")
+        batch_size, channels, positions = values.shape
+        if channels != self.config.in_channels:
+            raise ValueError(
+                f"CNN expected {self.config.in_channels} channels, observed {channels}"
+            )
+        valid = torch.ones_like(values, dtype=torch.bool)
+        if observed_mask is not None:
+            observed = self._boolean_mask(observed_mask, "observed_mask", values.device)
+            if observed.shape != values.shape:
+                raise ValueError("observed_mask must match channel-first values")
+            valid &= observed
+        if availability_mask is not None:
+            availability = self._boolean_mask(availability_mask, "availability_mask", values.device)
+            if availability.shape != (batch_size, channels):
+                raise ValueError("availability_mask must have (batch, channel) axes")
+            valid &= availability[:, :, None]
+        if design_mask is not None:
+            design = self._boolean_mask(design_mask, "design_mask", values.device)
+            if design.shape == (channels, positions):
+                design = design[None, :, :]
+            elif design.shape != values.shape:
+                raise ValueError(
+                    "design_mask must have (channel, position) or channel-first value axes"
+                )
+            valid &= design
+        if padding_mask is not None:
+            padding = self._boolean_mask(padding_mask, "padding_mask", values.device)
+            if padding.shape != (batch_size, positions):
+                raise ValueError("padding_mask must have (batch, position) axes")
+            valid &= ~padding[:, None, :]
+        position_valid = valid.any(dim=1)
+        if torch.any(~position_valid.any(dim=1)):
+            raise ValueError("every CNN observation needs at least one valid position")
+        masked = values.masked_fill(~valid, 0.0)
+        if not torch.isfinite(masked).all():
+            raise ValueError("CNN values must be finite at every valid position")
+        if self.config.mask_channels:
+            masked = torch.cat([masked, valid.to(masked.dtype)], dim=1)
+        if self.config.span_masking:
+            position_valid = _span(position_valid)
+        return masked, position_valid
+
+    @staticmethod
+    def _boolean_mask(value, name: str, device):
+        mask = torch.as_tensor(value, device=device)
+        if mask.dtype != torch.bool:
+            raise ValueError(f"{name} must be boolean")
+        return mask
+
+
+class ResidualDilatedCNN1d(MaskedConvInputs, nn.Module):
     """Plain channel-first residual CNN returning classification logits.
 
     Mask inputs remain separate from signal channels. ``observed_mask`` and
@@ -331,66 +401,6 @@ class ResidualDilatedCNN1d(nn.Module):
     def attribution_layer(self):
         """Return the declared final convolutional layer for layer attribution."""
         return self.backbone[-1].conv2
-
-    def _masked_inputs(
-        self,
-        values,
-        *,
-        observed_mask=None,
-        availability_mask=None,
-        design_mask=None,
-        padding_mask=None,
-    ):
-        if values.ndim != 3:
-            raise ValueError("residual CNN values must have (batch, channel, position) axes")
-        batch_size, channels, positions = values.shape
-        if channels != self.config.in_channels:
-            raise ValueError(
-                f"residual CNN expected {self.config.in_channels} channels, observed {channels}"
-            )
-        valid = torch.ones_like(values, dtype=torch.bool)
-        if observed_mask is not None:
-            observed = self._boolean_mask(observed_mask, "observed_mask", values.device)
-            if observed.shape != values.shape:
-                raise ValueError("observed_mask must match channel-first values")
-            valid &= observed
-        if availability_mask is not None:
-            availability = self._boolean_mask(availability_mask, "availability_mask", values.device)
-            if availability.shape != (batch_size, channels):
-                raise ValueError("availability_mask must have (batch, channel) axes")
-            valid &= availability[:, :, None]
-        if design_mask is not None:
-            design = self._boolean_mask(design_mask, "design_mask", values.device)
-            if design.shape == (channels, positions):
-                design = design[None, :, :]
-            elif design.shape != values.shape:
-                raise ValueError(
-                    "design_mask must have (channel, position) or channel-first value axes"
-                )
-            valid &= design
-        if padding_mask is not None:
-            padding = self._boolean_mask(padding_mask, "padding_mask", values.device)
-            if padding.shape != (batch_size, positions):
-                raise ValueError("padding_mask must have (batch, position) axes")
-            valid &= ~padding[:, None, :]
-        position_valid = valid.any(dim=1)
-        if torch.any(~position_valid.any(dim=1)):
-            raise ValueError("every residual CNN observation needs at least one valid position")
-        masked = values.masked_fill(~valid, 0.0)
-        if not torch.isfinite(masked).all():
-            raise ValueError("residual CNN values must be finite at every valid position")
-        if self.config.mask_channels:
-            masked = torch.cat([masked, valid.to(masked.dtype)], dim=1)
-        if self.config.span_masking:
-            position_valid = _span(position_valid)
-        return masked, position_valid
-
-    @staticmethod
-    def _boolean_mask(value, name: str, device):
-        mask = torch.as_tensor(value, device=device)
-        if mask.dtype != torch.bool:
-            raise ValueError(f"{name} must be boolean")
-        return mask
 
     def _forward_features_and_mask(
         self,
@@ -496,6 +506,7 @@ def effective_span(
     try:
         values = values.detach().clone().requires_grad_(True)
         n_positions = values.shape[-1]
+        stride = int(getattr(model, "feature_stride", 1))
         half = config.receptive_field // 2
         low, high = (
             (half, n_positions - 1 - half) if n_positions > 2 * half else (0, n_positions - 1)
@@ -512,9 +523,13 @@ def effective_span(
                 design_mask=design_mask,
                 padding_mask=padding_mask,
             )
-            features[:, :, center].sum().backward()
+            # With downsampling (`feature_stride`), feature j covers input
+            # positions [j * stride, (j + 1) * stride): its centre is mapped.
+            column = min(center // stride, features.shape[-1] - 1)
+            centre_input = min(column * stride + stride // 2, n_positions - 1)
+            features[:, :, column].sum().backward()
             gradient = values.grad.detach().abs().sum(dim=(0, 1)).cpu().numpy()
-            profile[offsets - center + n_positions - 1] += gradient
+            profile[offsets - centre_input + n_positions - 1] += gradient
     finally:
         model.zero_grad(set_to_none=True)
         model.train(was_training)

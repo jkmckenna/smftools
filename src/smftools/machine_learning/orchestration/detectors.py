@@ -245,7 +245,7 @@ def detector_catalogue_run(
             fitted = _load_model(workspace, record["model_id"], record["backend"], device)
             config = getattr(fitted.model, "config", None)
             if config is None or not hasattr(config, "receptive_field"):
-                raise MLJobServiceError(f"{model!r} is not a residual CNN")
+                raise MLJobServiceError(f"{model!r} is not a CNN with a receptive field")
             labels = fitted.label_schema
             positive = labels.positive_class or labels.class_order[-1]
             positive_id = list(labels.class_order).index(positive)
@@ -254,6 +254,10 @@ def detector_catalogue_run(
             chosen = _sample(held_out, classes, max_per_fold, rng)
             data = _rows(fold.dataset, "test", chosen)
             maxima, where = _maxima(fitted, data)
+            # Feature positions back to input positions (downsampling CNNs).
+            stride = int(getattr(fitted.model, "feature_stride", 1))
+            n_positions = len(fitted.transform.coordinates)
+            where = np.minimum(where * stride + stride // 2, n_positions - 1).astype(np.int32)
             channels = [channel.name for channel in fitted.input_schema.channels]
             coordinates = np.asarray(fitted.transform.coordinates, dtype=np.int64)
             truth = np.asarray(data.labels) == positive_id

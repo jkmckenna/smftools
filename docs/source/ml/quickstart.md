@@ -110,6 +110,13 @@ Position-agnostic CNNs with a bounded detector span come as recipes -- `rcnn_sub
 Each fold model's run record notes its theoretical receptive field and measured effective span
 (`detector_scale` in `models.json`).
 
+Small, interpretable CNNs come as `conv_scanner` recipes (a few hundred to ~30k parameters):
+`motif_scanner_k21_v1` / `_k51_v1` / `_k151_v1` (one conv layer, 16 filters, global max pooling,
+linear head -- each filter's weights are its pattern), `adaptive_scanner_k51_v1` (pooled into 16
+bins along the molecule: where a pattern matters), `two_layer_scanner_v1` (two layers with 4x
+downsampling) and `downsampling_scanner_v1` (four layers reaching ~750 bp). Override `filters`,
+`kernel_sizes`, `pooling` (`max`, `avg`, `attention`) or `adaptive_bins` per model.
+
 Neural models stop early on a validation role. With leave-one-group-out, declare one inside each
 fold: the held-out experiment stays the test set, and a seeded fraction of the training
 experiments' molecules (stratified by experiment x class) becomes validation --
