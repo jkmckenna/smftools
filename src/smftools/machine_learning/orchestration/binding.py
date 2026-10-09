@@ -16,7 +16,7 @@ immutable run artifacts is a separate step.
 from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, fields, replace
 from pathlib import Path
 from typing import Any
 
@@ -403,6 +403,19 @@ def run_bound_train_job(
     )
 
 
+def _with_balancing(options, balancing, model_name: str):
+    """Backend options carrying the job's balancing policy; refuses options
+    that declare a different one."""
+    if balancing is None or options.balancing == balancing:
+        return options
+    if options.balancing is not None:
+        raise MLJobServiceError(
+            f"model {model_name!r}: training options declare balancing "
+            f"{options.balancing!r}, but the job declares {balancing!r}"
+        )
+    return replace(options, balancing=balancing)
+
+
 def _job_models(
     bound: BoundJob,
     sklearn_options: SklearnTrainOptions | None,
@@ -423,12 +436,12 @@ def _job_models(
             input_schema=bound.snapshot.input_schema,
             registry=registry,
         )
-        sk_options = sklearn_options
-        th_options = torch_options
-        if spec.backend == "sklearn" and sk_options is None:
-            sk_options = SklearnTrainOptions(balancing=balancing)
-        if spec.backend == "torch" and th_options is None:
-            th_options = TorchTrainOptions(balancing=balancing)
+        # The job's balancing policy applies whether or not the caller passes
+        # backend options (Torch training always does, for its config).
+        sk_options = _with_balancing(
+            sklearn_options or SklearnTrainOptions(), balancing, model_name
+        )
+        th_options = _with_balancing(torch_options or TorchTrainOptions(), balancing, model_name)
         yield (
             model_name,
             spec,
