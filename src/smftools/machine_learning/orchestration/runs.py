@@ -388,14 +388,18 @@ def _summary(metrics: pd.DataFrame, positive_class: str | None) -> dict[str, dic
 
 
 def _detector_scale(run: FoldRun, source, n_molecules: int = 32) -> dict[str, Any]:
-    """For a residual CNN: its theoretical receptive field and effective span
+    """For a CNN: its theoretical receptive field and effective span
     (`effective_span`), measured on up to ``n_molecules`` molecules of the
     fold's held-out (final model: validation) role. Empty for other models."""
-    from ..models.residual_cnn import ResidualCNNConfig
-
     model = run.training.model
-    config = getattr(getattr(model, "model", None), "config", None)
-    if not isinstance(config, ResidualCNNConfig) or source is None:
+    network = getattr(model, "model", None)
+    config = getattr(network, "config", None)
+    # Any CNN family exposing a receptive field and final-layer features.
+    if (
+        source is None
+        or not hasattr(config, "receptive_field")
+        or not hasattr(network, "forward_features")
+    ):
         return {}
     from ..data.transforms import TorchFeatureTransform
     from ..models.residual_cnn import effective_span
