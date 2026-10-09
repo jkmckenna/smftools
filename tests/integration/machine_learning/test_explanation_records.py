@@ -285,3 +285,11 @@ def test_the_default_method_comes_from_the_model_class(project: Path, trained) -
     explained = explain_run(trained.run_id, model="nb", project_dir=project, figure=False)
     assert explained.method == "NaiveBayesLogOdds"
     assert explained.read(records.REQUEST)["method"] == "NaiveBayesLogOdds"
+
+
+def test_channel_roles_are_recorded_and_inferred_for_older_records(project: Path, trained) -> None:
+    explained = explain_run(trained.run_id, model="nb", project_dir=project, figure=False)
+    index = explained.read(records.ATTRIBUTION_INDEX)
+    assert index["channel_roles"] == ["accessibility"]
+    older = {key: value for key, value in index.items() if key != "channel_roles"}
+    assert records._source_roles(explained, older) == ["accessibility"]

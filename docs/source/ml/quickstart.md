@@ -200,7 +200,10 @@ plot_explanation(explained, "by_ndr_state.png", order="bins", bins=ndr_state_of(
 diverging scale symmetric about zero. Columns are the positions observed in at least one drawn
 molecule (`columns="observed"`, the default -- for site channels, the sites; `"all"` draws every
 position), labelled with real coordinates and separated only at mask-window breaks; the trace
-above each panel is split by true class. Extra panels and strips must be aligned with the pooled
+above each panel is split by true class. Inputs are coloured by the channel's biological role (accessibility
+green, methylation red; unobserved grey). Within each class (or bin) block, rows are clustered
+(`within="hierarchical"`, on `cluster_on="attributions"` or `"inputs"`) or ranked by
+out-of-fold score (`within="score"`); the score strip has a 0-1 colour bar. Extra panels and strips must be aligned with the pooled
 molecules.
 
 For a CNN, the detector catalogue describes what each final-layer detector responds to, out of

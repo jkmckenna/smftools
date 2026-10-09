@@ -1173,6 +1173,7 @@ def plot_latent_ordered_clustermap(
     from matplotlib.patches import Patch
 
     legends = []
+    colour_bars = []
     if cluster_legend:
         present_blocks = [label for label, _, _ in blocks]
         legends.append(
@@ -1197,16 +1198,7 @@ def plot_latent_ordered_clustermap(
             axis.set_xticks([])
             axis.tick_params(labelleft=False, length=0)
             axis.set_xlabel(str(strip["name"]), rotation=90, fontsize=7, labelpad=6)
-            span = (high - low) or 1.0
-            legends.append(
-                (
-                    str(strip["name"]),
-                    [
-                        Patch(facecolor=cmap((value - low) / span), label=f"{value:.3g}")
-                        for value in (high, (low + high) / 2, low)
-                    ],
-                )
-            )
+            colour_bars.append((str(strip["name"]), cmap, low, high))
             column += 1
             continue
         values = np.asarray(strip["values"], dtype=object).astype(str)[row_order]
@@ -1245,6 +1237,16 @@ def plot_latent_ordered_clustermap(
             title_fontsize=7,
             frameon=False,
         )
+    # Continuous strips get a colour bar (a continuum, not categories).
+    from matplotlib.cm import ScalarMappable
+    from matplotlib.colors import Normalize
+
+    for offset, (name, cmap, low, high) in enumerate(colour_bars):
+        # Below the categorical legends, so the two never overlap.
+        bar_axis = figure.add_axes([0.925 + 0.06 * offset, 0.14, 0.008, 0.3])
+        bar = figure.colorbar(ScalarMappable(Normalize(low, high), cmap), cax=bar_axis)
+        bar.ax.tick_params(labelsize=6)
+        bar_axis.set_title(name, fontsize=7)
 
     figure.suptitle(title, fontsize=11)
     if save_path is None:
