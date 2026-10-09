@@ -110,3 +110,34 @@ def test_registry_family_and_recipes() -> None:
         config = ConvScannerConfig.from_dict(BUILTIN_MODEL_REGISTRY.recipe(f"{name}_v1").parameters)
         model = build_conv_scanner(config)
         assert sum(p.numel() for p in model.parameters()) < 40_000
+
+
+@pytest.mark.parametrize("family", ["scanner", "scanner_attention", "residual"])
+def test_a_molecule_with_no_valid_position_scores_from_the_bias(family) -> None:
+    from smftools.machine_learning.models.residual_cnn import (
+        ResidualCNNConfig,
+        build_residual_cnn,
+    )
+
+    torch.manual_seed(0)
+    if family == "residual":
+        model = build_residual_cnn(ResidualCNNConfig(in_channels=1))
+    else:
+        pooling = ("max", "avg", "attention") if family == "scanner_attention" else ("max",)
+        model = build_conv_scanner(
+            ConvScannerConfig(in_channels=1, filters=(4,), kernel_sizes=(9,), pooling=pooling)
+        )
+    model.eval()
+    values, observed = _inputs(np.random.default_rng(2).random((3, 60)).round())
+    observed[1] = False  # no observed site in the region
+    logits = model(values, observed_mask=observed)
+    assert torch.isfinite(logits).all()
+    alone = model(values[[0, 2]], observed_mask=observed[[0, 2]])
+    torch.testing.assert_close(logits[[0, 2]], alone)
+    # An empty molecule's score does not depend on its (unobserved) values.
+    other = values.clone()
+    other[1] = 1 - other[1]
+    torch.testing.assert_close(model(other, observed_mask=observed)[1], logits[1])
+    model.train()
+    model(values, observed_mask=observed).sum().backward()
+    assert all(torch.isfinite(p.grad).all() for p in model.parameters() if p.grad is not None)

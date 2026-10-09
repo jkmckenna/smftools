@@ -271,9 +271,19 @@ class AttentionPooling1d(nn.Module):
         """Pool features, excluding false positions when a mask is supplied."""
         scores = self.score(values)
         if position_mask is not None:
+            position_mask = pooling_mask(position_mask)
             scores = scores.masked_fill(~position_mask[:, None, :], float("-inf"))
         weights = torch.softmax(scores, dim=-1)
         return torch.sum(values * weights, dim=-1)
+
+
+def pooling_mask(position_valid):
+    """Positions to pool over: the valid ones, or every position of a molecule
+    with none (no observed site in the region). Its features are all zero, so
+    it pools to zeros and the head scores it from its bias alone -- as a
+    per-site model scores an unobserved molecule at the prior."""
+    empty = ~position_valid.any(dim=-1, keepdim=True)
+    return position_valid | empty
 
 
 class MaskedConvInputs:
@@ -327,8 +337,6 @@ class MaskedConvInputs:
                 raise ValueError("padding_mask must have (batch, position) axes")
             valid &= ~padding[:, None, :]
         position_valid = valid.any(dim=1)
-        if torch.any(~position_valid.any(dim=1)):
-            raise ValueError("every CNN observation needs at least one valid position")
         masked = values.masked_fill(~valid, 0.0)
         if not torch.isfinite(masked).all():
             raise ValueError("CNN values must be finite at every valid position")
@@ -459,8 +467,8 @@ class ResidualDilatedCNN1d(MaskedConvInputs, nn.Module):
             design_mask=design_mask,
             padding_mask=padding_mask,
         )
-        mask = position_valid[:, None, :]
-        denominator = mask.sum(dim=-1).clamp(min=1)
+        mask = pooling_mask(position_valid)[:, None, :]
+        denominator = position_valid[:, None, :].sum(dim=-1).clamp(min=1)
         average = features.sum(dim=-1) / denominator
         maximum = features.masked_fill(~mask, float("-inf")).max(dim=-1).values
         pooled = [average, maximum]
