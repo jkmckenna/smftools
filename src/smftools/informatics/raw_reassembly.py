@@ -94,6 +94,28 @@ def iter_shard_scalars(
         yield relative_path, handle.read(columns=columns).to_pandas()
 
 
+def annotator_with_summary(
+    status: pd.DataFrame, base: Annotator | None = annotate_demux_obs
+) -> Annotator:
+    """``base`` (the shard-derivable annotation), then the sequencing
+    summary's per-end demux status, exactly as the live load applies it
+    (`EGL-29c`): it fills reads without a call, never overriding one."""
+    from .sequencing_summary import attach_demux_status
+
+    def annotate(frame: pd.DataFrame) -> pd.DataFrame:
+        if base is not None:
+            frame = base(frame)
+        index = frame.index
+        frame.index = frame[READ_ID].astype(str).to_numpy()
+        try:
+            attach_demux_status(frame, status)
+        finally:
+            frame.index = index
+        return frame
+
+    return annotate
+
+
 def reassemble_obs(
     generation_dir: str | Path,
     *,
@@ -232,6 +254,22 @@ def reassemble_raw_generation(
         sources["obs"] = obs_path
         sources["molecules"] = molecules_path
         sources["spine"] = spine_path
+        annotations = (
+            obs.drop_duplicates(MOLECULE_UID_COLUMN)
+            .assign(**{MOLECULE_UID_COLUMN: lambda f: f[MOLECULE_UID_COLUMN].astype(str)})
+            .set_index(MOLECULE_UID_COLUMN)
+        )
+        for key in ("segments", "molecule_index", "segment_index"):
+            relative = RAW_GENERATION_ARTIFACT_PATHS.get(key)
+            if relative is None or not (generation_dir / relative).exists():
+                continue
+            source = generation_dir / relative
+            if source.is_dir():
+                sources[key] = _rewrite_index(source, staging / relative, annotations)
+            else:
+                rewritten = staging / Path(relative).name
+                _refreshed(pd.read_parquet(source), annotations).to_parquet(rewritten, index=False)
+                sources[key] = rewritten
 
         return publish_raw_generation(
             run_root,
@@ -241,6 +279,51 @@ def reassemble_raw_generation(
             reuse_generation=generation_dir,
             select_current=select_current,
         )
+
+
+# Read annotations the reassembly recomputes. They are also stored per segment
+# -- in the segment catalog and in both pointer indexes, which the ML reader
+# uses as its identity source -- so those copies are rewritten too.
+REASSEMBLED_ANNOTATIONS = (
+    "demux_type",
+    "demux_type_source",
+    "demux_type_confidence",
+    "barcode_agreement",
+)
+
+
+def _refreshed(frame: pd.DataFrame, annotations: pd.DataFrame) -> pd.DataFrame:
+    """``frame`` with its ``REASSEMBLED_ANNOTATIONS`` set from ``annotations``
+    (indexed by molecule uid) -- replaced, or added when an older generation
+    lacks them; rows and other columns kept."""
+    columns = [c for c in REASSEMBLED_ANNOTATIONS if c in annotations]
+    if not columns or MOLECULE_UID_COLUMN not in frame.columns:
+        return frame
+    frame = frame.copy()
+    keys = frame[MOLECULE_UID_COLUMN].astype(str)
+    for column in columns:
+        values = annotations[column].reindex(keys)
+        present = values.notna().to_numpy()
+        if column not in frame.columns:
+            frame[column] = values.to_numpy()
+            continue
+        if isinstance(frame[column].dtype, pd.CategoricalDtype):
+            frame[column] = frame[column].astype(object)
+        frame.loc[present, column] = values.to_numpy()[present]
+    return frame
+
+
+def _rewrite_index(source: Path, destination: Path, annotations: pd.DataFrame) -> Path:
+    """A pointer index with refreshed annotations: same partition layout,
+    file names and row order."""
+    from .raw_store import portable_parquet_row_group_rows
+
+    for path in sorted(source.rglob("*.parquet")):
+        target = destination / path.relative_to(source)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        frame = _refreshed(pd.read_parquet(path), annotations)
+        frame.to_parquet(target, index=False, row_group_size=portable_parquet_row_group_rows(frame))
+    return destination
 
 
 def _carry_bam_path(obs: pd.DataFrame, generation_dir: Path) -> pd.DataFrame:

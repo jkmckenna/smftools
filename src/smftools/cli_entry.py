@@ -161,6 +161,25 @@ def raw(config_path):
     run_experiment_target(config_path, "raw")
 
 
+def _sequencing_summary_for(cfg):
+    """The summary the live load would use: ``sequencing_summary_path``, else
+    one found under the input path; None when disabled or absent."""
+    from pathlib import Path
+
+    from .informatics.sequencing_summary import find_sequencing_summary
+
+    if not bool(getattr(cfg, "use_sequencing_summary_demux_status", True)):
+        return None
+    configured = getattr(cfg, "sequencing_summary_path", None)
+    if configured:
+        path = Path(configured)
+        if not path.is_file():
+            raise click.ClickException(f"sequencing_summary_path {path} does not exist")
+        return path
+    found = find_sequencing_summary(Path(cfg.input_data_path))
+    return found if found is not None and Path(found).is_file() else None
+
+
 @experiment_group.command("reassemble-raw")
 @click.argument("config_path", type=click.Path(exists=True))
 @click.option(
@@ -172,17 +191,91 @@ def reassemble_raw(config_path, no_select: bool):
     """Rebuild the current raw generation's obs from its existing shards.
 
     Re-runs only the annotation that is derivable from the shards already on
-    disk -- no BAM, no alignment, no re-extraction. Publishes an immutable
-    sibling generation that hardlinks the unchanged artifacts.
+    disk -- no BAM, no alignment, no re-extraction -- plus the sequencing
+    summary's per-end demux status when the config names or finds one.
+    Publishes an immutable sibling generation that hardlinks the unchanged
+    artifacts.
     """
     from .cli.helpers import load_experiment_config
-    from .informatics.raw_reassembly import reassemble_raw_generation
+    from .informatics.demux_agreement import annotate_demux_obs
+    from .informatics.raw_reassembly import annotator_with_summary, reassemble_raw_generation
+    from .informatics.sequencing_summary import read_demux_status
 
     cfg = load_experiment_config(str(config_path))
-    result = reassemble_raw_generation(cfg.output_directory, select_current=not no_select)
+    annotate = annotate_demux_obs
+    summary = _sequencing_summary_for(cfg)
+    if summary is not None:
+        status = read_demux_status(
+            summary, threshold=float(getattr(cfg, "barcode_end_score_threshold", 62.0))
+        )
+        annotate = annotator_with_summary(status)
+        click.echo(f"Applying demux status from {summary}")
+    result = reassemble_raw_generation(
+        cfg.output_directory, annotate=annotate, select_current=not no_select
+    )
     click.echo(f"Published raw generation {result.get('generation_id')}")
     if no_select:
         click.echo("Selector unchanged: pass no --no-select to make it current.")
+
+
+@experiment_group.command("refresh-demux")
+@click.argument("config_path", type=click.Path(exists=True))
+@click.option(
+    "--prefer",
+    multiple=True,
+    help=(
+        "demux types a duplicate cluster's keeper is preferred from (repeatable); "
+        "default: the config's duplicate_detection_demux_types_to_use."
+    ),
+)
+@click.option(
+    "--no-select",
+    is_flag=True,
+    help="Publish the new generations without making them current.",
+)
+def refresh_demux(config_path, prefer, no_select: bool):
+    """Refresh demux annotations without re-extracting or re-preprocessing.
+
+    1. When the config names (or the input holds) a sequencing summary, a new
+       raw generation is reassembled from the existing shards with the
+       summary's per-end demux status (as ``reassemble-raw``).
+    2. A sibling preprocess generation is published with the current raw
+       generation's demux columns and duplicate keepers re-chosen over the
+       existing clusters; every other artifact is hardlinked. Matrices,
+       spatial and HMM outputs are reused unchanged.
+    """
+    from .cli.helpers import load_experiment_config
+    from .informatics.demux_agreement import annotate_demux_obs
+    from .informatics.raw_reassembly import annotator_with_summary, reassemble_raw_generation
+    from .informatics.sequencing_summary import read_demux_status
+    from .preprocessing.demux_refresh import refresh_preprocess_demux
+
+    cfg = load_experiment_config(str(config_path))
+    summary = _sequencing_summary_for(cfg)
+    if summary is not None:
+        status = read_demux_status(
+            summary, threshold=float(getattr(cfg, "barcode_end_score_threshold", 62.0))
+        )
+        result = reassemble_raw_generation(
+            cfg.output_directory,
+            annotate=annotator_with_summary(status, base=annotate_demux_obs),
+            select_current=not no_select,
+        )
+        click.echo(f"Raw generation {result.get('generation_id')} (demux from {summary.name})")
+    else:
+        click.echo("No sequencing summary: raw demux calls kept as they are.")
+    preferred = set(prefer) or set(map(str, cfg.duplicate_detection_demux_types_to_use))
+    outcome = refresh_preprocess_demux(
+        cfg.output_directory,
+        preferred_demux=preferred,
+        metric=str(cfg.duplicate_detection_keep_best_metric),
+        select_current=not no_select,
+    )
+    click.echo(
+        f"Preprocess generation {outcome['generation_id']}: keepers changed "
+        f"{outcome['keepers_changed']}, double-barcoded kept "
+        f"{outcome['double_kept_before']} -> {outcome['double_kept_after']}"
+    )
 
 
 @experiment_group.command()

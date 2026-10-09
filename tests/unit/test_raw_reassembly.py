@@ -221,6 +221,19 @@ def test_reassembled_generation_publishes_and_shares_its_parent_shards(tmp_path)
     for relative in shard_relative_paths(rebuilt):
         assert (rebuilt / relative).stat().st_ino == (parent / relative).stat().st_ino
 
+    # The reader's identity source is the molecule index, built from the
+    # segment rows: the rebuilt annotations must reach every copy.
+    import pyarrow.dataset as ds
+
+    for relative in ("segments.parquet", "molecule_index", "segment_index"):
+        if (rebuilt / relative).is_dir():
+            table = ds.dataset(rebuilt / relative, format="parquet", partitioning="hive")
+            frame = table.to_table().to_pandas()
+        else:
+            frame = pd.read_parquet(rebuilt / relative)
+        calls = frame.drop_duplicates("read_id").set_index("read_id")["demux_type"]
+        assert calls.loc["read1"] == "double" and calls.loc["read2"] == "single", relative
+
 
 # --- `F37`: the longest phase must not run silent -----------------------------
 
