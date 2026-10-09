@@ -471,9 +471,23 @@ class RandomForestConfig:
         }
 
 
+# What a model family can represent (`MLR-09`):
+#   additive          -- independent per-position evidence (naive Bayes, logistic regression)
+#   tabular_nonlinear -- interactions among any positions, no adjacency (random forest, MLP)
+#   spatial           -- local, translation-invariant patterns of bounded span (CNNs)
+#   global_sequence   -- dependencies between any positions (transformers)
+MODEL_CLASSES = ("additive", "tabular_nonlinear", "spatial", "global_sequence")
+
+
 @dataclass(frozen=True)
 class ModelFamilyDefinition:
-    """Runtime-only deterministic association of config, builder, recipes, and capabilities."""
+    """Runtime-only deterministic association of config, builder, recipes, and capabilities.
+
+    ``model_class`` (`MLR-09`) is what the family can represent -- one of
+    `MODEL_CLASSES` -- so a task's zoo can span classes and comparisons can
+    name them; ``default_explanation`` is the interpretability method used
+    when a caller names none.
+    """
 
     name: str
     backend: str
@@ -482,6 +496,8 @@ class ModelFamilyDefinition:
     builder: Callable[[Any], Any]
     capabilities: PredictorCapabilities
     default_recipe: str
+    model_class: str | None = None
+    default_explanation: str | None = None
 
     def __post_init__(self) -> None:
         _string(self.name, "model_definition.name")
@@ -498,6 +514,12 @@ class ModelFamilyDefinition:
         if not callable(self.builder):
             raise ModelRegistryError("model builder must be callable")
         _string(self.default_recipe, "model_definition.default_recipe")
+        if self.model_class is not None and self.model_class not in MODEL_CLASSES:
+            raise ModelRegistryError(
+                f"model_definition.model_class must be one of {list(MODEL_CLASSES)}"
+            )
+        if self.default_explanation is not None:
+            _string(self.default_explanation, "model_definition.default_explanation")
 
 
 @dataclass(frozen=True)
@@ -782,6 +804,8 @@ BUILTIN_MODEL_REGISTRY = ModelRegistry(
             builder=_build_bernoulli_nb,
             capabilities=_capabilities(incremental_fit=True, sample_weights=True),
             default_recipe=_BERNOULLI_RECIPE.name,
+            model_class="additive",
+            default_explanation="NaiveBayesLogOdds",
         ),
         ModelFamilyDefinition(
             name="logistic_regression",
@@ -791,6 +815,8 @@ BUILTIN_MODEL_REGISTRY = ModelRegistry(
             builder=_build_logistic_regression,
             capabilities=_capabilities(incremental_fit=False, sample_weights=True),
             default_recipe=_LOGISTIC_RECIPE.name,
+            model_class="additive",
+            default_explanation="LinearCoefficients",
         ),
         ModelFamilyDefinition(
             name="random_forest",
@@ -800,6 +826,8 @@ BUILTIN_MODEL_REGISTRY = ModelRegistry(
             builder=_build_random_forest,
             capabilities=_capabilities(incremental_fit=False, sample_weights=True),
             default_recipe=_FOREST_RECIPE.name,
+            model_class="tabular_nonlinear",
+            default_explanation="TreeSHAP",
         ),
         ModelFamilyDefinition(
             name="residual_dilated_cnn",
@@ -809,6 +837,8 @@ BUILTIN_MODEL_REGISTRY = ModelRegistry(
             builder=_build_residual_cnn,
             capabilities=_torch_residual_capabilities(),
             default_recipe=_RESIDUAL_CNN_RECIPE.name,
+            model_class="spatial",
+            default_explanation="IntegratedGradients",
         ),
     ),
     recipes=(

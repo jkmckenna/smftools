@@ -258,3 +258,26 @@ def test_build_rejects_tampered_runtime_resolution() -> None:
 
     with pytest.raises(ModelRegistryError, match="recipe identity"):
         BUILTIN_MODEL_REGISTRY.build(replace(resolved, recipe_id="f" * 64))
+
+
+def test_every_builtin_family_declares_a_class_and_a_compatible_default_explanation() -> None:
+    from smftools.machine_learning.interpretability import METHOD_CONTRACTS
+    from smftools.machine_learning.models.registry import MODEL_CLASSES
+
+    for name in BUILTIN_MODEL_REGISTRY.names:
+        definition = BUILTIN_MODEL_REGISTRY.definition(name)
+        assert definition.model_class in MODEL_CLASSES, name
+        contract = METHOD_CONTRACTS[definition.default_explanation]
+        assert definition.backend in contract.backends, name
+        assert not contract.families or name in contract.families, name
+
+
+def test_an_unknown_model_class_is_refused() -> None:
+    from dataclasses import replace
+
+    from smftools.machine_learning.models.registry import ModelRegistryError
+
+    definition = BUILTIN_MODEL_REGISTRY.definition("random_forest")
+    with pytest.raises(ModelRegistryError, match="model_class"):
+        replace(definition, model_class="quantum")
+    assert replace(definition, model_class=None).model_class is None  # custom families may omit it

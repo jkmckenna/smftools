@@ -277,3 +277,11 @@ def test_global_methods_draw_no_figure(project: Path, trained) -> None:
         trained.run_id, model="lr", method="LinearCoefficients", project_dir=project
     )
     assert not (explained.path / records.FIGURE).exists()
+
+
+def test_the_default_method_comes_from_the_model_class(project: Path, trained) -> None:
+    models = {item["model"]: item["model_class"] for item in trained.read(runs_module.MODELS)}
+    assert models == {"nb": "additive", "rf": "tabular_nonlinear", "lr": "additive"}
+    explained = explain_run(trained.run_id, model="nb", project_dir=project, figure=False)
+    assert explained.method == "NaiveBayesLogOdds"
+    assert explained.read(records.REQUEST)["method"] == "NaiveBayesLogOdds"
