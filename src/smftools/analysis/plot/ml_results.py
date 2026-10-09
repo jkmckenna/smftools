@@ -567,6 +567,8 @@ def plot_attribution_clustermap(
     within: str = "hierarchical",
     cluster_on: str = "attributions",
     channel_roles: Sequence[str] | None = None,
+    class_colors: dict[str, str] | None = None,
+    balance_classes: bool = False,
     title: str = "",
     output_path: str | Path | None = None,
 ) -> dict[str, Any]:
@@ -590,7 +592,8 @@ def plot_attribution_clustermap(
     each channel the input panel (when given) sits beside its attribution
     panel; ``extra_panels`` (``name``, ``matrix`` aligned with ``molecules``,
     optional ``positions``, ``cmap``, ``vmin``, ``vmax``) -- e.g. HMM layers --
-    follow, and ``extra_strips`` (``name``, ``values`` aligned with
+    follow (or, with ``before`` naming a channel, sit just before that
+    channel's input), and ``extra_strips`` (``name``, ``values`` aligned with
     ``molecules``, as `plot_latent_ordered_clustermap`) join the true-class,
     fold and score strips. Every panel and strip uses one row order
     (`attribution_row_layout`). Attributions use a diverging scale symmetric
@@ -600,7 +603,9 @@ def plot_attribution_clustermap(
     vertical separator marks every jump in the coordinates (between a position
     mask's windows). Extra panels are drawn as given, unless they carry
     ``coordinates`` equal to the inputs': then they share the inputs' columns. At most ``max_rows`` molecules are drawn (a seeded,
-    class-stratified sample).
+    class-stratified sample); ``balance_classes`` draws the same number of
+    each true class (the smallest class's, within ``max_rows``).
+    ``class_colors`` (true class -> colour) overrides the class colours.
 
     Returns the plot summary plus ``row_uids`` (drawn order) and
     ``attribution_limit``.
@@ -614,8 +619,17 @@ def plot_attribution_clustermap(
     if inputs is not None and np.shape(inputs) != attributions.shape:
         raise ValueError("inputs must have the attributions' shape")
     keep = np.arange(len(molecules))
-    if max_rows is not None and len(molecules) > max_rows:
-        rng = np.random.default_rng(seed)
+    rng = np.random.default_rng(seed)
+    if balance_classes:
+        groups = list(molecules.groupby("truth", sort=True, dropna=False))
+        per_class = min(len(group) for _truth, group in groups)
+        if max_rows is not None:
+            per_class = min(per_class, max(1, max_rows // len(groups)))
+        chosen = [
+            rng.choice(group.index.to_numpy(), per_class, replace=False) for _truth, group in groups
+        ]
+        keep = np.sort(np.concatenate(chosen).astype(int))
+    elif max_rows is not None and len(molecules) > max_rows:
         chosen = []
         for _truth, group in molecules.groupby("truth", sort=True, dropna=False):
             take = max(1, round(max_rows * len(group) / len(molecules)))
@@ -683,8 +697,29 @@ def plot_attribution_clustermap(
     positions = list((labels_given if labels_given is not None else coordinates)[column_order])
     inputs = None if inputs is None else np.asarray(inputs, dtype=float)[:, :, column_order]
     attribution = attribution[:, :, column_order]
+    extras, placed = [], {}
+    for panel in extra_panels:
+        panel = dict(panel)
+        before = panel.pop("before", None)
+        if before is not None and before not in channels:
+            raise ValueError(f"extra panel {panel.get('name')!r}: no channel {before!r}")
+        matrix = np.asarray(panel["matrix"], dtype=float)[keep]
+        extra_coordinates = panel.pop("coordinates", None)
+        if extra_coordinates is not None:
+            # On the input's positions: drawn on the same (ordered, dense)
+            # columns, labels and window breaks.
+            if [int(value) for value in extra_coordinates] != [int(v) for v in coordinates]:
+                raise ValueError(
+                    f"extra panel {panel.get('name')!r} coordinates differ from the inputs'"
+                )
+            matrix = matrix[:, column_order]
+            panel.update(positions=positions, column_separators=separators)
+        (extras if before is None else placed.setdefault(before, [])).append(
+            {**panel, "matrix": matrix}
+        )
     panels = []
     for index, channel in enumerate(channels):
+        panels.extend(placed.get(channel, []))
         if inputs is not None:
             panels.append(
                 {
@@ -708,24 +743,12 @@ def plot_attribution_clustermap(
                 "vmax": limit,
             }
         )
-    for panel in extra_panels:
-        panel = dict(panel)
-        matrix = np.asarray(panel["matrix"], dtype=float)[keep]
-        extra_coordinates = panel.pop("coordinates", None)
-        if extra_coordinates is not None:
-            # On the input's positions: drawn on the same (ordered, dense)
-            # columns, labels and window breaks.
-            if [int(value) for value in extra_coordinates] != [int(v) for v in coordinates]:
-                raise ValueError(
-                    f"extra panel {panel.get('name')!r} coordinates differ from the inputs'"
-                )
-            matrix = matrix[:, column_order]
-            panel.update(positions=positions, column_separators=separators)
-        panels.append({**panel, "matrix": matrix})
+    panels.extend(extras)
     truth = subset["truth"].astype(str).to_numpy()
-    class_colors = _class_colors(truth, positive_class)
+    class_colors = {**_class_colors(truth, positive_class), **(class_colors or {})}
     strips = []
-    if order == "bins":
+    if order in ("bins", "score"):
+        # Blocks are bins (or one score-ordered block): show the class per row.
         strips.append({"name": "true class", "values": truth, "colors": class_colors})
     # Folds by their held-out group ("holdout=exp_a" -> "exp_a"): readable in place.
     held_out = subset["fold"].astype(str).str.split("=", n=1).str[-1].to_numpy()
