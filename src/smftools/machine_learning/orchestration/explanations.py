@@ -331,6 +331,7 @@ def explain_run(
     environment: EnvironmentRecord | None = None,
     rebuild_index: bool = True,
     figure: bool = True,
+    device: str = "cpu",
 ) -> PublishedExplanationRun:
     """Explain one model of a published train run, out-of-fold, and publish it.
 
@@ -350,6 +351,8 @@ def explain_run(
             methods.
         seed: Seed for molecule and background sampling and the method.
         tags, policy, environment, rebuild_index: As `train_and_publish`.
+        device: Where torch models run (cpu, cuda, mps or auto); gradient
+            methods are much faster on a GPU.
         figure: Draw the default attribution clustermap into the run
             (``figures/attributions.png``: all folds, blocks by true class);
             `plot_explanation` draws others from the record.
@@ -454,7 +457,7 @@ def explain_run(
             fold_name = record["fold"]
             context.advance_phase(f"explain:{fold_name}")
             fold = folds[fold_name]
-            fitted = _load_model(workspace, record["model_id"], record["backend"])
+            fitted = _load_model(workspace, record["model_id"], record["backend"], device)
             label_schema = fitted.label_schema
             positive = label_schema.positive_class or label_schema.class_order[-1]
             target_id = list(label_schema.class_order).index(positive)

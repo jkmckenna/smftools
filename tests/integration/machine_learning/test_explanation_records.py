@@ -229,6 +229,18 @@ def test_integrated_gradients_for_a_torch_run(project: Path) -> None:
     molecules, matrix = explained.attributions(entry["fold"])
     assert matrix.shape == (2 * READS_PER_BARCODE, 1, N_POSITIONS)
     assert np.isfinite(matrix).all() and np.abs(matrix).sum() > 0
+    # The same explanation with the model on the best available device.
+    anywhere = explain_run(
+        trained.run_id,
+        model="cnn",
+        method="IntegratedGradients",
+        project_dir=project,
+        background_size=8,
+        figure=False,
+        device="auto",
+    )
+    _molecules, again = anywhere.attributions(entry["fold"])
+    np.testing.assert_allclose(again, matrix, atol=1e-4)
 
 
 # --- MLR-04: attribution clustermaps from the record ---------------------------

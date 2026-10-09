@@ -174,7 +174,9 @@ explained.summary["nb"]["fold_consistency_spearman"]
 
 Without `method=`, each family's default is used (its `default_explanation`). Families also
 declare a model class -- `additive`, `tabular_nonlinear`, `spatial`, `global_sequence` -- recorded
-with each run's models and shown in comparisons. Methods follow the model: `NaiveBayesLogOdds` (naive Bayes), `TreeSHAP` (random forest),
+with each run's models and shown in comparisons. Gradient methods and detector catalogues are much faster with the CNN on a GPU:
+`explain_run(..., device="mps")` (or `"cuda"`, `"auto"`; default `"cpu"`), likewise
+`detector_catalogue_run` and `apply_and_publish`. Methods follow the model: `NaiveBayesLogOdds` (naive Bayes), `TreeSHAP` (random forest),
 `IntegratedGradients` and other Captum methods (torch) give per-molecule matrices;
 `LinearCoefficients` and `PermutationImportance` give position importance only. Classical
 attributions sum each position's transformed features (signal and indicators). Up to
