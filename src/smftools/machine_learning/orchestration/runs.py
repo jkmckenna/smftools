@@ -664,15 +664,17 @@ class PublishedApplyRun:
         return pd.read_parquet(path) if path.suffix == ".parquet" else json.loads(path.read_text())
 
 
-def _load_model(workspace: MLWorkspace, model_id: str, backend: str):
+def _load_model(workspace: MLWorkspace, model_id: str, backend: str, device: str = "cpu"):
+    """A published model; torch models on ``device`` (cpu, cuda, mps or auto)."""
     if backend == "sklearn":
         from ..models.sklearn_artifacts import load_published_sklearn_model
 
         return load_published_sklearn_model(workspace, model_id)
     if backend == "torch":
         from ..models.torch_artifacts import load_published_torch_model
+        from ..training.torch_backend import _resolve_device
 
-        return load_published_torch_model(workspace, model_id)
+        return load_published_torch_model(workspace, model_id, device=_resolve_device(device))
     raise MLJobServiceError(f"no model loader for backend {backend!r}")
 
 
@@ -716,6 +718,7 @@ def apply_and_publish(
     seed: int = 0,
     environment: EnvironmentRecord | None = None,
     rebuild_index: bool = True,
+    device: str = "cpu",
 ) -> PublishedApplyRun:
     """Apply one published model to a plan's apply-job dataset and publish the run.
 
@@ -734,6 +737,7 @@ def apply_and_publish(
         tags, prevalence, prevalence_draws, seed, environment, rebuild_index:
             As `train_and_publish`.
         policy: `PartitionReadPolicy` for reading the dataset.
+        device: Where a torch model runs (cpu, cuda, mps or auto).
     """
     if (workspace is None) == (project_dir is None):
         raise MLJobServiceError("pass exactly one of workspace or project_dir")
@@ -757,7 +761,7 @@ def apply_and_publish(
         workspace, ModelSelectionRequest(kind="exact", model_id=model_id)
     )
     manifest = selection.manifest
-    model = _load_model(workspace, model_id, manifest.backend)
+    model = _load_model(workspace, model_id, manifest.backend, device)
     owner = {"experiment_dir": workspace.owner_root}
     if workspace.scope_kind == "project":
         owner = {"project_dir": workspace.owner_root}

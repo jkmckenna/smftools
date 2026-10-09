@@ -143,6 +143,7 @@ def detector_catalogue_run(
     environment: EnvironmentRecord | None = None,
     rebuild_index: bool = True,
     figure: bool = True,
+    device: str = "cpu",
 ) -> PublishedExplanationRun:
     """Catalogue the final-layer detectors of a residual CNN of a train run.
 
@@ -155,6 +156,7 @@ def detector_catalogue_run(
             at most 401.
         group_similarity: Spearman correlation of per-molecule maxima at or
             above which detectors are grouped.
+        device: Where the CNN runs (cpu, cuda, mps or auto).
         Others: as `explain_run`.
     """
     if (workspace is None) == (project_dir is None):
@@ -240,7 +242,7 @@ def detector_catalogue_run(
             fold_name = record["fold"]
             context.advance_phase(f"catalogue:{fold_name}")
             fold = folds[fold_name]
-            fitted = _load_model(workspace, record["model_id"], record["backend"])
+            fitted = _load_model(workspace, record["model_id"], record["backend"], device)
             config = getattr(fitted.model, "config", None)
             if config is None or not hasattr(config, "receptive_field"):
                 raise MLJobServiceError(f"{model!r} is not a residual CNN")
