@@ -164,6 +164,7 @@ the stores.
 | `MLR-10` qualification | in progress | `nkg2a_final` region / model grid through `MLR-01`-`MLR-05`; parity with its current metrics |
 | `MLR-11` pretraining and fine-tuning | proposed | encoder / head split; a `pretrain` action (masked-site reconstruction, autoencoder, VAE) publishing head-less encoders; fine-tuning through `initialization`; pretraining-corpus leakage policy; transfer benchmark (absorbs `ML-304`) |
 | `MLR-12` equal-size training | implemented (`feature/ml-train-size-cap`) | `balancing.train.max_per_class` and a cohort `seed`, so datasets of different sizes (e.g. DAFseq vs EMseq) train on equal per-class counts and learning curves repeat draws; counts per fold model in `models.json`; a job's balancing now reaches explicitly passed training options (it was dropped before) |
+| `MLR-13` probability calibration | implemented (`feature/ml-sklearn-calibration`) | sklearn models declare `calibration: sigmoid`: Platt scaling (smoothed targets) of the positive-class log-odds on each fold's validation molecules, stored with the model and applied by the predictor; ranking unchanged (naive Bayes ties at saturation broken by exact log-odds); explanations use the raw estimator. Also: attribution clustermap panels `before` a channel, class colours, balanced classes, a class strip in score order |
 
 ### `MLR-01` -- train-and-publish
 

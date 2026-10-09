@@ -69,6 +69,12 @@ def _payload(model: Any) -> dict[str, Any]:
         "transform": model.transform.to_dict(),
         "native_parameters": dict(model.native_parameters),
         "estimator": model.estimator,
+        # Present only when calibrated, so uncalibrated payloads are unchanged.
+        **(
+            {}
+            if getattr(model, "calibration", None) is None
+            else {"calibration": dict(model.calibration)}
+        ),
     }
 
 
@@ -206,7 +212,7 @@ def load_published_sklearn_model(
         "native_parameters",
         "estimator",
     }
-    if not isinstance(payload, dict) or set(payload) != expected_fields:
+    if not isinstance(payload, dict) or set(payload) - {"calibration"} != expected_fields:
         raise SklearnArtifactError("skops payload has an invalid top-level schema")
     if payload["schema_version"] != SKLEARN_ARTIFACT_SCHEMA_VERSION:
         raise SklearnArtifactError("unsupported sklearn artifact schema version")
@@ -247,4 +253,5 @@ def load_published_sklearn_model(
         split_id=manifest.split_id,
         fit_mode=str(payload["fit_mode"]),
         native_parameters=payload["native_parameters"],
+        calibration=payload.get("calibration"),
     )

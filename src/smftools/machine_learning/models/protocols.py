@@ -195,6 +195,42 @@ def _probability_matrix(
     return probabilities
 
 
+# Only infinities are clipped (an underflowed probability); finite log-odds
+# keep their order, however large (naive Bayes on long reads).
+LOG_ODDS_LIMIT = 1e6
+
+
+def positive_log_odds(estimator: Any, features: Any) -> np.ndarray:
+    """A binary sklearn estimator's positive-class log-odds, from
+    ``predict_log_proba`` where it is exact (naive Bayes), else from
+    probabilities floored at half a tree's vote (forests) or 1e-12."""
+    trees = getattr(estimator, "estimators_", None)
+    log_probability = getattr(estimator, "predict_log_proba", None)
+    if trees is None and callable(log_probability):
+        logs = np.asarray(log_probability(features), dtype=np.float64)
+        odds = logs[:, 1] - logs[:, 0]
+    else:
+        floor = 0.5 / len(trees) if trees is not None else 1e-12
+        probability = np.clip(
+            np.asarray(estimator.predict_proba(features), dtype=np.float64), floor, 1 - floor
+        )
+        odds = np.log(probability[:, 1]) - np.log(probability[:, 0])
+    return np.clip(np.nan_to_num(odds, nan=0.0), -LOG_ODDS_LIMIT, LOG_ODDS_LIMIT)
+
+
+def calibrated_probabilities(
+    estimator: Any, features: Any, calibration: Mapping[str, Any]
+) -> np.ndarray:
+    """Class probabilities after Platt scaling of the positive-class log-odds."""
+    if calibration.get("method") != "sigmoid":
+        raise PredictorError(f"unsupported calibration {calibration.get('method')!r}")
+    odds = float(calibration["slope"]) * positive_log_odds(estimator, features) + float(
+        calibration["intercept"]
+    )
+    positive = 1.0 / (1.0 + np.exp(-np.clip(odds, -500.0, 500.0)))
+    return np.column_stack([1.0 - positive, positive])
+
+
 @dataclass(frozen=True)
 class SklearnPredictor:
     """Predictor adapter around one fitted sklearn-compatible estimator."""
@@ -204,10 +240,15 @@ class SklearnPredictor:
     label_schema: LabelSchema
     capabilities: PredictorCapabilities
     backend: str = "sklearn"
+    # Platt scaling ({"method": "sigmoid", "slope", "intercept"}) of the
+    # model's positive-class log-odds; None: the model's own probabilities.
+    calibration: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if self.capabilities.backend != self.backend:
             raise PredictorError("sklearn predictor requires sklearn capabilities")
+        if self.calibration is not None and len(self.label_schema.class_order) != 2:
+            raise PredictorError("probability calibration is binary-only")
         if not callable(getattr(self.model, "predict", None)):
             raise PredictorError("sklearn predictor model must define predict")
         classes = getattr(self.model, "classes_", None)
@@ -250,6 +291,9 @@ class SklearnPredictor:
     ) -> np.ndarray:
         """Return integer class IDs in persisted label order."""
         features = self._request(values, masks, input_schema, phase)
+        if self.calibration is not None:
+            calibrated = calibrated_probabilities(self.model, features, self.calibration)
+            return np.argmax(calibrated, axis=1).astype(np.int64)
         return _validate_predictions(
             self.model.predict(features),
             n_rows=len(features),
@@ -267,7 +311,10 @@ class SklearnPredictor:
         """Return decision values or probabilities as an ordered score matrix."""
         features = self._request(values, masks, input_schema, phase)
         decision = getattr(self.model, "decision_function", None)
-        if callable(decision):
+        if self.calibration is not None:
+            raw = calibrated_probabilities(self.model, features, self.calibration)
+            source = "predict_proba"
+        elif callable(decision):
             raw = decision(features)
             source = "decision_function"
         else:
@@ -299,7 +346,9 @@ class SklearnPredictor:
         if not callable(probability):
             raise PredictorError("probability capability declared without predict_proba")
         return _probability_matrix(
-            probability(features),
+            probability(features)
+            if self.calibration is None
+            else calibrated_probabilities(self.model, features, self.calibration),
             n_rows=len(features),
             n_classes=len(self.label_schema.class_order),
             source="predict_proba",

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import Any
 
@@ -45,6 +45,8 @@ class FittedSklearnModel:
     split_id: str
     fit_mode: str
     native_parameters: Mapping[str, Any]
+    # Platt scaling fitted on validation molecules (`calibrate_sklearn_result`).
+    calibration: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if self.architecture.backend != "sklearn" or self.family != self.architecture.family:
@@ -72,6 +74,7 @@ class FittedSklearnModel:
             input_schema=self.input_schema,
             label_schema=self.label_schema,
             capabilities=self.architecture.capabilities,
+            calibration=self.calibration,
         )
 
 
@@ -99,6 +102,61 @@ def _fit_parameters(
     if balance.method in {"natural", "downsample", "upsample"}:
         return {}
     raise SklearnTrainingError(f"unsupported sklearn balancing method {balance.method!r}")
+
+
+def platt_scaling(odds: np.ndarray, labels: np.ndarray) -> tuple[float, float]:
+    """Platt's sigmoid fit ``P(active) = sigmoid(slope * odds + intercept)``
+    with his smoothed targets -- positives ``(n+ + 1) / (n+ + 2)``, negatives
+    ``1 / (n- + 2)`` -- so separable scores give a finite, sample-size-bounded
+    slope rather than a diverging one."""
+    from sklearn.linear_model import LogisticRegression
+
+    labels = np.asarray(labels, dtype=np.int64)
+    n_positive = int(labels.sum())
+    n_negative = len(labels) - n_positive
+    target = np.where(labels == 1, (n_positive + 1) / (n_positive + 2), 1 / (n_negative + 2))
+    # Soft targets as weighted duplicates: each molecule once as each class.
+    features = np.concatenate([odds, odds]).reshape(-1, 1)
+    classes = np.r_[np.ones(len(odds)), np.zeros(len(odds))]
+    weights = np.r_[target, 1 - target]
+    # Scaled for the solver; the slope is mapped back.
+    scale = float(np.std(odds)) or 1.0
+    fitted = LogisticRegression(C=1e6, max_iter=2000).fit(
+        features / scale, classes, sample_weight=weights
+    )
+    return float(fitted.coef_[0, 0] / scale), float(fitted.intercept_[0])
+
+
+def calibrate_sklearn_result(
+    result: SklearnTrainingResult, dataset: Any, method: str = "sigmoid"
+) -> SklearnTrainingResult:
+    """Fit Platt scaling of the model's positive-class log-odds on the split's
+    validation molecules (never trained on, never tested on): ranking is
+    unchanged, probabilities become calibrated."""
+    from ..models.protocols import positive_log_odds
+
+    if method != "sigmoid":
+        raise SklearnTrainingError(f"unsupported calibration {method!r}")
+    model = result.model
+    if len(model.label_schema.class_order) != 2:
+        raise SklearnTrainingError("probability calibration is binary-only")
+    if not dataset.plan.entries_for("validation"):
+        raise SklearnTrainingError(
+            "calibration needs validation molecules: give the split a validation_fraction"
+        )
+    validation = dataset.materialize("validation")
+    labels = np.asarray(validation.labels, dtype=np.int64)
+    if len(set(labels.tolist())) != 2:
+        raise SklearnTrainingError("calibration needs both classes among validation molecules")
+    odds = positive_log_odds(model.estimator, model.transform.transform(validation))
+    slope, intercept = platt_scaling(odds, labels)
+    calibration = {
+        "method": method,
+        "slope": slope,
+        "intercept": intercept,
+        "n_validation": int(len(labels)),
+    }
+    return replace(result, model=replace(model, calibration=calibration))
 
 
 def _json_parameters(estimator: Any) -> Mapping[str, Any]:
