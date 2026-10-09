@@ -191,6 +191,21 @@ def test_an_existing_demux_type_is_not_overwritten():
     assert list(obs["demux_type"]) == ["double"]
 
 
+def test_unclassified_is_filled_but_a_call_is_kept():
+    """An already-demuxed input's BAM tags name the barcode but not its ends:
+    `unclassified` there is no evidence, so the summary's scores decide."""
+    obs = pd.DataFrame(
+        {"demux_type": ["unclassified", "unclassified", "mismatch", "single"]},
+        index=["r0", "r1", "r2", "r3"],
+    )
+    status = _status_frame(["r0", "r1", "r2", "r3"], ["double", "single", "double", "double"])
+    filled = attach_demux_status(obs, status)
+
+    assert filled == 2
+    assert list(obs["demux_type"]) == ["double", "single", "mismatch", "single"]
+    assert list(obs["demux_type_source"])[:2] == [SOURCE, SOURCE]
+
+
 def test_overwrite_is_available_when_asked():
     obs = pd.DataFrame({"demux_type": ["double"]}, index=["r0"])
     attach_demux_status(obs, _status_frame(["r0"], ["single"]), overwrite=True)
@@ -215,3 +230,18 @@ def test_config_defaults():
     assert cfg.use_sequencing_summary_demux_status is True
     assert cfg.sequencing_summary_path is None
     assert cfg.barcode_end_score_threshold == DEFAULT_END_SCORE_THRESHOLD
+
+
+def test_reassembly_annotator_fills_from_the_summary_by_read_id():
+    from smftools.informatics.ragged_store import READ_ID
+    from smftools.informatics.raw_reassembly import annotator_with_summary
+
+    frame = pd.DataFrame(
+        {READ_ID: ["r0", "r1", "r2"], "demux_type": ["unclassified", "double", "unclassified"]},
+        index=[10, 11, 12],
+    )
+    annotate = annotator_with_summary(_status_frame(["r0", "r1"], ["single", "single"]), base=None)
+    out = annotate(frame)
+
+    assert list(out.index) == [10, 11, 12]  # the shard's own index is kept
+    assert list(out["demux_type"]) == ["single", "double", "unclassified"]
