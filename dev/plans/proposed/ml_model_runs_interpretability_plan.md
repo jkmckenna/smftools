@@ -166,6 +166,7 @@ the stores.
 | `MLR-12` equal-size training | done (PR #721) | `balancing.train.max_per_class` and a cohort `seed`, so datasets of different sizes (e.g. DAFseq vs EMseq) train on equal per-class counts and learning curves repeat draws; counts per fold model in `models.json`; a job's balancing now reaches explicitly passed training options (it was dropped before) |
 | `MLR-13` probability calibration | done (PR #724) | sklearn models declare `calibration: sigmoid`: Platt scaling (smoothed targets) of the positive-class log-odds on each fold's validation molecules, stored with the model and applied by the predictor; ranking unchanged (naive Bayes ties at saturation broken by exact log-odds); explanations use the raw estimator. Also: attribution clustermap panels `before` a channel, class colours, balanced classes, a class strip in score order |
 | `MLR-14` conditional generative measurement model | proposed | a conditional VAE whose decoder is a measurement model (chromatin from the latent; enzyme, dose, additive, batch as measurement terms): simulate a molecule under another condition, or a condition-free latent; builds on `MLR-11` |
+| `MLR-15` rank on unsaturated scores | implemented (`fix/ml-rank-on-log-odds`) | binary probabilistic sklearn models score by positive-class log-odds (naive Bayes from `predict_log_proba`); ranking metrics, curves and comparisons use scores, Brier / calibration / thresholds keep probabilities; predictions store `score_<class>` |
 
 ### `MLR-01` -- train-and-publish
 
@@ -674,6 +675,22 @@ decoding to one reference condition).
   enzyme x dose x context) with dose lowering simulated by thinning.
 - **Later:** discrete latent (VQ-VAE), diffusion / autoregressive decoders,
   attention in the encoder.
+
+### `MLR-15` -- rank on unsaturated scores
+
+A naive Bayes over hundreds of sites puts most probabilities at exactly 0 or 1
+in float64. Ranking metrics computed from probabilities then tie every such
+molecule: on one project, the median uncalibrated naive Bayes run had 37 % of
+its C-site test predictions saturated, some runs 100 % (AUC exactly 0.5).
+`SklearnPredictor.predict_scores` now returns, for binary probabilistic models,
+the positive-class log-odds (`positive_log_odds`; column 0 its negation), and
+calibrated models their Platt-scaled log-odds. ROC / PR curves, AUC, average
+precision and the prevalence-adjusted variants use `scores`; Brier, calibration
+curves, log loss and fitted thresholds keep probabilities. Prediction tables
+gain `score_<class>` columns; `compare` prefers them. Explanations keep the
+probability as their score (TreeSHAP attributions sum to it). Runs published
+before this carry no `score_` columns: their ranking metrics should be
+recomputed (re-run, or re-apply the stored models).
 
 ## Project side (`nkg2a_final`)
 

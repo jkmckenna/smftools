@@ -329,7 +329,9 @@ def compare_runs(
         frames = []
         for label, rows in zip(labels, predictions, strict=True):
             part = rows[rows["held_out"] == fold].set_index("molecule_uid")
-            frames.append(part[["truth", f"p_{positive}"]].rename(columns={f"p_{positive}": label}))
+            # Rank on the unsaturated score where the run stored one (`predict_scores`).
+            column = f"score_{positive}" if f"score_{positive}" in part else f"p_{positive}"
+            frames.append(part[["truth", column]].rename(columns={column: label}))
         common = frames[0].index
         for frame in frames[1:]:
             common = common.intersection(frame.index)

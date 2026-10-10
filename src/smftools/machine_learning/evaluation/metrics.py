@@ -291,13 +291,17 @@ def _evaluate_slice(
             )
             continue
         probability = predictions.probabilities[:, class_id]
+        # Ranking metrics and curves use the scores (log-odds for binary
+        # probabilistic models), which do not saturate; Brier and calibration
+        # use probabilities. Curve thresholds are therefore in score units.
+        ranking = predictions.scores[:, class_id]
         false_positive, true_positive, roc_thresholds = metrics.roc_curve(
             binary_truth,
-            probability,
+            ranking,
         )
         precision, recall, pr_thresholds = metrics.precision_recall_curve(
             binary_truth,
-            probability,
+            ranking,
         )
         observed_fraction, mean_probability = calibration.calibration_curve(
             binary_truth,
@@ -310,7 +314,7 @@ def _evaluate_slice(
                 _metric(
                     predictions,
                     name="roc_auc",
-                    value=metrics.roc_auc_score(binary_truth, probability),
+                    value=metrics.roc_auc_score(binary_truth, ranking),
                     scope=scope,
                     modality=modality,
                     class_name=class_name,
@@ -318,7 +322,7 @@ def _evaluate_slice(
                 _metric(
                     predictions,
                     name="average_precision",
-                    value=metrics.average_precision_score(binary_truth, probability),
+                    value=metrics.average_precision_score(binary_truth, ranking),
                     scope=scope,
                     modality=modality,
                     class_name=class_name,

@@ -22,7 +22,7 @@ from smftools.machine_learning.plan import parse_ml_plan
 pytestmark = pytest.mark.unit
 
 
-def _schemas() -> tuple[InputSchema, LabelSchema]:
+def _schemas(n_positions: int = 2) -> tuple[InputSchema, LabelSchema]:
     plan = parse_ml_plan(
         {
             "schema_version": 1,
@@ -58,7 +58,7 @@ def _schemas() -> tuple[InputSchema, LabelSchema]:
     )
     dataset = plan.datasets["reads"]
     return (
-        InputSchema.from_dataset(dataset, reference="locus", n_positions=2),
+        InputSchema.from_dataset(dataset, reference="locus", n_positions=n_positions),
         LabelSchema.from_plan_label(dataset.labels),
     )
 
@@ -103,6 +103,33 @@ def test_sklearn_adapter_returns_ordered_backend_neutral_outputs() -> None:
         predictor.predict_probabilities(features), model.predict_proba(features)
     )
     assert predictor.predict_scores(features).shape == (4, 2)
+
+
+def test_binary_scores_are_unsaturated_log_odds() -> None:
+    # Hundreds of informative sites: naive Bayes probabilities round to exactly
+    # 0 / 1 and tie, the log-odds scores keep every molecule's order.
+    n_sites = 300
+    input_schema, label_schema = _schemas(n_sites)
+    rng = np.random.default_rng(0)
+    labels = np.repeat([0, 1], 200)
+    rate = np.where(labels[:, None] == 1, 0.7, 0.3)
+    features = (rng.random((len(labels), n_sites)) < rate).astype(np.float64)
+    model = BernoulliNB().fit(features, labels)
+    predictor = SklearnPredictor(
+        model=model,
+        input_schema=input_schema,
+        label_schema=label_schema,
+        capabilities=_capabilities("sklearn"),
+    )
+
+    probabilities = predictor.predict_probabilities(features)
+    scores = predictor.predict_scores(features)
+    saturated = (probabilities[:, 1] == 1.0) | (probabilities[:, 1] == 0.0)
+    assert saturated.sum() >= 50
+    np.testing.assert_allclose(scores[:, 0], -scores[:, 1])
+    assert np.unique(scores[saturated, 1]).size == saturated.sum()
+    logs = model.predict_log_proba(features)
+    np.testing.assert_allclose(scores[:, 1], logs[:, 1] - logs[:, 0])
 
 
 def test_sklearn_adapter_rejects_wrong_class_order_and_masks() -> None:
