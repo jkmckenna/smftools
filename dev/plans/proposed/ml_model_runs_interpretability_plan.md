@@ -160,11 +160,12 @@ the stores.
 | `MLR-06` fold-matrix cache | done (PR #715) | read each task's data once for every model |
 | `MLR-07` validation role | done (PR #706) | a stratified validation fraction of each fold's training molecules (default) or held-out training experiments, for early stopping and tuning; the test experiment stays whole; final models too |
 | `MLR-08` detector-scale CNNs | done (PR #709) | position-agnostic residual dilated CNNs whose pattern detectors have a stated, enforced maximum span (receptive field): sub-nucleosome, 2-3, 4-6 nucleosomes, full locus; effective span measured per run |
-| `MLR-09` model classes and the zoo | part 1 done (PR #716); part 2 (`conv_scanner`) implemented (`feature/ml-conv-scanner`); MLP / transformer pending | a capability class per registry family (additive, tabular non-linear, spatial, global sequence); class-aware defaults; MLP, multiscale CNN and transformer recipes; per-task zoo declarations |
+| `MLR-09` model classes and the zoo | part 1 done (PR #716); part 2 (`conv_scanner`) done (PR #720); MLP / transformer pending | a capability class per registry family (additive, tabular non-linear, spatial, global sequence); class-aware defaults; MLP, multiscale CNN and transformer recipes; per-task zoo declarations |
 | `MLR-10` qualification | in progress | `nkg2a_final` region / model grid through `MLR-01`-`MLR-05`; parity with its current metrics |
 | `MLR-11` pretraining and fine-tuning | proposed | encoder / head split; a `pretrain` action (masked-site reconstruction, autoencoder, VAE) publishing head-less encoders; fine-tuning through `initialization`; pretraining-corpus leakage policy; transfer benchmark (absorbs `ML-304`) |
-| `MLR-12` equal-size training | implemented (`feature/ml-train-size-cap`) | `balancing.train.max_per_class` and a cohort `seed`, so datasets of different sizes (e.g. DAFseq vs EMseq) train on equal per-class counts and learning curves repeat draws; counts per fold model in `models.json`; a job's balancing now reaches explicitly passed training options (it was dropped before) |
-| `MLR-13` probability calibration | implemented (`feature/ml-sklearn-calibration`) | sklearn models declare `calibration: sigmoid`: Platt scaling (smoothed targets) of the positive-class log-odds on each fold's validation molecules, stored with the model and applied by the predictor; ranking unchanged (naive Bayes ties at saturation broken by exact log-odds); explanations use the raw estimator. Also: attribution clustermap panels `before` a channel, class colours, balanced classes, a class strip in score order |
+| `MLR-12` equal-size training | done (PR #721) | `balancing.train.max_per_class` and a cohort `seed`, so datasets of different sizes (e.g. DAFseq vs EMseq) train on equal per-class counts and learning curves repeat draws; counts per fold model in `models.json`; a job's balancing now reaches explicitly passed training options (it was dropped before) |
+| `MLR-13` probability calibration | done (PR #724) | sklearn models declare `calibration: sigmoid`: Platt scaling (smoothed targets) of the positive-class log-odds on each fold's validation molecules, stored with the model and applied by the predictor; ranking unchanged (naive Bayes ties at saturation broken by exact log-odds); explanations use the raw estimator. Also: attribution clustermap panels `before` a channel, class colours, balanced classes, a class strip in score order |
+| `MLR-14` conditional generative measurement model | proposed | a conditional VAE whose decoder is a measurement model (chromatin from the latent; enzyme, dose, additive, batch as measurement terms): simulate a molecule under another condition, or a condition-free latent; builds on `MLR-11` |
 
 ### `MLR-01` -- train-and-publish
 
@@ -616,6 +617,63 @@ fine-tuned model records its parent and freeze schedule and reloads; a
 hidden observed sites and the corruption is not visible through validity
 channels; a VAE's latent is exported per molecule; the transfer comparison
 pairs fine-tuned and from-scratch entries on shared folds.
+
+Additions from project use (2026-10-09):
+
+- **Per-position output head.** A decoder emitting one prediction per site
+  of the input (not per molecule), sharing the encoder; loss only at observed
+  sites. Needed for imputation, reconstruction and `MLR-14`.
+- **Structured corruption.** Besides random masking: hide every site of one
+  context and predict it from another (e.g. GpC sites observed, all other C
+  sites hidden), within one molecule -- an imputation task with a fixed mask,
+  evaluated per hidden site (AUROC / AUPRC / log loss, calibration) against
+  per-site-rate, nearest-observed-site and HMM baselines.
+- **Reference-sequence input channels.** One-hot reference bases per position
+  (strand-oriented), so context-dependent modification (enzyme sequence
+  preference) is learned as a rule. On one reference the sequence is
+  constant, so it also fingerprints position: report generalisation to
+  other references and a shuffled-context control.
+- **Leakage rules for imputation inputs:** never the read's own bases (a
+  conversion *is* the target) nor HMM layers fitted on the target sites.
+- **Cross-assay application:** an encoder trained on one modality applied to
+  another's inputs (e.g. conversion GpC calls into a deaminase-trained
+  imputer), with per-site input calibration and distribution-level
+  validation (two-sample classifier, downstream classifier on imputed
+  sites), since no molecule is read by both.
+
+### `MLR-14` -- conditional generative measurement model
+
+A conditional VAE that separates chromatin state from measurement. Encoder:
+a molecule's calls (+ masks, + reference sequence) -> latent z (a per-position
+track at ~10-50 bp, or a compact vector). Decoder: per-site modification
+probability = chromatin term a(z, position) + measurement terms -- sequence
+context x enzyme, enzyme efficiency x g(dose), additive (e.g. a reaction
+additive), batch. Uses: **simulate** (encode under the real condition, decode
+under another), **regress out** (z, penalised to carry no condition, or
+decoding to one reference condition).
+
+- **Condition on measured intensity, not reported doses:** per-read
+  modification rates inside open vs protected segments (from a model that
+  does not see the target sites), per-sample distributions as an effective
+  dose, and per-enzyme context fingerprints as enzyme features; a per-read
+  efficiency latent (the single-molecule analogue of scVI's library size)
+  and a per-sample efficiency term centred on the measured dose; reported
+  dose and input only as weak priors and as a metadata check.
+- **Invariance of z:** none / adversarial condition classifier (gradient
+  reversal) / MMD-HSIC penalty, compared by a trade-off curve (condition
+  predictability from z vs biology predictability).
+- **Training designs:** one cell pool under many conditions (enzymes x
+  doses; enzymes x cell inputs), paired additive series, same-sample enzyme
+  and assay pairs; harmonisation anchored on populations recurring across
+  runs. Conditions only seen on separate biology cannot be separated.
+- **Validation is distribution-level** (no molecule is read twice):
+  translate to held-out real conditions and compare per-site rates,
+  co-occurrence, footprint and accessible-segment distributions, a
+  two-sample classifier, downstream classifiers.
+- **Baseline first:** a measurement GLM (per-site modification ~ HMM state x
+  enzyme x dose x context) with dose lowering simulated by thinning.
+- **Later:** discrete latent (VQ-VAE), diffusion / autoregressive decoders,
+  attention in the encoder.
 
 ## Project side (`nkg2a_final`)
 
