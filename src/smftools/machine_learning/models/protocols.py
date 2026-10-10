@@ -308,9 +308,32 @@ class SklearnPredictor:
         input_schema: InputSchema | None = None,
         phase: str = "inference",
     ) -> np.ndarray:
-        """Return decision values or probabilities as an ordered score matrix."""
+        """Return an ordered score matrix: decision values, or for a binary
+        probabilistic model the positive-class log-odds (column 1; column 0 its
+        negation), else probabilities.
+
+        Scores rank molecules, so they must not saturate: a naive Bayes over
+        hundreds of sites puts most probabilities at exactly 0 or 1 in float64,
+        tying every such molecule, while its log-odds (`positive_log_odds`,
+        from ``predict_log_proba``) stay exact. A calibrated model's scores are
+        its Platt-scaled log-odds, the same order as its probabilities.
+        """
         features = self._request(values, masks, input_schema, phase)
         decision = getattr(self.model, "decision_function", None)
+        n_classes = len(self.label_schema.class_order)
+        if n_classes == 2 and not callable(decision):
+            self.require_capabilities("probability_output")
+            odds = positive_log_odds(self.model, features)
+            if self.calibration is not None:
+                odds = float(self.calibration["slope"]) * odds + float(
+                    self.calibration["intercept"]
+                )
+            return _score_matrix(
+                np.column_stack((-odds, odds)),
+                n_rows=len(features),
+                n_classes=n_classes,
+                source="log_odds",
+            )
         if self.calibration is not None:
             raw = calibrated_probabilities(self.model, features, self.calibration)
             source = "predict_proba"

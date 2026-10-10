@@ -242,8 +242,12 @@ def _prediction_rows(run: FoldRun, model_id: str) -> pd.DataFrame:
         }
     )
     probabilities = np.asarray(predictions.probabilities)
+    scores = np.asarray(predictions.scores)
     for index, name in enumerate(classes):
         frame[f"p_{name}"] = probabilities[:, index]
+    for index, name in enumerate(classes):
+        # Rank on these: probabilities saturate at 0 / 1 (`predict_scores`).
+        frame[f"score_{name}"] = scores[:, index]
     return frame
 
 
@@ -286,7 +290,7 @@ def _metric_rows(
             index = list(predictions.class_order).index(positive_class)
             fixed = average_precision_at_prevalence(
                 np.asarray(predictions.truth_class_ids) == index,
-                np.asarray(predictions.probabilities)[:, index],
+                np.asarray(predictions.scores)[:, index],  # ranks: unsaturated scores
                 prevalence=prevalence,
                 draws=draws,
                 seed=seed,
