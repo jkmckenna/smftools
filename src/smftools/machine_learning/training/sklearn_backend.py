@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import Any
@@ -157,6 +158,22 @@ def calibrate_sklearn_result(
         "n_validation": int(len(labels)),
     }
     return replace(result, model=replace(model, calibration=calibration))
+
+
+@contextmanager
+def _fit_threads(estimator: Any, n_jobs: int | None) -> Iterator[None]:
+    """``estimator.n_jobs`` set to ``n_jobs`` inside the block, then restored."""
+    if n_jobs is None or "n_jobs" not in estimator.get_params(deep=False):
+        yield
+        return
+    if isinstance(n_jobs, bool) or not isinstance(n_jobs, int) or n_jobs == 0:
+        raise SklearnTrainingError("n_jobs must be a non-zero integer or null")
+    recipe = estimator.get_params(deep=False)["n_jobs"]
+    estimator.set_params(n_jobs=n_jobs)
+    try:
+        yield
+    finally:
+        estimator.set_params(n_jobs=recipe)
 
 
 def _json_parameters(estimator: Any) -> Mapping[str, Any]:
@@ -317,8 +334,12 @@ def fit_sklearn_partition_model(
     seed: int = 0,
     incremental: bool | None = None,
     registry: ModelRegistry = BUILTIN_MODEL_REGISTRY,
+    n_jobs: int | None = None,
 ) -> SklearnTrainingResult:
     """Fit one registered sklearn estimator from the manifest train role.
+
+    ``n_jobs`` sets an ``n_jobs``-taking estimator's threads for the fit only;
+    the recipe value is restored afterwards (`SklearnTrainOptions.n_jobs`).
 
     Partition-backed inputs run their conservative memory preflight before
     reads; validated pre-materialized inputs are consumed through the same
@@ -384,7 +405,8 @@ def fit_sklearn_partition_model(
             )
         fit_mode = "partial_fit"
     else:
-        estimator.fit(features, selected_labels, **fit_parameters)
+        with _fit_threads(estimator, n_jobs):
+            estimator.fit(features, selected_labels, **fit_parameters)
         fit_mode = "fit"
 
     fitted = FittedSklearnModel(
