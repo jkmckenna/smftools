@@ -50,6 +50,11 @@ MISMATCH = "mismatch"
 MODIFICATION_SIGNAL = "modification_signal"
 TEMPLATE_ID = "template_id"
 MATE = "mate"
+# `BQC-01`: sequence beyond the aligned insert at each read end, in read
+# (sequencing) orientation, and whether the read has a supplementary alignment.
+FRONT_CLIP_LENGTH = "front_clip_length"
+REAR_CLIP_LENGTH = "rear_clip_length"
+HAS_SUPPLEMENTARY_ALIGNMENT = "has_supplementary_alignment"
 
 RAGGED_REQUIRED_COLUMNS = (
     READ_ID,
@@ -97,6 +102,32 @@ def cigar_query_length(cigar: str) -> int:
 def cigar_reference_length(cigar: str) -> int:
     """Return the number of reference positions consumed by *cigar*."""
     return sum(length for length, op in parse_cigar(cigar) if op in _REFERENCE_CONSUMING)
+
+
+def cigar_end_clips(cigar: str, is_reverse: bool) -> tuple[int, int]:
+    """Return ``(front_clip, rear_clip)``: bases beyond the alignment at each read end.
+
+    Only the leading and trailing soft (``S``) or hard (``H``) clips count;
+    internal insertions never do. A reverse-strand record stores the read
+    reverse-complemented, so its CIGAR's leading clip is the read's rear end:
+    the two are swapped to put them in read (sequencing) orientation, where
+    the front end is the one the pore read first (`BQC-01`). Returns
+    ``(0, 0)`` for an absent CIGAR.
+    """
+    if not isinstance(cigar, str) or not cigar or cigar == "*":
+        return 0, 0
+    tokens = parse_cigar(cigar)
+    leading = 0
+    for length, op in tokens:
+        if op not in "SH":
+            break
+        leading += length
+    trailing = 0
+    for length, op in reversed(tokens):
+        if op not in "SH":
+            break
+        trailing += length
+    return (trailing, leading) if is_reverse else (leading, trailing)
 
 
 def cigar_max_indel_runs(cigar: str) -> tuple[int, int]:
@@ -376,6 +407,10 @@ def alignment_to_ragged_record(
     else:
         mismatch_trend = "none"
 
+    front_clip, rear_clip = cigar_end_clips(cigar, bool(read.is_reverse))
+    has_tag = getattr(read, "has_tag", None)
+    has_supplementary = bool(has_tag("SA")) if callable(has_tag) else False
+
     segment_purity, switch_index = strand_switch_metrics(strand_vote_signs)
     if switch_index < 0:
         switch_position = -1
@@ -427,6 +462,9 @@ def alignment_to_ragged_record(
         REFERENCE_START: int(read.reference_start),
         CIGAR: cigar,
         ALIGNED_LENGTH: cigar_reference_length(cigar),
+        FRONT_CLIP_LENGTH: front_clip,
+        REAR_CLIP_LENGTH: rear_clip,
+        HAS_SUPPLEMENTARY_ALIGNMENT: has_supplementary,
         SEQUENCE: sequence,
         QUALITY: qualities,
         MISMATCH: mismatch,

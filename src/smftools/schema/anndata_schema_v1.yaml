@@ -131,6 +131,55 @@ stages:
         notes: "Longest internal deletion (bp) from the alignment CIGAR; consumed by preprocess's CIGAR-indel filter."
         requires: [["obs.cigar"]]
         optional_inputs: []
+      front_clip_length:
+        dtype: "int"
+        created_by: "smftools.informatics.ragged_store.alignment_to_ragged_record"
+        modified_by: []
+        notes: "Bases before the alignment at the read's front end (leading soft/hard clip in read orientation; BQC-01)."
+        requires: [["obs.cigar"]]
+        optional_inputs: []
+      rear_clip_length:
+        dtype: "int"
+        created_by: "smftools.informatics.ragged_store.alignment_to_ragged_record"
+        modified_by: []
+        notes: "Bases after the alignment at the read's rear end (trailing soft/hard clip in read orientation; 0 = no barcode or adapter sequenced there; BQC-01)."
+        requires: [["obs.cigar"]]
+        optional_inputs: []
+      has_supplementary_alignment:
+        dtype: "bool"
+        created_by: "smftools.informatics.ragged_store.alignment_to_ragged_record"
+        modified_by: []
+        notes: "The read has an SA tag: a clip may be genomic sequence aligned elsewhere, not barcode (BQC-01)."
+        requires: [["obs_names"]]
+        optional_inputs: []
+      barcode_front_edit_distance:
+        dtype: "float"
+        created_by: "smftools.informatics.barcode_sidecar.publish_barcode_identity_sidecar"
+        modified_by: []
+        notes: "Edit distance of the front-end barcode match (NaN when none; BQC-01)."
+        requires: [["obs_names"]]
+        optional_inputs: []
+      barcode_front_insert_offset:
+        dtype: "float"
+        created_by: "smftools.informatics.barcode_sidecar.publish_barcode_identity_sidecar"
+        modified_by: []
+        notes: "Bases from the read's front end to where the extracted barcode meets the insert (NaN when not extracted; BQC-01)."
+        requires: [["obs_names"]]
+        optional_inputs: []
+      barcode_rear_edit_distance:
+        dtype: "float"
+        created_by: "smftools.informatics.barcode_sidecar.publish_barcode_identity_sidecar"
+        modified_by: []
+        notes: "Edit distance of the rear-end barcode match (NaN when none; BQC-01)."
+        requires: [["obs_names"]]
+        optional_inputs: []
+      barcode_rear_insert_offset:
+        dtype: "float"
+        created_by: "smftools.informatics.barcode_sidecar.publish_barcode_identity_sidecar"
+        modified_by: []
+        notes: "Bases from the read's rear end to where the extracted barcode meets the insert (NaN when not extracted; BQC-01)."
+        requires: [["obs_names"]]
+        optional_inputs: []
       ct_event_count:
         dtype: "int"
         created_by: "smftools.informatics.ragged_store.alignment_to_ragged_record"

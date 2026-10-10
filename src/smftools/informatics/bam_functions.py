@@ -1791,7 +1791,7 @@ def _extract_and_match_barcodes_for_reads(
     """Extract and match barcodes for a batch of read sequences.
 
     Pure worker function suitable for multiprocessing. Returns one dict per read
-    with keys: BC, BM, B1, B2, B3, B4, B5, B6.
+    with keys: BC, BM, B1, B2, B3, B4, B5, B6, B7, B8.
     """
     matcher = barcode_adapter_matcher
     composite_max_edits = barcode_composite_max_edits
@@ -1853,6 +1853,8 @@ def _extract_and_match_barcodes_for_reads(
         ]
         extracted_start_seq: Optional[str] = None
         extracted_end_seq: Optional[str] = None
+        start_offset: Optional[int] = None
+        end_offset: Optional[int] = None
         padded_region: Optional[str] = None
 
         for i, read_end in enumerate(["start", "end"]):
@@ -1869,14 +1871,16 @@ def _extract_and_match_barcodes_for_reads(
             for ci, candidate in enumerate(flanking_candidates):
                 end_flanking = candidate if search_from_start else end_flanking_cache[ci]
 
-                extracted_bc, _, _, padded_region = _extract_barcode_with_flanking(
-                    read_sequence=sequence,
-                    target_length=barcode_length,
-                    search_window=barcode_search_window,
-                    search_from_start=search_from_start,
-                    flanking=end_flanking,
-                    adapter_matcher=matcher,
-                    composite_max_edits=composite_max_edits,
+                extracted_bc, target_start, target_end, padded_region = (
+                    _extract_barcode_with_flanking(
+                        read_sequence=sequence,
+                        target_length=barcode_length,
+                        search_window=barcode_search_window,
+                        search_from_start=search_from_start,
+                        flanking=end_flanking,
+                        adapter_matcher=matcher,
+                        composite_max_edits=composite_max_edits,
+                    )
                 )
 
                 if extracted_bc and read_end == "end":
@@ -1888,10 +1892,15 @@ def _extract_and_match_barcodes_for_reads(
                     break
 
             if extracted_bc:
+                # `BQC-01`: where the barcode meets the insert, as bases from
+                # that read end (front: through the barcode's last base; rear:
+                # from its first base to the read's end).
                 if read_end == "start":
                     extracted_start_seq = extracted_bc
+                    start_offset = target_end
                 else:
                     extracted_end_seq = extracted_bc
+                    end_offset = len(sequence) - target_start
                 match_name, match_dist = _match_barcode_to_references(
                     extracted_bc,
                     bc_refs,
@@ -1933,6 +1942,8 @@ def _extract_and_match_barcodes_for_reads(
             "B4": extracted_end_seq,
             "B5": left_match,
             "B6": right_match,
+            "B7": start_offset,
+            "B8": end_offset,
         }
         results.append(row)
 
@@ -1971,6 +1982,10 @@ def extract_and_assign_barcodes_in_bam(
     - B4: Read-end extracted sequence (if found)
     - B5: Read-start barcode name (if found)
     - B6: Read-end barcode name (if found)
+    - B7: Read-start barcode/insert boundary, as bases from the read start
+      through the barcode (if extracted, matched or not)
+    - B8: Read-end barcode/insert boundary, as bases from the barcode's first
+      base to the read end (if extracted, matched or not)
     - BM: Match type ("both", "read_start_only", "read_end_only", "mismatch", "unclassified")
 
     When ``threads`` > 1, barcode extraction is parallelized across CPU cores using
@@ -2213,7 +2228,7 @@ def extract_and_assign_barcodes_in_bam(
 
     sidecar_path = input_bam.with_suffix(".barcode_tags.parquet")
     df = pd.DataFrame(tag_rows)
-    for col in ("BC", "BM", "B1", "B2", "B3", "B4", "B5", "B6"):
+    for col in ("BC", "BM", "B1", "B2", "B3", "B4", "B5", "B6", "B7", "B8"):
         if col not in df.columns:
             df[col] = None
     df.to_parquet(sidecar_path, index=False)
