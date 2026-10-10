@@ -418,6 +418,10 @@ def _attach_dense_barcode_identity(
         "barcode_rederived",
         "barcode_front",
         "barcode_rear",
+        "barcode_front_edit_distance",
+        "barcode_rear_edit_distance",
+        "barcode_front_insert_offset",
+        "barcode_rear_insert_offset",
         "BC",
         "BM",
         "bi",
@@ -427,6 +431,8 @@ def _attach_dense_barcode_identity(
         "B4",
         "B5",
         "B6",
+        "B7",
+        "B8",
     ]:
         if column in identity.columns:
             raw_adata.obs[column] = identity[column].values

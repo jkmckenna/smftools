@@ -79,6 +79,10 @@ The raw command prepares sequencing inputs and writes the read-relative source o
 - Adds read-level QC, UMI, and barcode metadata without constructing padded dense matrices,
   including per-read `max_insertion_length`/`max_deletion_length` (longest internal indel from the
   alignment CIGAR), later consumed by `preprocess`'s CIGAR-indel filter.
+- Records per-end evidence for barcode QC: `front_clip_length` / `rear_clip_length` (sequence
+  beyond the alignment at each read end, in read orientation), `has_supplementary_alignment`, and,
+  from the barcode extractor, each end's match edit distance and barcode/insert boundary
+  (`barcode_front_edit_distance`, `barcode_rear_insert_offset`, ...).
 - For `smf_modality: deaminase`, derives per-read C->T/G->A strand-switch metrics
   (`ct_event_count`, `ga_event_count`, `strand_segment_purity`, `strand_switch_position`) from the
   alignment CIGAR and writes a reference x barcode PCR-chimera-rate QC heatmap (`.png` + `.csv`)

@@ -150,6 +150,15 @@ def _evidence(value: Any) -> str:
     return "" if text.lower() in _UNKNOWN else text
 
 
+def _number(value: Any) -> float:
+    """A per-end numeric evidence value, NaN when absent."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return float("nan")
+    return number
+
+
 def barcode_key(value: str) -> str:
     """Comparison key that survives the naming differences between sources (`F35`).
 
@@ -640,12 +649,20 @@ def publish_barcode_identity_sidecar(
             "barcode_rederived": classifier_barcode,
             "barcode_front": _evidence(classifier.get("B5")),
             "barcode_rear": _evidence(classifier.get("B6")),
+            # `BQC-01`: per-end evidence behind those calls -- the match's edit
+            # distance and where the barcode meets the insert (bases from that
+            # read end), so barcode QC can separate miscalls and unsequenced
+            # ends without re-reading the classifier sidecar.
+            "barcode_front_edit_distance": _number(classifier.get("B1")),
+            "barcode_rear_edit_distance": _number(classifier.get("B2")),
+            "barcode_front_insert_offset": _number(classifier.get("B7")),
+            "barcode_rear_insert_offset": _number(classifier.get("B8")),
             # Backward-compatible aliases/evidence consumed by split and dense paths.
             "BC": barcode,
             "BM": _value(classifier.get("BM")) or _value(bam_record.get("bam_bm")),
             "bi": classifier.get("bi", bam_record.get("bam_bi")),
         }
-        for key in ("B1", "B2", "B3", "B4", "B5", "B6"):
+        for key in ("B1", "B2", "B3", "B4", "B5", "B6", "B7", "B8"):
             output[key] = classifier.get(key)
         output_rows.append(output)
 
