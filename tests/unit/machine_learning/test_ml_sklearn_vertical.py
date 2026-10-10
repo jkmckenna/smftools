@@ -171,6 +171,56 @@ def test_registered_models_share_training_and_application_contracts(
     assert np.mean(predictions.class_ids == dataset.data.labels) >= 0.75
 
 
+def test_runtime_n_jobs_fits_the_same_forest_and_keeps_the_recipe_value() -> None:
+    dataset = _Dataset()
+    serial = fit_sklearn_partition_model(dataset, _resolved(dataset, "random_forest"))
+    threaded = fit_sklearn_partition_model(dataset, _resolved(dataset, "random_forest"), n_jobs=4)
+
+    assert threaded.model.estimator.n_jobs == serial.model.estimator.n_jobs == 1
+    assert dict(threaded.model.native_parameters) == dict(serial.model.native_parameters)
+    np.testing.assert_array_equal(
+        apply_sklearn_partition_model(threaded.model, dataset.data).probabilities,
+        apply_sklearn_partition_model(serial.model, dataset.data).probabilities,
+    )
+
+
+def test_runtime_n_jobs_reaches_the_fit_through_train_options(monkeypatch) -> None:
+    from smftools.machine_learning.orchestration import SklearnTrainOptions, actions
+
+    seen = []
+    original = actions.fit_sklearn_partition_model
+
+    def spy(*args, **kwargs):
+        seen.append(kwargs.get("n_jobs"))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(actions, "fit_sklearn_partition_model", spy)
+    dataset = _Dataset()
+    actions.train_partition_model(
+        dataset,
+        _resolved(dataset, "random_forest"),
+        sklearn_options=SklearnTrainOptions(n_jobs=3),
+    )
+
+    assert seen == [3]
+
+
+def test_runtime_n_jobs_is_ignored_by_estimators_without_it() -> None:
+    dataset = _Dataset()
+    result = fit_sklearn_partition_model(
+        dataset, _resolved(dataset, "bernoulli_nb"), incremental=False, n_jobs=4
+    )
+
+    assert "n_jobs" not in result.model.estimator.get_params()
+
+
+def test_runtime_n_jobs_must_be_a_nonzero_integer() -> None:
+    dataset = _Dataset()
+
+    with pytest.raises(SklearnTrainingError, match="n_jobs"):
+        fit_sklearn_partition_model(dataset, _resolved(dataset, "random_forest"), n_jobs=0)
+
+
 def test_nonincremental_model_refuses_dataset_materialization_budget() -> None:
     dataset = _Dataset(fail_materialization=True)
 

@@ -60,6 +60,12 @@ class SklearnTrainOptions:
             identities. There is no reason to make the user ask for it. ``True``
             demands streaming and raises for a family without ``partial_fit``;
             ``False`` forces the materialized path and its memory ceiling.
+        n_jobs: Threads for an estimator that takes ``n_jobs`` (random
+            forest), for this fit only. A runtime setting, not part of the
+            model: the fitted estimator keeps its recipe value, so the plan,
+            the recorded parameters and the saved payload are those of a
+            single-threaded fit, and a forest's trees are the same either way
+            (each is seeded from ``random_state``). ``None`` uses the recipe's.
     """
 
     transform_spec: FeatureTransformSpec | None = None
@@ -68,6 +74,7 @@ class SklearnTrainOptions:
     incremental: bool | None = None
     streaming: bool | None = None
     calibration: str | None = None  # "sigmoid": Platt scaling on validation molecules
+    n_jobs: int | None = None
 
 
 @dataclass(frozen=True)
@@ -165,6 +172,7 @@ def train_partition_model(
                 seed=options.seed,
                 incremental=options.incremental,
                 registry=registry,
+                n_jobs=options.n_jobs,
             ),
             remedy=(
                 "SklearnTrainOptions(streaming=True)"
