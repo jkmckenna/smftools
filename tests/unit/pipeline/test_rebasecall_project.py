@@ -354,8 +354,10 @@ def test_the_project_plan_command_reports_without_writing(tmp_path, monkeypatch)
     )
 
     assert result.exit_code == 0, result.output
-    # CliRunner folds stderr into output, and config loading warns here.
-    payload = json.loads(result.output[result.output.index("{") :])
+    # CliRunner folds stderr into output: config loading warns before the
+    # JSON and, once earlier tests have configured logging, after it too.
+    # Decode the one JSON object and ignore what surrounds it.
+    payload, _end = json.JSONDecoder().raw_decode(result.output, result.output.index("{"))
     assert payload["ready_count"] == 2
     assert {member["experiment_id"] for member in payload["members"]} == {"exp-a", "exp-b"}
     assert sorted(path.name for path in tmp_path.rglob("*")) == before

@@ -124,6 +124,17 @@ The preprocess command performs QC, binarization, filtering, and duplicate detec
 - Performs complexity analyses using duplicate read clusters and Lander/Waterman fits (conversion/deamination workflows).
 - Visualizes read span masks and base quality scores with clustermaps.
 - Writes preprocessed (duplicates flagged, but kept) and preprocessed/deduplicated AnnData outputs.
+- Writes barcode QC beside the generation, in `barcode_contamination_qc/`: spike-in and per-end
+  agreement counts (`contamination_summary.json`), and, for native (ligation) barcoding kits with
+  per-end evidence, a ligation / tagging model (`tagging_summary.json`, `tagging_by_barcode.parquet`).
+  The model separates miscalls (confident calls naming kit barcodes outside the pool), ends without
+  a barcode (no sequence beyond the insert) and free-end tagging (barcodes from other libraries on
+  ends left free), and reports per barcode the expected share of foreign reads among double- and
+  single-barcoded reads, with bootstrap intervals. Per-library barcode ligation efficiency needs reads
+  covering their whole reference (amplicons) and is bounded by the unmeasured adapter efficiency. A
+  spike-in (`spike_in_references`) is optional: without one, contamination rests on mismatch reads
+  being free-end tags; with an unbarcoded spike-in whose two ends both ligate, its reads measure
+  tagging directly. Rapid and PCR barcoding kits get only the counts.
 
 General AnnData structures added by `preprocess`:
 

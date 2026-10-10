@@ -1394,6 +1394,27 @@ def execute_partitioned_preprocessing(
         # it must be visible.
         logger.exception("Barcode contamination QC failed; generation still published")
 
+    # Barcode ligation / tagging model (`BQC-02`): separates miscalls, ends
+    # without a barcode and free-end tagging using the per-end evidence from
+    # `BQC-01`; ligation kits only, and it self-skips on stores without that
+    # evidence.
+    from .barcode_tagging_model import kit_barcode_count, write_barcode_tagging_qc
+
+    try:
+        kit = getattr(cfg, "barcode_kit", None)
+        write_barcode_tagging_qc(
+            derived_spine.obs,
+            output_dir,
+            barcode_kit=kit,
+            spike_in_references=getattr(cfg, "spike_in_references", None) or [],
+            kit_size=kit_barcode_count(kit),
+            unclassified_dropped=bool(getattr(cfg, "skip_unclassified", False)),
+        )
+    except KeyError as error:
+        logger.info("Barcode tagging model skipped: %s", error)
+    except Exception:
+        logger.exception("Barcode tagging model failed; generation still published")
+
     # Sequence-context QC (`SCQ-01`): needs the final QC/dedup flags, so it
     # reads the finished store here. Tables always; figures with the plots.
     from .stage_context_qc import write_stage_context_qc
