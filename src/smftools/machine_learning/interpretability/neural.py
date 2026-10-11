@@ -117,12 +117,18 @@ def _validate_data(
         require_all=True,
     )
     validate_mask_relationships(model.input_schema, masks)
-    if not any(mask.kind == "padding" for mask in model.input_schema.masks) and np.any(
-        data.padding_mask
-    ):
-        raise InterpretabilityContractError(
-            "explanation data contains padding but the input schema does not declare it"
-        )
+    # Padding marks positions a molecule's read does not cover. Training reads
+    # such molecules whether or not the schema declares a padding mask (the
+    # transform treats padded positions as missing, and attributions exclude
+    # them below), so explanations accept them too -- provided padding holds
+    # no observed value, which would mean the data and its masks disagree.
+    padding = np.asarray(data.padding_mask, dtype=bool)
+    if np.any(padding):
+        observed = np.asarray(data.observed_mask, dtype=bool)
+        if np.any(observed & padding[:, :, np.newaxis]):
+            raise InterpretabilityContractError(
+                "explanation data has observed values at padded positions"
+            )
     transformed = TorchFeatureTransform(model.transform, device=model.resolved_device)(data)
     if not bool(transformed.values.isfinite().all().item()):
         raise InterpretabilityContractError("transformed neural explanation values must be finite")
