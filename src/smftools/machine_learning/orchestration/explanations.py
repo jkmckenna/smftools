@@ -332,6 +332,7 @@ def explain_run(
     rebuild_index: bool = True,
     figure: bool = True,
     device: str = "cpu",
+    workers: int = 1,
 ) -> PublishedExplanationRun:
     """Explain one model of a published train run, out-of-fold, and publish it.
 
@@ -353,6 +354,9 @@ def explain_run(
         tags, policy, environment, rebuild_index: As `train_and_publish`.
         device: Where torch models run (cpu, cuda, mps or auto); gradient
             methods are much faster on a GPU.
+        workers: Processes for TreeSHAP, which splits each fold's molecules
+            across them (`MLR-17`). A runtime choice: the attributions, and
+            the run's identity, are the same for any value.
         figure: Draw the default attribution clustermap into the run
             (``figures/attributions.png``: all folds, blocks by true class);
             `plot_explanation` draws others from the record.
@@ -364,6 +368,8 @@ def explain_run(
         raise MLJobServiceError("pass exactly one of workspace or project_dir")
     if workspace is None:
         workspace = resolve_ml_workspace(project_dir=project_dir)
+    if isinstance(workers, bool) or not isinstance(workers, int) or workers < 1:
+        raise MLJobServiceError("workers must be a positive integer")
     if method is not None and method not in METHOD_CONTRACTS:
         raise MLJobServiceError(f"unknown explanation method {method!r}")
     manifest, run_path = _read_run(workspace, run_id)
@@ -509,7 +515,9 @@ def explain_run(
                 parameters=parameters,
                 random_seed=seed,
             )
-            result = explain_partition_model(fitted, data, request, background=background)
+            result = explain_partition_model(
+                fitted, data, request, background=background, workers=workers
+            )
             channels = [channel.name for channel in fitted.input_schema.channels]
             channel_roles = [channel.biological_role for channel in fitted.input_schema.channels]
             coordinates = [int(value) for value in fitted.transform.coordinates]
