@@ -132,3 +132,67 @@ def test_without_positional_sidecar_the_model_records_why(tmp_path):
 def test_missing_raw_generation_is_an_error(tmp_path):
     with pytest.raises(BarcodeQCRecomputeError, match="no current raw generation"):
         recompute_barcode_qc(tmp_path, barcode_kit="SQK-NBD114-24")
+
+
+ADAPTER = "TTGACCAGTAGGCAGTCAATCGGATCCTAG"  # + 8 bp barcode = a "barcode" end clip
+KIT = {"NB01": "AAGGTTAA", "NB02": "CCTTGGCC"}
+
+
+def _revcomp(sequence):
+    return sequence[::-1].translate(str.maketrans("ACGT", "TGCA"))
+
+
+def test_extract_builds_per_end_calls_for_runs_demultiplexed_upstream(tmp_path):
+    """A MinKNOW-demultiplexed run has no positional sidecar; `--extract` makes one
+    from the aligned BAM (reverse records flipped back to read orientation)."""
+    from types import SimpleNamespace
+
+    root = _run(tmp_path, positional=False)
+    raw = root / "raw_outputs"
+    insert = ("GATTACA" * 6)[:REFERENCE_LENGTH]
+    reads = {
+        "same": (False, ADAPTER + KIT["NB01"] + insert + _revcomp(ADAPTER + KIT["NB01"])),
+        "mismatch": (True, ADAPTER + KIT["NB01"] + insert + _revcomp(ADAPTER + KIT["NB02"])),
+    }
+    header = {"HD": {"VN": "1.6"}, "SQ": [{"SN": "amp", "LN": REFERENCE_LENGTH}]}
+    with pysam.AlignmentFile(str(raw / "aligned_sorted.bam"), "wb", header=header) as out:
+        for name, (reverse, sequence) in reads.items():
+            record = sequence if not reverse else _revcomp(sequence)
+            clip = len(ADAPTER) + 8
+            read = pysam.AlignedSegment()
+            read.query_name = name
+            read.reference_id = 0
+            read.reference_start = 0
+            read.cigarstring = f"{clip}S{REFERENCE_LENGTH}M{clip}S"
+            read.query_sequence = record
+            read.query_qualities = pysam.qualitystring_to_array("I" * len(record))
+            read.is_reverse = reverse
+            out.write(read)
+    kit = tmp_path / "kit.yaml"
+    kit.write_text(
+        "name: TEST\nflanking:\n  adapter_side: "
+        + ADAPTER
+        + "\nbarcode_ends: both\nbarcode_max_edit_distance: 1\n"
+        "barcode_composite_max_edits: 0\nbarcodes:\n"
+        + "".join(f"  {name}: {sequence}\n" for name, sequence in KIT.items())
+    )
+    cfg = SimpleNamespace(
+        barcode_kit="custom",
+        custom_barcode_yaml=str(kit),
+        barcode_adapter_matcher="exact",
+        barcode_search_window=60,
+        samtools_backend="python",
+        threads=1,
+    )
+
+    result = recompute_barcode_qc(
+        root, barcode_kit="SQK-NBD114-24", pool=["NB01", "NB02"], extract_with=cfg
+    )
+
+    out = root / "raw_outputs" / "barcode_qc" / GENERATION
+    calls = pd.read_parquet(out / "positional.parquet").set_index("read_name")
+    assert tuple(calls.loc["same", ["B5", "B6"]]) == ("NB01", "NB01")
+    assert tuple(calls.loc["mismatch", ["B5", "B6", "BM"]]) == ("NB01", "NB02", "mismatch")
+    assert any("extracted from the aligned BAM" in note for note in result["notes"])
+    summary = json.loads((out / "barcode_contamination_qc" / "tagging_summary.json").read_text())
+    assert summary["mismatch"] == 1 and summary["double_same"] == 1

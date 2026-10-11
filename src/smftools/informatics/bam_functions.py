@@ -1968,6 +1968,8 @@ def extract_and_assign_barcodes_in_bam(
     barcode_ends: Optional[str] = None,
     barcode_amplicon_gap_tolerance: int = 5,
     threads: Optional[int] = None,
+    output_path: str | Path | None = None,
+    primary_only: bool = False,
 ) -> Path:
     """Extract barcodes from reads and write results to a Parquet sidecar file.
 
@@ -2030,6 +2032,12 @@ def extract_and_assign_barcodes_in_bam(
     threads : int, optional
         Number of worker processes for barcode extraction. If None or <= 1,
         extraction runs in a single process.
+    output_path : str or Path, optional
+        Where to write the sidecar; default ``<bam>.barcode_tags.parquet``
+        beside the input.
+    primary_only : bool
+        Skip secondary and supplementary records before extraction (they never
+        reach the sidecar). Use on aligned BAMs, where they can be many.
 
     Returns
     -------
@@ -2110,9 +2118,12 @@ def extract_and_assign_barcodes_in_bam(
             for read in tqdm(
                 in_bam.fetch(until_eof=True), desc="Barcode: reading BAM", unit=" reads"
             ):
+                primary = not read.is_secondary and not read.is_supplementary
+                if primary_only and not primary:
+                    continue
                 read_names.append(read.query_name)
                 is_reverse_flags.append(read.is_reverse)
-                is_primary.append(not read.is_secondary and not read.is_supplementary)
+                is_primary.append(primary)
                 seq = read.query_sequence or ""
                 if read.is_reverse:
                     seq = _reverse_complement(seq)
@@ -2128,9 +2139,12 @@ def extract_and_assign_barcodes_in_bam(
             if len(fields) < 11:
                 continue
             flag = int(fields[1])
+            primary = not bool(flag & 0x100) and not bool(flag & 0x800)
+            if primary_only and not primary:
+                continue
             read_names.append(fields[0])
             is_reverse_flags.append(bool(flag & 0x10))
-            is_primary.append(not bool(flag & 0x100) and not bool(flag & 0x800))
+            is_primary.append(primary)
             seq = fields[9]
             if seq == "*":
                 seq = ""
@@ -2226,7 +2240,11 @@ def extract_and_assign_barcodes_in_bam(
 
     del all_results, read_names, is_primary
 
-    sidecar_path = input_bam.with_suffix(".barcode_tags.parquet")
+    sidecar_path = (
+        Path(output_path)
+        if output_path is not None
+        else input_bam.with_suffix(".barcode_tags.parquet")
+    )
     df = pd.DataFrame(tag_rows)
     for col in ("BC", "BM", "B1", "B2", "B3", "B4", "B5", "B6", "B7", "B8"):
         if col not in df.columns:

@@ -290,7 +290,16 @@ def refresh_demux(config_path, prefer, no_select: bool):
     is_flag=True,
     help="Fit the tagging model on the molecule table instead of every primary read.",
 )
-def barcode_qc(config_path, pool, molecule_table: bool):
+@click.option(
+    "--extract",
+    is_flag=True,
+    help=(
+        "When the run has no per-end barcode sidecar (MinKNOW / dorado demux), run the native "
+        "extractor over the aligned BAM first; needs reads that kept their barcodes."
+    ),
+)
+@click.option("--threads", type=click.IntRange(min=1), default=None, help="Extractor workers.")
+def barcode_qc(config_path, pool, molecule_table: bool, extract: bool, threads):
     """Recompute barcode QC for the current raw generation (`BQC-03`).
 
     Writes the spike-in contamination counts and, for native (ligation)
@@ -298,7 +307,9 @@ def barcode_qc(config_path, pool, molecule_table: bool):
     ``raw_outputs/barcode_qc/<raw generation id>/``. Nothing is regenerated
     and no generation is modified. The tagging model reads every primary
     read, with per-end evidence from the aligned BAM and the barcode sidecar
-    (the molecule table may lack unclassified reads).
+    (the molecule table may lack unclassified reads). ``--extract`` builds the
+    sidecar for runs demultiplexed upstream, from reads that kept their
+    barcodes.
     """
     from .cli.helpers import load_experiment_config
     from .preprocessing.barcode_qc_recompute import (
@@ -315,6 +326,8 @@ def barcode_qc(config_path, pool, molecule_table: bool):
             pool=list(pool) or None,
             read_level=not molecule_table,
             unclassified_dropped=bool(getattr(cfg, "skip_unclassified", False)),
+            extract_with=cfg if extract else None,
+            threads=threads,
         )
     except BarcodeQCRecomputeError as error:
         raise click.ClickException(str(error)) from error
