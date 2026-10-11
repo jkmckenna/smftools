@@ -266,10 +266,14 @@ def explain_partition_model(
     request: InterpretabilityRequest,
     *,
     background: BackgroundReference | None = None,
+    workers: int = 1,
 ) -> AttributionResult:
-    """Explain an already-fitted canonical model without invoking training."""
+    """Explain an already-fitted canonical model without invoking training.
+
+    ``workers``: processes for TreeSHAP (`MLR-17`); runtime only.
+    """
     if isinstance(model, FittedSklearnModel):
-        return explain_sklearn_model(model, data, request, background=background)
+        return explain_sklearn_model(model, data, request, background=background, workers=workers)
     if isinstance(model, FittedTorchModel):
         return explain_torch_model(model, data, request, background=background)
     raise MLJobServiceError("explanation requires a canonical fitted sklearn or Torch model")

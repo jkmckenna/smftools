@@ -371,12 +371,80 @@ def _permutation_importance(
     )
 
 
+#: Rows per TreeSHAP chunk below which splitting costs more than it saves.
+_TREE_SHAP_MIN_CHUNK = 16
+_TREE_SHAP_WORKER: dict = {}
+
+
+def _tree_shap_worker_init(estimator: bytes, data, model_output: str, perturbation: str) -> None:
+    import pickle
+
+    shap = require("shap", extra="ml-extended", purpose="TreeSHAP explanations")
+    _TREE_SHAP_WORKER["explainer"] = shap.TreeExplainer(
+        pickle.loads(estimator),
+        data=data,
+        model_output=model_output,
+        feature_perturbation=perturbation,
+    )
+
+
+def _tree_shap_chunk(task: tuple[np.ndarray, bool]):
+    features, check_additivity = task
+    return _TREE_SHAP_WORKER["explainer"].shap_values(features, check_additivity=check_additivity)
+
+
+def _tree_shap_values(
+    explainer,
+    estimator,
+    features: np.ndarray,
+    *,
+    data,
+    model_output: str,
+    perturbation: str,
+    check_additivity: bool,
+    workers: int,
+):
+    """``explainer.shap_values(features)``, split by rows over ``workers``
+    processes when that pays (`MLR-17`).
+
+    TreeSHAP attributes each row from the fitted trees alone (path-dependent)
+    or from the trees and a fixed background (interventional), never from the
+    other rows, so chunks computed apart and joined in order equal the serial
+    result exactly.
+    """
+    n_rows = len(features)
+    if workers <= 1 or n_rows < 2 * _TREE_SHAP_MIN_CHUNK:
+        return explainer.shap_values(features, check_additivity=check_additivity)
+    import multiprocessing
+    import pickle
+    from concurrent.futures import ProcessPoolExecutor
+
+    n_chunks = min(workers * 4, n_rows // _TREE_SHAP_MIN_CHUNK)
+    chunks = np.array_split(np.arange(n_rows), n_chunks)
+    with ProcessPoolExecutor(
+        max_workers=min(workers, n_chunks),
+        mp_context=multiprocessing.get_context("spawn"),
+        initializer=_tree_shap_worker_init,
+        initargs=(pickle.dumps(estimator), data, model_output, perturbation),
+    ) as pool:
+        parts = list(
+            pool.map(_tree_shap_chunk, [(features[rows], check_additivity) for rows in chunks])
+        )
+    if isinstance(parts[0], list):
+        return [
+            np.concatenate([part[index] for part in parts], axis=0)
+            for index in range(len(parts[0]))
+        ]
+    return np.concatenate(parts, axis=0)
+
+
 def _tree_shap(
     model: FittedSklearnModel,
     data: _ClassicalData,
     request: InterpretabilityRequest,
     features: np.ndarray,
     background: BackgroundReference | None,
+    workers: int = 1,
 ) -> AttributionResult:
     parameters = _parameters(
         request,
@@ -426,7 +494,16 @@ def _tree_shap(
         model_output=model_output,
         feature_perturbation=perturbation,
     )
-    raw_values = explainer.shap_values(features, check_additivity=check_additivity)
+    raw_values = _tree_shap_values(
+        explainer,
+        model.estimator,
+        features,
+        data=background_features,
+        model_output=model_output,
+        perturbation=perturbation,
+        check_additivity=check_additivity,
+        workers=workers,
+    )
     target = request.target.class_id
     assert target is not None
     if isinstance(raw_values, list):
@@ -472,6 +549,7 @@ def explain_sklearn_model(
     request: InterpretabilityRequest,
     *,
     background: BackgroundReference | None = None,
+    workers: int = 1,
 ) -> AttributionResult:
     """Execute one validated classical explanation without loading model artifacts.
 
@@ -485,6 +563,9 @@ def explain_sklearn_model(
         request: Validated explanation intent and method parameters.
         background: Optional checksummed training background required by interventional
             TreeSHAP.
+        workers: Processes for TreeSHAP, which splits rows across them
+            (`MLR-17`); a runtime choice that never changes the attributions.
+            Other methods ignore it.
 
     Returns:
         Immutable schema-aligned attribution result.
@@ -505,7 +586,7 @@ def explain_sklearn_model(
     if request.method == "PermutationImportance":
         return _permutation_importance(model, data, request, features)
     if request.method == "TreeSHAP":
-        return _tree_shap(model, data, request, features, background)
+        return _tree_shap(model, data, request, features, background, workers=workers)
     raise InterpretabilityContractError(
         f"method {request.method!r} is not implemented by the sklearn explanation adapter"
     )

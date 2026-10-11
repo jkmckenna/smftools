@@ -168,6 +168,7 @@ the stores.
 | `MLR-14` conditional generative measurement model | proposed | a conditional VAE whose decoder is a measurement model (chromatin from the latent; enzyme, dose, additive, batch as measurement terms): simulate a molecule under another condition, or a condition-free latent; builds on `MLR-11` |
 | `MLR-15` rank on unsaturated scores | implemented (`fix/ml-rank-on-log-odds`) | binary probabilistic sklearn models score by positive-class log-odds (naive Bayes from `predict_log_proba`); ranking metrics, curves and comparisons use scores, Brier / calibration / thresholds keep probabilities; predictions store `score_<class>` |
 | `MLR-16` retire superseded runs' models | implemented (`feature/mlr-16-model-retention`) | `artifacts/retention.py`: plan (read-only) and apply retirement of model bundles whose run a newer completed run replaced; kept runs' sources, aliases and lineage protected; run records kept; `index/retired_models.json`; loading a retired model names its replacement; `smftools project ml-retention` |
+| `MLR-17` parallel TreeSHAP | implemented (`feature/mlr-17-parallel-treeshap`) | `explain_run(..., workers=N)` splits each fold's molecules over N processes for TreeSHAP; identical attributions (tested against serial, both perturbation modes); runtime only, not part of the explanation's identity |
 
 ### `MLR-01` -- train-and-publish
 
@@ -723,6 +724,25 @@ from replaced runs. `artifacts/retention.py` plans and applies retirement:
 
 On the project above: by plan hash 7 of 868 runs superseded (4.2 GB of
 models); by tags 162 runs, 1,251 model bundles, 69.8 GB.
+
+### `MLR-17` -- parallel TreeSHAP
+
+`shap.TreeExplainer.shap_values` walks every molecule through every tree on
+one core, and `explain_run` explains folds in turn. Forests grown to purity
+on near-chance tasks are deep (one project: median depth 38, 2,800 leaves per
+tree, 136 MB per forest), where TreeSHAP costs ~0.4 s per molecule -- tens of
+minutes per run. `interpretability.classical._tree_shap_values` now splits the
+rows into chunks over a spawn process pool (`workers`, threaded from
+`explain_run` through `explain_partition_model` / `explain_sklearn_model`);
+each worker rebuilds the explainer once from the pickled estimator. TreeSHAP
+attributes each row from the trees (and, interventional, a fixed background)
+alone, so joined chunks equal the serial values exactly -- the test compares
+them bit for bit. `workers` is a runtime choice like `SklearnTrainOptions.n_jobs`
+(`MLR-04`): it does not enter the request parameters or the run identity.
+Measured on that forest with other jobs running: 240 molecules 96 s serial,
+35 s with 4 workers, 29 s with 10; end to end an explanation run went
+461 s -> 303 s, the rest being per-fold data binding, which stays serial (a
+follow-up could explain folds concurrently).
 
 ## Project side (`nkg2a_final`)
 

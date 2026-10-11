@@ -349,3 +349,38 @@ def test_tree_shap_parameter_validation_happens_before_optional_import(monkeypat
     )
     with pytest.raises(InterpretabilityContractError, match="require model_output='raw'"):
         explain_sklearn_model(model, validation, request)
+
+
+@pytest.mark.parametrize("perturbation", ["tree_path_dependent", "interventional"])
+def test_parallel_tree_shap_equals_serial(monkeypatch, perturbation) -> None:
+    """`MLR-17`: rows split over worker processes give the serial attributions exactly."""
+    from smftools.machine_learning.interpretability import classical
+
+    monkeypatch.setattr(classical, "_TREE_SHAP_MIN_CHUNK", 2)
+    dataset, model = _fit("random_forest", transform_spec=FeatureTransformSpec(indicators=()))
+    validation = _data("validation", repeats=3)
+    background = None
+    parameters = {
+        "model_output": "raw",
+        "feature_perturbation": perturbation,
+        "check_additivity": False,
+    }
+    baseline = None
+    if perturbation == "interventional":
+        background = sample_training_background(
+            dataset.train,
+            model.input_schema,
+            dataset_snapshot_id=DATASET_ID,
+            split_id=SPLIT_ID,
+            max_observations=6,
+            random_seed=5,
+        )
+        baseline = background.to_baseline()
+    request = _request(model, validation, "TreeSHAP", parameters, baseline=baseline)
+
+    serial = explain_sklearn_model(model, validation, request, background=background)
+    parallel = explain_sklearn_model(model, validation, request, background=background, workers=3)
+
+    assert len(validation.molecule_uids) >= 4
+    np.testing.assert_array_equal(parallel.values, serial.values)
+    assert parallel.metadata == serial.metadata
