@@ -442,6 +442,17 @@ canonical name even if experiments called it something different.
 
 `smftools project export-fastq ...` builds on the same registry.
 
+#### ML model retention
+
+Rerunning ML jobs leaves the replaced runs' model bundles in the workspace.
+`smftools project ml-retention <project_dir>` plans which to retire: a run is
+superseded when a newer completed run has the same action, job, model keys,
+plan hash and tags (`--by-tags` drops the plan hash, for projects whose tags
+name a run's purpose). Models that a kept run used, that an alias names, or
+that a kept model descends from are protected; run records are kept. Nothing
+is removed without `--apply`; retired models are listed in the workspace's
+`index/retired_models.json`.
+
 ### Re-ingestion exports
 
 `export-fastq` remains the sequence-only compatibility command. It now writes a versioned bundle

@@ -167,6 +167,7 @@ the stores.
 | `MLR-13` probability calibration | done (PR #724) | sklearn models declare `calibration: sigmoid`: Platt scaling (smoothed targets) of the positive-class log-odds on each fold's validation molecules, stored with the model and applied by the predictor; ranking unchanged (naive Bayes ties at saturation broken by exact log-odds); explanations use the raw estimator. Also: attribution clustermap panels `before` a channel, class colours, balanced classes, a class strip in score order |
 | `MLR-14` conditional generative measurement model | proposed | a conditional VAE whose decoder is a measurement model (chromatin from the latent; enzyme, dose, additive, batch as measurement terms): simulate a molecule under another condition, or a condition-free latent; builds on `MLR-11` |
 | `MLR-15` rank on unsaturated scores | implemented (`fix/ml-rank-on-log-odds`) | binary probabilistic sklearn models score by positive-class log-odds (naive Bayes from `predict_log_proba`); ranking metrics, curves and comparisons use scores, Brier / calibration / thresholds keep probabilities; predictions store `score_<class>` |
+| `MLR-16` retire superseded runs' models | implemented (`feature/mlr-16-model-retention`) | `artifacts/retention.py`: plan (read-only) and apply retirement of model bundles whose run a newer completed run replaced; kept runs' sources, aliases and lineage protected; run records kept; `index/retired_models.json`; loading a retired model names its replacement; `smftools project ml-retention` |
 
 ### `MLR-01` -- train-and-publish
 
@@ -691,6 +692,37 @@ gain `score_<class>` columns; `compare` prefers them. Explanations keep the
 probability as their score (TreeSHAP attributions sum to it). Runs published
 before this carry no `score_` columns: their ranking metrics should be
 recomputed (re-run, or re-apply the stored models).
+
+### `MLR-16` -- retire superseded runs' models
+
+Every training run publishes its fitted models as immutable bundles, and a
+rerun -- after a fix such as `MLR-15`, or a data refresh -- publishes new ones
+beside the old. On one project the model store reached 176 GB, much of it
+from replaced runs. `artifacts/retention.py` plans and applies retirement:
+
+- **Identity.** A run is superseded when a newer *completed* run has the same
+  action, job name, model keys, plan hash and caller tags. Optionally
+  (`match_plan_hash=False`, CLI `--by-tags`) the plan hash is left out, for
+  callers whose tags name a run's purpose and for whom a changed plan (new
+  labels, masks, data) is a deliberate replacement; untagged runs always keep
+  the plan hash. Model keys stay in the identity: two sets with identical
+  tags but different models (`nb`/`rf` vs `nb_cal`) are different jobs.
+- **Kept.** The newest `keep_last` completed runs per identity, runs passed
+  explicitly, and transitively every run a kept run read from
+  (`source_run_ids`). Failed reruns supersede nothing.
+- **Protected models.** Models of kept runs, models a kept run used
+  (`source_model_ids`), aliased models, and lineage parents of any protected
+  model. Models whose run record is missing are left alone.
+- **Apply.** Replans and refuses if the store changed since the plan; records
+  every model in `index/retired_models.json` (with the run that superseded
+  its own) *before* removing its bundle; rebuilds the indexes. Run bundles
+  stay -- they are small and hold metrics, predictions and which models were
+  fit. Loading a retired model raises with its replacement.
+- **CLI.** `smftools project ml-retention <project> [--keep-last N]
+  [--by-tags] [--apply] [--json]`; plans by default.
+
+On the project above: by plan hash 7 of 868 runs superseded (4.2 GB of
+models); by tags 162 runs, 1,251 model bundles, 69.8 GB.
 
 ## Project side (`nkg2a_final`)
 

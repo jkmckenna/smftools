@@ -674,6 +674,15 @@ class PublishedApplyRun:
 
 def _load_model(workspace: MLWorkspace, model_id: str, backend: str, device: str = "cpu"):
     """A published model; torch models on ``device`` (cpu, cuda, mps or auto)."""
+    from ..artifacts.retention import retired_models
+
+    retired = retired_models(workspace).get(model_id)
+    if retired is not None:
+        raise MLJobServiceError(
+            f"model {model_id} was retired on {retired['retired_at']}: its run "
+            f"{retired['originating_run_id']} was superseded by {retired['superseded_by'] or 'a newer run'} "
+            "(MLR-16); use the newer run's models"
+        )
     if backend == "sklearn":
         from ..models.sklearn_artifacts import load_published_sklearn_model
 

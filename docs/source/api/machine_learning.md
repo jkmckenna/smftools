@@ -138,6 +138,7 @@ Immutable run, model, and result publication.
    smftools.machine_learning.artifacts.model
    smftools.machine_learning.artifacts.publication
    smftools.machine_learning.artifacts.results
+   smftools.machine_learning.artifacts.retention
    smftools.machine_learning.artifacts.run
 ```
 

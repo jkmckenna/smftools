@@ -31,9 +31,21 @@ from .results import (
     ExplanationTarget,
     PredictionManifest,
 )
+from .retention import (
+    MLRetentionError,
+    RetentionPlan,
+    apply_model_retention,
+    plan_model_retention,
+    retired_models,
+)
 from .run import RunManifest, new_run_id
 
 __all__ = [
+    "MLRetentionError",
+    "RetentionPlan",
+    "apply_model_retention",
+    "plan_model_retention",
+    "retired_models",
     "ArtifactReference",
     "CheckpointManifest",
     "EnvironmentRecord",

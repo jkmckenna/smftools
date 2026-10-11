@@ -1328,6 +1328,67 @@ def project_rebasecall_plan_cmd(
     click.echo(format_project_rebasecall_plan(plan))
 
 
+@project_group.command("ml-retention")
+@click.argument("project_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.option(
+    "--keep-last",
+    type=click.IntRange(min=1),
+    default=1,
+    show_default=True,
+    help="Completed runs kept per job identity (action, job, model keys, plan hash, tags).",
+)
+@click.option(
+    "--by-tags",
+    is_flag=True,
+    help=(
+        "A newer run with the same action, job, model keys and tags supersedes an older one even when "
+        "its plan changed (for tags that name a run's purpose)."
+    ),
+)
+@click.option("--apply", "apply_plan", is_flag=True, help="Remove the planned model bundles.")
+@click.option("--json", "as_json", is_flag=True, help="Emit the plan as JSON.")
+def project_ml_retention_cmd(
+    project_dir: Path, keep_last: int, by_tags: bool, apply_plan: bool, as_json: bool
+):
+    """Retire model files of superseded ML runs (`MLR-16`).
+
+    Plans by default and removes nothing. A run is superseded when a newer
+    completed run has the same action, job, model keys, plan hash and tags; its model
+    bundles are removed unless a kept run, a kept model's lineage or an alias
+    still uses them. Run records (metrics, predictions) are kept, and retired
+    models are listed in the workspace's ``index/retired_models.json``.
+    """
+    import json as _json
+
+    from .machine_learning.artifacts.retention import (
+        MLRetentionError,
+        apply_model_retention,
+        plan_model_retention,
+    )
+    from .machine_learning.workspace import resolve_ml_workspace
+
+    workspace = resolve_ml_workspace(project_dir=project_dir)
+    plan = plan_model_retention(workspace, keep_last=keep_last, match_plan_hash=not by_tags)
+    if as_json:
+        click.echo(_json.dumps(plan.to_dict(), indent=2))
+    else:
+        click.echo(
+            f"{plan.runs} runs ({plan.kept_runs} kept, {plan.superseded_runs} superseded); "
+            f"{plan.models} models: retire {len(plan.retire)} "
+            f"({plan.retire_bytes / 1e9:.1f} GB), protected {len(plan.protected)}, "
+            f"without a run record {len(plan.orphan_models)}"
+        )
+    if not apply_plan:
+        if not as_json:
+            click.echo("Nothing removed: pass --apply to retire them.")
+        return
+    try:
+        record = apply_model_retention(workspace, plan)
+    except MLRetentionError as error:
+        raise click.ClickException(str(error)) from error
+    click.echo(f"Retired {len(plan.retire)} models; recorded in {record}")
+
+
 @project_group.group("analyses")
 def project_analyses_group():
     """Inspect project-owned analysis caches without loading their results."""
