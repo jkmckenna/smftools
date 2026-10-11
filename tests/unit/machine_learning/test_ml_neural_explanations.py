@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import numpy as np
 import pytest
 import torch
@@ -32,7 +34,7 @@ DATASET_ID = "2" * 64
 SPLIT_ID = "3" * 64
 
 
-def _schemas() -> tuple[InputSchema, LabelSchema]:
+def _schemas(*, padding: bool = True) -> tuple[InputSchema, LabelSchema]:
     plan = parse_ml_plan(
         {
             "schema_version": 1,
@@ -102,7 +104,7 @@ def _schemas() -> tuple[InputSchema, LabelSchema]:
                 MaskSpec.standard("observed"),
                 MaskSpec.standard("availability"),
                 MaskSpec.standard("design"),
-                MaskSpec.standard("padding"),
+                *((MaskSpec.standard("padding"),) if padding else ()),
             ),
         ),
         LabelSchema.from_plan_label(dataset.labels),
@@ -148,8 +150,8 @@ def _data(split: str, *, offset: int = 0) -> MLMaterializedPartitionData:
     )
 
 
-def _fitted_model():
-    input_schema, label_schema = _schemas()
+def _fitted_model(*, padding: bool = True):
+    input_schema, label_schema = _schemas(padding=padding)
     train = _data("train")
     transform = fit_feature_transform(
         train,
@@ -458,3 +460,33 @@ def test_gradient_shap_is_deterministic_for_a_fixed_request_seed() -> None:
     assert first.result_id == second.result_id
     np.testing.assert_array_equal(first.values, second.values)
     np.testing.assert_array_equal(first.convergence_delta, second.convergence_delta)
+
+
+def test_padded_molecules_explain_without_a_declared_padding_mask() -> None:
+    """A read that does not cover the whole window is padded there. Training
+    reads such molecules whatever the schema declares, so explanations must
+    too; padded positions are unobserved and get no attribution."""
+    train, model = _fitted_model(padding=False)
+    test = _data("test", offset=100)
+    assert test.padding_mask.any()
+    assert not any(mask.kind == "padding" for mask in model.input_schema.masks)
+    request = _request(model, test, "Saliency", {"absolute": True, "example_batch_size": 2})
+
+    result = explain_torch_model(model, test, request)
+
+    assert result.values.shape == test.values.shape
+    assert np.all(result.values[test.padding_mask] == 0.0)
+
+
+def test_observed_values_at_padded_positions_are_refused() -> None:
+    _train, model = _fitted_model(padding=False)
+    test = _data("test", offset=100)
+    observed = test.observed_mask.copy()
+    observed[2, 5, 0] = True  # padded position claims an observation
+    values = test.values.copy()
+    values[2, 5, 0] = 1.0
+    broken = replace(test, observed_mask=observed, values=values)
+    request = _request(model, broken, "Saliency", {"absolute": True, "example_batch_size": 2})
+
+    with pytest.raises(InterpretabilityContractError, match="observed values at padded positions"):
+        explain_torch_model(model, broken, request)
