@@ -69,7 +69,7 @@ An active branch, some items merged and others open.
 | `duplicate_detection_span_agnostic_implementation_plan.md` | `DSA` span-agnostic duplicate detection; `DSA-01`–`DSA-04`, `DSA-06` merged, `DSA-05` measured (hierarchical-cap revisit open) |
 | `transfer_time_analysis_bundling_plan.md` | `TAB` bundle a run's analysis-tree generations into few large files before moving them between drives; `TAB-01`, `TAB-02` merged, `TAB-03` blocked (no tested configuration beat plain rsync); zarr v3 sharding and coarser source-side partitioning both ruled out first, on real data |
 | `motif_scanning_occupancy_implementation_plan.md` | `MOT-01`–`MOT-06` (`MOT-01`–`MOT-03` merged, `MOT-04` implemented) motif scanning (user-supplied motif file; built-in numpy engine, optional FIMO), bulk HMM-class tracks with motif lanes, and per-molecule motif occupancy from HMM classes (TF-sized, medium, nucleosome, accessible, uninformative), co-occupancy and group comparisons; an analysis + CLI, not a stage |
-| `barcode_qc_end_identity_implementation_plan.md` | `BQC-01`–`BQC-05` (`BQC-01`–`BQC-02` implemented) per-end barcode evidence (names, edit distances, boundaries, clips) for every read; a ligation / detection / tagging model separating miscalls, unbarcoded rear ends and free-adapter tagging; extract-then-trim before alignment; with / without a spike-in; extends `EGL-31` |
+| `barcode_qc_end_identity_implementation_plan.md` | `BQC-01`–`BQC-05` (`BQC-01`–`BQC-03` implemented) per-end barcode evidence (names, edit distances, boundaries, clips) for every read; a ligation / detection / tagging model separating miscalls, unbarcoded rear ends and free-adapter tagging; extract-then-trim before alignment; with / without a spike-in; extends `EGL-31` |
 
 ## `proposed/`
 

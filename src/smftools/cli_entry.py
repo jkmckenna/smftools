@@ -278,6 +278,51 @@ def refresh_demux(config_path, prefer, no_select: bool):
     )
 
 
+@experiment_group.command("barcode-qc")
+@click.argument("config_path", type=click.Path(exists=True))
+@click.option(
+    "--pool",
+    multiple=True,
+    help="Barcodes pooled in the run (repeatable); default: inferred from double-barcoded reads.",
+)
+@click.option(
+    "--molecule-table",
+    is_flag=True,
+    help="Fit the tagging model on the molecule table instead of every primary read.",
+)
+def barcode_qc(config_path, pool, molecule_table: bool):
+    """Recompute barcode QC for the current raw generation (`BQC-03`).
+
+    Writes the spike-in contamination counts and, for native (ligation)
+    barcoding kits, the ligation / tagging model to
+    ``raw_outputs/barcode_qc/<raw generation id>/``. Nothing is regenerated
+    and no generation is modified. The tagging model reads every primary
+    read, with per-end evidence from the aligned BAM and the barcode sidecar
+    (the molecule table may lack unclassified reads).
+    """
+    from .cli.helpers import load_experiment_config
+    from .preprocessing.barcode_qc_recompute import (
+        BarcodeQCRecomputeError,
+        recompute_barcode_qc,
+    )
+
+    cfg = load_experiment_config(str(config_path))
+    try:
+        result = recompute_barcode_qc(
+            cfg.output_directory,
+            barcode_kit=getattr(cfg, "barcode_kit", None),
+            spike_in_references=getattr(cfg, "spike_in_references", None) or [],
+            pool=list(pool) or None,
+            read_level=not molecule_table,
+            unclassified_dropped=bool(getattr(cfg, "skip_unclassified", False)),
+        )
+    except BarcodeQCRecomputeError as error:
+        raise click.ClickException(str(error)) from error
+    for note in result["notes"]:
+        click.echo(note)
+    click.echo(f"Barcode QC written to {result['output_dir']}")
+
+
 @experiment_group.command()
 @click.argument("config_path", type=click.Path(exists=True))
 def load(config_path):

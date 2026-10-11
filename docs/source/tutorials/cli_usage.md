@@ -135,6 +135,10 @@ The preprocess command performs QC, binarization, filtering, and duplicate detec
   spike-in (`spike_in_references`) is optional: without one, contamination rests on mismatch reads
   being free-end tags; with an unbarcoded spike-in whose two ends both ligate, its reads measure
   tagging directly. Rapid and PCR barcoding kits get only the counts.
+  For a run published before these existed, `smftools experiment barcode-qc <config>` writes both
+  reports for the current raw generation to `raw_outputs/barcode_qc/<generation id>/` without
+  regenerating anything; it fits the tagging model on every primary read, rebuilding per-end
+  evidence from the aligned BAM and the barcode sidecar (`--pool` declares the pooled barcodes).
 
 General AnnData structures added by `preprocess`:
 
