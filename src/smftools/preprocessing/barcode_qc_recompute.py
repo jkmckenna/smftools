@@ -42,6 +42,8 @@ logger = get_logger(__name__)
 
 RAW_STAGE_DIR = "raw_outputs"
 QC_DIRNAME = "barcode_qc"
+#: Per-end barcode calls written by ``--extract`` beside the QC outputs.
+EXTRACTED_POSITIONAL = "positional.parquet"
 
 
 class BarcodeQCRecomputeError(RuntimeError):
@@ -156,8 +158,90 @@ def _primary_alignments(bam: Path) -> pd.DataFrame:
     return frame.drop_duplicates("read_name")
 
 
+def barcode_kit_settings(cfg) -> dict:
+    """The barcode extractor's settings for a config, resolved as the raw stage
+    resolves them (config over kit YAML over defaults)."""
+    from smftools.constants import BARCODE_KIT_ALIASES
+
+    from ..informatics.bam_functions import (
+        BarcodeKitConfig,
+        _build_flanking_from_adapters,
+        load_barcode_references_from_yaml,
+        resolve_barcode_config,
+    )
+
+    kit = getattr(cfg, "barcode_kit", None)
+    if kit == "custom":
+        path = getattr(cfg, "custom_barcode_yaml", None)
+    else:
+        path = BARCODE_KIT_ALIASES.get(str(kit or ""))
+    if not path:
+        raise BarcodeQCRecomputeError(f"no barcode kit YAML for barcode_kit={kit!r}")
+    loaded = load_barcode_references_from_yaml(path)
+    if isinstance(loaded, BarcodeKitConfig):
+        kit_config = loaded
+    else:
+        references, length = loaded
+        adapters = getattr(cfg, "barcode_adapters", [None, None]) or [None, None]
+        kit_config = BarcodeKitConfig(
+            barcodes=references,
+            barcode_length=length,
+            flanking=_build_flanking_from_adapters(adapters)
+            if any(adapter is not None for adapter in adapters)
+            else None,
+        )
+    resolved = resolve_barcode_config(kit_config, cfg)
+    return {
+        "barcode_adapters": getattr(cfg, "barcode_adapters", [None, None]),
+        "barcode_references": kit_config.barcodes,
+        "barcode_length": kit_config.barcode_length,
+        "barcode_search_window": getattr(cfg, "barcode_search_window", 200),
+        "barcode_max_edit_distance": resolved["barcode_max_edit_distance"],
+        "barcode_adapter_matcher": getattr(cfg, "barcode_adapter_matcher", "edlib"),
+        "barcode_composite_max_edits": resolved["barcode_composite_max_edits"],
+        "barcode_min_separation": resolved.get("barcode_min_separation"),
+        "require_both_ends": bool(getattr(cfg, "barcode_both_ends", False)),
+        "min_barcode_score": getattr(cfg, "barcode_min_score", None),
+        "barcode_kit_config": kit_config,
+        "barcode_ends": resolved["barcode_ends"],
+        "barcode_amplicon_gap_tolerance": resolved["barcode_amplicon_gap_tolerance"],
+    }
+
+
+def extract_positional(
+    cfg, output_root: str | Path, generation: Path, out: Path, *, threads: int | None = None
+) -> Path:
+    """Run the native barcode extractor over the aligned BAM's primary reads.
+
+    Reverse alignments are flipped back to read orientation by the extractor,
+    so the aligned BAM serves as well as the unaligned basecalls for reads that
+    still carry their barcodes (not trimmed at basecalling). Writes
+    ``positional.parquet`` into ``out``; an existing one is reused.
+    """
+    from ..informatics.bam_functions import extract_and_assign_barcodes_in_bam
+
+    target = out / EXTRACTED_POSITIONAL
+    if target.is_file():
+        return target
+    bam = _aligned_bam(Path(output_root), generation)
+    if bam is None:
+        raise BarcodeQCRecomputeError("no aligned BAM to extract barcodes from")
+    out.mkdir(parents=True, exist_ok=True)
+    staging = out / f".{EXTRACTED_POSITIONAL}.partial"
+    extract_and_assign_barcodes_in_bam(
+        bam,
+        **barcode_kit_settings(cfg),
+        samtools_backend=getattr(cfg, "samtools_backend", "auto"),
+        threads=threads or getattr(cfg, "threads", None),
+        output_path=staging,
+        primary_only=True,
+    )
+    staging.replace(target)
+    return target
+
+
 def read_level_evidence(
-    output_root: str | Path, generation: Path
+    output_root: str | Path, generation: Path, *, positional: Path | None = None
 ) -> tuple[pd.DataFrame | None, list[str]]:
     """Per-end evidence for **every** primary read, from the aligned BAM and
     the native extractor's positional sidecar.
@@ -169,7 +253,8 @@ def read_level_evidence(
     """
     output_root = Path(output_root)
     bam = _aligned_bam(output_root, generation)
-    positional = _sidecar(output_root, generation, "barcode_positional")
+    if positional is None:
+        positional = _sidecar(output_root, generation, "barcode_positional")
     if bam is None:
         return None, ["no aligned BAM: per-end evidence unavailable"]
     if positional is None:
@@ -196,6 +281,8 @@ def recompute_barcode_qc(
     pool: Iterable[str] | None = None,
     read_level: bool = True,
     unclassified_dropped: bool = False,
+    extract_with=None,
+    threads: int | None = None,
 ) -> dict[str, object]:
     """Write `EGL-31` and `BQC-02` QC for the run's current raw generation.
 
@@ -204,6 +291,10 @@ def recompute_barcode_qc(
     aligned BAM and a positional barcode sidecar; otherwise, or with
     ``read_level=False``, the molecule table (which needs `BQC-01` columns,
     and lacks mismatch reads when ``unclassified_dropped``).
+
+    ``extract_with`` (the run's experiment config) runs the native barcode
+    extractor over the aligned BAM when the run has no positional sidecar --
+    runs demultiplexed by MinKNOW / dorado whose reads kept their barcodes.
     """
     output_root = Path(output_root)
     generation = current_raw_generation(output_root)
@@ -224,8 +315,17 @@ def recompute_barcode_qc(
             ).items()
         }
     )
+    positional = None
+    if read_level and extract_with is not None:
+        if _sidecar(output_root, generation, "barcode_positional") is None:
+            positional = extract_positional(
+                extract_with, output_root, generation, out, threads=threads
+            )
+            notes.append(f"per-end barcodes extracted from the aligned BAM into {positional.name}")
     evidence, source_notes = (
-        (None, []) if not read_level else read_level_evidence(output_root, generation)
+        (None, [])
+        if not read_level
+        else read_level_evidence(output_root, generation, positional=positional)
     )
     notes.extend(source_notes)
     source = "reads"

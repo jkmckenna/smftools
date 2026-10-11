@@ -139,6 +139,9 @@ The preprocess command performs QC, binarization, filtering, and duplicate detec
   reports for the current raw generation to `raw_outputs/barcode_qc/<generation id>/` without
   regenerating anything; it fits the tagging model on every primary read, rebuilding per-end
   evidence from the aligned BAM and the barcode sidecar (`--pool` declares the pooled barcodes).
+  Runs demultiplexed by MinKNOW or dorado have no per-end sidecar; `--extract` runs the native
+  extractor over the aligned BAM first, which works when the reads kept their barcodes (basecalled
+  without trimming).
 
 General AnnData structures added by `preprocess`:
 
