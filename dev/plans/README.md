@@ -82,6 +82,7 @@ A plan with no implementation branch yet.
 | `generation_prune_scope_implementation_plan.md` | `EGL-03c` -- fan the existing read-only, dry-run-only prune planner (`EGL-03a`) out to a project and to an arbitrary directory of run roots; does not touch `EGL-03b` (deletion), still blocked |
 | `ml_model_runs_interpretability_plan.md` | `MLR-01`–`MLR-14` model runs as self-describing records (task, data, molecules per fold, fitted models, evaluation, curves), applying saved runs to new data, interpretability per run (position importance, per-molecule attributions, attribution clustermaps beside the input), run comparison, fold-matrix cache, validation role, detector catalogue for CNNs, detector-scale CNNs (pattern-detector span from sub-nucleosome to full locus; theoretical and effective span), model classes and per-task zoos (additive, tabular non-linear, spatial, global sequence), pretraining (masked reconstruction / AE / VAE encoders) and fine-tuning with a declared leakage policy |
 | `chimera_sensitivity_implementation_plan.md` | `CHS-01`–`CHS-04` detected vs estimated chimera rates: in-silico detector sensitivity, blind (same-allele / same-strand) chimeras, detector overlap |
+| `hmm_cross_reference_fit_implementation_plan.md` | `HXR-01`–`HXR-06` HMM fits shared across a declared group of references (e.g. two alleles of one locus in one sample), so allele comparisons of HMM states are not fit artefacts; equal-share read selection, provenance, tests; sequenced with `HCE` |
 
 ## `logs/` — not tracked
 
