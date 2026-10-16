@@ -3877,6 +3877,40 @@ def data_scan_cmd(
                 click.echo(f"  analysis {location['path']}: {location['experiment_uid']}")
 
 
+@data_group.command("usage")
+@click.argument("directory", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.option(
+    "--project",
+    "projects",
+    multiple=True,
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    help=(
+        "A project outside DIRECTORY whose registry marks registered experiments and "
+        "protects the generations it names (projects under DIRECTORY are found)."
+    ),
+)
+@click.option("--top", type=click.IntRange(min=1), default=15, show_default=True)
+@click.option("--json", "as_json", is_flag=True, help="Emit the full versioned report.")
+def data_usage_cmd(directory: Path, projects: tuple[Path, ...], top: int, as_json: bool):
+    """Report where the bytes under DIRECTORY are, and what reclaims them (read-only).
+
+    Stage generations by disposition (current, pinned, read by a live
+    generation, prune candidate), directories beside experiment roots that no
+    experiment owns, ML model stores (by architecture; never-read and
+    uncompressed models) and project analysis caches. Walks every file: on a
+    large drive this takes minutes.
+    """
+    import json
+
+    from .data.storage_usage import render_usage, storage_usage
+
+    report = storage_usage(directory, projects=projects)
+    if as_json:
+        click.echo(json.dumps(report, sort_keys=True, indent=2))
+    else:
+        click.echo(render_usage(report, top=top))
+
+
 @data_group.command("locate")
 @click.argument("target")
 @click.option(
