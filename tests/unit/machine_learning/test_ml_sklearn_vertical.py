@@ -492,3 +492,44 @@ def test_unknown_payload_compression_is_refused(tmp_path: Path) -> None:
             created_at=DONE,
             compression="lzma",
         )
+
+
+def test_forest_tree_types_reported_untrusted_are_reviewed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Some skops / scikit-learn versions report a forest's trees as untrusted
+    types; those are reviewed components, anything else is still refused."""
+    import skops.io as skops_io
+
+    dataset = _Dataset()
+    trained = fit_sklearn_partition_model(dataset, _resolved(dataset, "random_forest"))
+    before = apply_sklearn_partition_model(trained.model, dataset.data)
+    reported = ["sklearn.tree._classes.DecisionTreeClassifier", "sklearn.tree._tree.Tree"]
+    monkeypatch.setattr(skops_io, "get_untrusted_types", lambda **_: list(reported))
+    workspace = _workspace(tmp_path)
+    run_manifest = _publish_completed_run(tmp_path, workspace)
+    published = publish_sklearn_model(
+        trained.model,
+        workspace,
+        model_key="rf",
+        originating_run_id=run_manifest.run_id,
+        environment=_environment(),
+        created_at=DONE,
+    )
+    assert set(reported) <= set(published.manifest.serialization.allowed_types)
+    loaded = load_published_sklearn_model(workspace, published.manifest.model_id)
+    after = apply_sklearn_partition_model(loaded, dataset.data)
+    np.testing.assert_allclose(after.probabilities, before.probabilities)
+
+    reported.append("unreviewed.ArbitraryType")
+    with pytest.raises(SklearnArtifactError, match="unapproved types"):
+        load_published_sklearn_model(workspace, published.manifest.model_id)
+    with pytest.raises(SklearnArtifactError, match="unreviewed types"):
+        publish_sklearn_model(
+            trained.model,
+            workspace,
+            model_key="rf2",
+            originating_run_id=run_manifest.run_id,
+            environment=_environment(),
+            created_at=DONE,
+        )
