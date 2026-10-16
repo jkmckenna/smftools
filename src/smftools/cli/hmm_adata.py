@@ -456,7 +456,9 @@ class HMMTrainer:
     def _configure_axis(self, model, X) -> None:
         """Per-bp grid (`HPS-11`): count every step inside a read when
         re-estimating transitions (see :meth:`_per_bp_start` for the start)."""
-        if str(getattr(self.cfg, "hmm_axis", "sites") or "sites").lower() != "bp":
+        from ..hmm.model_artifacts import resolve_hmm_axis
+
+        if resolve_hmm_axis(self.cfg) != "bp":
             return
         model.transition_counting = "span"
 
@@ -465,7 +467,9 @@ class HMMTrainer:
         ones, by the observed site spacing: per-site stay ``s`` becomes
         ``s ** (1 / spacing)``, leaving mass split as configured. From a
         per-site start EM on a sparse per-bp grid barely moves."""
-        if str(getattr(self.cfg, "hmm_axis", "sites") or "sites").lower() != "bp":
+        from ..hmm.model_artifacts import resolve_hmm_axis
+
+        if resolve_hmm_axis(self.cfg) != "bp":
             return
         observed = np.isfinite(np.asarray(X, dtype=float))
         while observed.ndim > 2:

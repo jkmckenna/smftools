@@ -161,6 +161,19 @@ def file_sha256_or_missing(path: Any) -> str:
     return digest.hexdigest()
 
 
+def resolve_hmm_axis(cfg: Any) -> str:
+    """The position axis a fit uses (`HPS-11`): ``hmm_axis`` (a missing key is
+    the legacy ``sites``); ``hmm_distance_aware`` -- which handles gaps on the
+    site axis -- implies ``sites``."""
+    values = cfg if isinstance(cfg, Mapping) else _config_values(cfg)
+    axis = str(values.get("hmm_axis") or "sites").strip().lower()
+    if axis not in ("sites", "bp"):
+        raise ValueError(f"hmm_axis must be 'sites' or 'bp', not {axis!r}")
+    if axis == "bp" and bool(values.get("hmm_distance_aware", False)):
+        return "sites"
+    return axis
+
+
 def hmm_fit_config(cfg: Any) -> dict[str, Any]:
     """Return only configuration values capable of changing a fitted model.
 
@@ -174,8 +187,8 @@ def hmm_fit_config(cfg: Any) -> dict[str, Any]:
         for name in HMM_FIT_CONFIG_FIELDS
         if name in values or name in HMM_FIT_CONFIG_DEFAULTS
     }
-    axis = str(values.get("hmm_axis") or "sites").lower()
-    if axis != "sites":  # `HPS-11`: counts only when changed
+    axis = resolve_hmm_axis(values)
+    if axis != "sites":  # `HPS-11`: counts unless the legacy site axis
         fitted["hmm_axis"] = axis
     scope = str(values.get("hmm_emission_scope") or "fit_group").lower()
     if scope != "fit_group":  # `HPS-01`: counts only when on

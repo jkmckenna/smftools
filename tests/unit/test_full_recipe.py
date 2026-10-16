@@ -360,7 +360,7 @@ def test_hmm_axis_at_its_default_changes_no_fingerprint():
     assert after["spatial"] == before["spatial"]
     assert after["hmm"] != before["hmm"]
     assert hmm_fit_config_hash(cfg) != fit_before
-    assert _parse_hmm_axis(None) == "sites" and _parse_hmm_axis("BP") == "bp"
+    assert _parse_hmm_axis(None) == "bp" and _parse_hmm_axis("SITES") == "sites"
     with pytest.raises(ValueError):
         _parse_hmm_axis("grid")
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import dataclasses
 import json
 import uuid
@@ -322,13 +323,23 @@ def _pooled_model_input(spine_path, plan: HMMFitPlan, cfg, variant_cfg):
 
 
 def hmm_axis(cfg) -> str:
-    """``hmm_axis`` (`HPS-11`): ``sites`` or ``bp``."""
-    axis = str(getattr(cfg, "hmm_axis", "sites") or "sites").lower()
-    if axis not in ("sites", "bp"):
-        raise ValueError(f"hmm_axis must be 'sites' or 'bp', not {axis!r}")
-    if axis == "bp" and bool(getattr(cfg, "hmm_distance_aware", False)):
-        raise ValueError("hmm_axis 'bp' replaces hmm_distance_aware; use one of them")
+    """``hmm_axis`` (`HPS-11`) as resolved for fitting: ``bp`` or ``sites``
+    (``hmm_distance_aware`` implies ``sites``, with a warning)."""
+    from ..hmm.model_artifacts import resolve_hmm_axis
+
+    axis = resolve_hmm_axis(cfg)
+    if axis == "sites" and str(getattr(cfg, "hmm_axis", "") or "").lower() == "bp":
+        _warn_once("hmm_distance_aware is on: fitting on the site axis instead of bp")
     return axis
+
+
+_WARNED: set[str] = set()
+
+
+def _warn_once(message: str) -> None:
+    if message not in _WARNED:
+        _WARNED.add(message)
+        logger.warning(message)
 
 
 def _on_bp_grid(adata, values: np.ndarray, coordinates: np.ndarray):
@@ -611,6 +622,68 @@ def _fit_input(spine_path, plan: HMMFitPlan, cfg, variant_cfg):
         else None
     )
     return values, coordinates, setup
+
+
+def resolve_emission_scope(spine, cfg):
+    """``cfg`` with ``hmm_emission_scope: auto`` made concrete (`HPS-01`):
+    ``shared_efficiency`` when the sample sheet gives every sample the
+    emission and efficiency columns, else ``fit_group`` with a warning. An
+    explicit scope is returned unchanged (and stays strict)."""
+    scope = str(getattr(cfg, "hmm_emission_scope", "fit_group") or "fit_group").lower()
+    if scope != "auto":
+        return cfg
+    resolved = copy.copy(cfg)
+    resolved.hmm_emission_scope = "shared_efficiency"
+    needed = [
+        *(getattr(cfg, "hmm_emission_groupby", None) or []),
+        *(getattr(cfg, "hmm_efficiency_groupby", None) or []),
+        *(getattr(cfg, "hmm_efficiency_covariates", None) or []),
+    ]
+    reason = None
+    strategy = str(getattr(cfg, "hmm_fit_strategy", "per_group") or "per_group").lower()
+    groupby = [str(v).lower() for v in (getattr(cfg, "hmm_groupby", None) or ["sample"])]
+    if strategy != "per_group" or not ({"sample", "barcode"} & set(groupby)):
+        logger.warning(
+            "hmm_emission_scope auto: needs per-sample fits (hmm_fit_strategy per_group, "
+            "'sample' in hmm_groupby) -- using fit_group"
+        )
+        resolved.hmm_emission_scope = "fit_group"
+        return resolved
+    try:
+        attributes = hmm_sample_attributes(spine, resolved)
+        barcodes = sorted(
+            {str(b) for b in spine.obs[BARCODE].astype(str).unique()}
+            if BARCODE in spine.obs
+            else []
+        )
+        lacking = sorted(
+            {
+                column
+                for barcode in barcodes
+                for column in needed
+                if column not in (attributes or {}).get(barcode, {})
+                or pd.isna((attributes or {}).get(barcode, {}).get(column))
+            }
+        )
+        if lacking:
+            reason = f"the sample sheet lacks {lacking} for some samples"
+        elif not any(
+            [
+                getattr(cfg, "hmm_efficiency_groupby", None),
+                getattr(cfg, "hmm_efficiency_covariates", None),
+            ]
+        ):
+            resolved.hmm_emission_scope = "shared"
+    except ValueError as exc:
+        reason = str(exc)
+    if reason is not None:
+        logger.warning(
+            "hmm_emission_scope auto: %s -- every sample keeps its own emissions (fit_group); "
+            "comparisons between samples then carry per-sample emission differences",
+            reason,
+        )
+        resolved.hmm_emission_scope = "fit_group"
+    return resolved
 
 
 def hmm_sample_attributes(spine, cfg) -> dict[str, dict[str, str]] | None:
@@ -2155,6 +2228,7 @@ def execute_partitioned_hmm(spine_path, cfg, output_dir) -> dict[str, Path]:
     )
 
     model_specs = _configured_model_specs(cfg)
+    cfg = resolve_emission_scope(spine, cfg)
     fit_planning = build_hmm_fit_plan(
         tasks, model_specs, cfg, sample_attributes=hmm_sample_attributes(spine, cfg)
     )
@@ -2234,9 +2308,9 @@ def execute_partitioned_hmm(spine_path, cfg, output_dir) -> dict[str, Path]:
             )
         }
     )
-    _fit_catalog_frame(fit_planning.all_plans, artifacts_by_fit).to_parquet(
-        fit_catalog_path, index=False
-    )
+    _fit_catalog_frame(fit_planning.all_plans, artifacts_by_fit).assign(
+        emission_scope=str(getattr(cfg, "hmm_emission_scope", "fit_group"))
+    ).to_parquet(fit_catalog_path, index=False)
 
     apply_artifacts = {
         task_id: {label: artifacts_by_fit[fit_id] for label, fit_id in assignments.items()}

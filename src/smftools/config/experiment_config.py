@@ -681,6 +681,9 @@ class LoadExperimentConfig:
             raw_type = row.get("type", "")
             if pd.isna(raw_val) or str(raw_val).strip() == "":
                 raw_val = None
+            if name in LITERAL_NONE_KEYS and str(raw_val or "").strip().lower() == "none":
+                parsed[name] = "none"  # a setting, not "unset": overrides modality defaults
+                continue
             try:
                 parsed_val = self._parse_value_as_type(raw_val, raw_type)
             except Exception as e:
@@ -860,7 +863,11 @@ def load_defaults_with_inheritance(
 _DEFAULT_LEIDEN_RESOLUTION_BY_STRATEGY = {"pca": 0.5, "umap": 0.01, "nmf": 0.01, "cp": 0.0005}
 
 
-HMM_EMISSION_SCOPES = ("fit_group", "shared", "shared_efficiency")
+# Keys whose value "none" is a choice (it must override a modality default),
+# not an unset value.
+LITERAL_NONE_KEYS = frozenset({"hmm_context_model"})
+
+HMM_EMISSION_SCOPES = ("auto", "fit_group", "shared", "shared_efficiency")
 
 
 def _parse_hmm_emission_scope(value: Any) -> str:
@@ -872,8 +879,8 @@ def _parse_hmm_emission_scope(value: Any) -> str:
 
 
 def _parse_hmm_axis(value: Any) -> str:
-    """``hmm_axis`` (`HPS-11`): ``sites`` (default) or ``bp``."""
-    axis = str(value or "sites").strip().lower()
+    """``hmm_axis`` (`HPS-11`): ``bp`` (default) or ``sites``."""
+    axis = str(value or "bp").strip().lower()
     if axis not in ("sites", "bp"):
         raise ValueError(f"hmm_axis must be 'sites' or 'bp', not {value!r}")
     return axis
@@ -1430,7 +1437,7 @@ class ExperimentConfig:
     # References sharing one HMM fit per sample (`HXR`): name -> references.
     hmm_reference_groups: Dict[str, List[str]] = field(default_factory=dict)
     # Position axis (`HPS-11`): "sites" (site columns) | "bp" (full per-bp grid).
-    hmm_axis: str = "sites"
+    hmm_axis: str = "bp"
     # Emission scopes (`HPS-01`): what the emission model is shared across.
     hmm_emission_scope: str = "fit_group"
     hmm_emission_groupby: List[str] = field(default_factory=list)
@@ -1710,7 +1717,9 @@ class ExperimentConfig:
                 continue
             if isinstance(v, str):
                 s = v.strip()
-                if s == "" or s.lower() == "none":
+                if k in LITERAL_NONE_KEYS and s.lower() == "none":
+                    normalized[k] = "none"
+                elif s == "" or s.lower() == "none":
                     normalized[k] = None
                 else:
                     normalized[k] = _try_json_or_literal(s)

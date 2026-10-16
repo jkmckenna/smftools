@@ -43,6 +43,10 @@ rolling_nn_site_types:
 - "C"
 
 # ######## smftools hmm params #########
+# Context-aware emissions, learned per state (plans HCE-07, HPS): qualified on
+# deaminase panels; other modalities keep the generic default (none).
+hmm_context_model: learned
+hmm_context_states: all
 cpg: False # whether to use the default HMM endogenous CpG patch params
 hmm_methbases:
   - "C"

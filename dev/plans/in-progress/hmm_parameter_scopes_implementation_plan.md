@@ -175,3 +175,18 @@ there is no offset and `shared_efficiency` reduces to `shared`. A per-reaction
 control (naked DNA, plasmid or a silent locus at real coverage) would allow
 measuring efficiency across cell types (`hmm_efficiency_anchor`, future).
 
+### Defaults
+
+- `hmm_axis: bp` (`hmm_distance_aware` implies `sites`, with a warning).
+- Deaminase configs: `hmm_context_model: learned`, `hmm_context_states: all`
+  (`deaminase.yaml`); other modalities keep `none` until qualified. An
+  explicit CSV `hmm_context_model,none` overrides the modality default.
+- `hmm_emission_scope: auto`, `hmm_emission_groupby: [enzyme]`,
+  `hmm_efficiency_covariates: [enzyme_per_cell]`: `shared_efficiency` when
+  the sample sheet gives every sample those columns, else `fit_group` with a
+  warning; the fit catalog records the effective scope. Explicit scopes stay
+  strict.
+- Stores fitted before these defaults fingerprint as the legacy `sites` /
+  no context / `fit_group` setup, so their HMM stage (and later stages) is
+  stale under the new defaults; raw, preprocess and spatial are not.
+

@@ -1847,11 +1847,10 @@ def test_bp_axis_scales_starting_transitions_and_counts_spans():
     assert torch.equal(plain.trans, before)
 
 
-def test_bp_axis_refuses_the_distance_binned_model():
+def test_bp_axis_gives_way_to_the_distance_binned_model():
     from smftools.tools.partitioned_hmm import hmm_axis
 
-    with pytest.raises(ValueError, match="replaces hmm_distance_aware"):
-        hmm_axis(SimpleNamespace(hmm_axis="bp", hmm_distance_aware=True))
+    assert hmm_axis(SimpleNamespace(hmm_axis="bp", hmm_distance_aware=True)) == "sites"
     with pytest.raises(ValueError, match="'sites' or 'bp'"):
         hmm_axis(SimpleNamespace(hmm_axis="grid"))
 

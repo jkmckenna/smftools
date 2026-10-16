@@ -465,11 +465,11 @@ hmm_shared_scope: ["reference", "methbase"]
 # drawn in equal shares per reference; every read of each member is decoded with
 # the shared fit. Unlisted references fit alone. Not with hmm_distance_aware.
 hmm_reference_groups: {}
-# Position axis (plan HPS-11): sites (one column per modification site; a step is
-# site to site whatever the bp gap) | bp (the full per-bp grid, NaN where there is
-# no site: transitions per bp, footprints in bp, a posterior at every bp; ~4x the
-# columns on C-targeting amplicons). Not with hmm_distance_aware.
-hmm_axis: sites
+# Position axis (plan HPS-11): bp (default: the full per-bp grid, NaN where there is
+# no site -- transitions per bp, footprints in bp, a posterior at every bp; ~4x the
+# columns on C-targeting amplicons) | sites (one column per modification site; a step
+# is site to site whatever the bp gap). hmm_distance_aware implies sites.
+hmm_axis: bp
 # Emission scopes (plan HPS). Transitions are always per fit group (sample x
 # reference x strand); emissions are measurement, not chromatin:
 #   fit_group          each fit group has its own emissions (default; within-sample QC)
@@ -483,10 +483,13 @@ hmm_axis: sites
 #                      it, so differences along them are read as chromatin.
 # Groups come from sample_sheet_path (mapped by sample_sheet_mapping_column).
 # Fitted by tied EM: per-group transitions, pooled emission M-step.
-hmm_emission_scope: fit_group
-hmm_emission_groupby: []
+# auto (default): shared_efficiency by the sample sheet's enzyme, offsets from its
+# enzyme_per_cell (enzyme_amount_uL / cell_input) -- when the sheet has those columns
+# for every sample; otherwise fit_group, with a warning (recorded in the fit catalog).
+hmm_emission_scope: auto
+hmm_emission_groupby: [enzyme]
 hmm_efficiency_groupby: []
-hmm_efficiency_covariates: []
+hmm_efficiency_covariates: [enzyme_per_cell]
 hmm_efficiency_prior_sd: 1.0 # log-odds; offsets shrink to 0 without strong evidence
 hmm_tied_rounds: 8
 hmm_tied_transition_iters: 3
