@@ -263,8 +263,11 @@ directory of runs and projects once and reports, read-only:
 - per experiment root: stage generations by disposition -- current, pinned,
   read by a live generation, prune candidate -- and the other bytes (inputs,
   BAMs); roots no scanned project registers are flagged;
-- directories beside experiment roots that no experiment owns (earlier
-  output trees, test reruns) -- smftools never removes these;
+- directories beside experiment roots, as `input` (an experiment's manifest or
+  config declares an input inside it -- `input_data_path`, `fasta`, sample
+  sheet), `input_of_unregistered` (only an experiment no scanned project
+  registers declares it) or `unowned` (earlier output trees, test reruns);
+  smftools never removes these;
 - ML workspaces: model bytes by architecture, models no run ever read,
   uncompressed payloads, models already retired;
 - project analysis caches, current vs stale;

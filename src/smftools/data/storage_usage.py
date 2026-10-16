@@ -170,19 +170,96 @@ def experiment_usage(
     return usage
 
 
-def _unmanaged(experiments: list[Path], projects: list[Path]) -> list[dict[str, Any]]:
+_CONFIG_MAX_BYTES = 1024 * 1024
+
+
+def _is_input_key(key: str) -> bool:
+    key = key.strip().lower()
+    return "input" in key or key == "fasta" or key.startswith("sample_sheet")
+
+
+def _json_inputs(value: Any, key: str = "") -> Iterator[str]:
+    if isinstance(value, dict):
+        for name, item in value.items():
+            yield from _json_inputs(item, str(name))
+    elif isinstance(value, list):
+        for item in value:
+            yield from _json_inputs(item, key)
+    elif isinstance(value, str) and _is_input_key(key) and "/" in value:
+        yield value
+
+
+def _input_paths(run_dir: Path, experiments: list[Path]) -> list[tuple[str, str]]:
+    """``(path, source)`` of every input an experiment of ``run_dir`` declares:
+    its manifest's input fields, and input rows (``input_*``, ``fasta``,
+    ``sample_sheet*``) of the config files in the run directory. An
+    ``output_directory`` is not an input."""
+    found: list[tuple[str, str]] = []
+    for root in experiments:
+        if root.parent != run_dir:
+            continue
+        try:
+            manifest = json.loads((root / EXPERIMENT_MANIFEST).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        found += [(value, f"{root.name}/{EXPERIMENT_MANIFEST}") for value in _json_inputs(manifest)]
+    for path in sorted(run_dir.iterdir()):
+        if not (path.is_file() and path.suffix.lower() == ".csv"):
+            continue
+        if path.stat().st_size > _CONFIG_MAX_BYTES:
+            continue
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            key, _, rest = line.partition(",")
+            value = rest.split(",", 1)[0].strip().strip('"')
+            if _is_input_key(key) and "/" in value:
+                found.append((value, path.name))
+    return found
+
+
+def _input_source(child: Path, inputs: list[tuple[str, str]]) -> str | None:
+    """The manifest or config declaring an input inside ``child``."""
+    prefixes = {str(child), str(child.resolve())}
+    for value, source in inputs:
+        value = value.rstrip("/")
+        if any(value == prefix or value.startswith(prefix + "/") for prefix in prefixes):
+            return source
+    return None
+
+
+def _unmanaged(
+    experiments: list[Path], projects: list[Path], registered: set[str] | None = None
+) -> list[dict[str, Any]]:
     """Directories beside experiment roots that are neither experiment roots
-    nor contain one (nor are projects)."""
+    nor contain one (nor are projects). ``kind`` is ``input`` when an
+    experiment of the run declares an input inside it (manifest or config
+    ``input_data_path`` etc.), else ``unowned`` -- earlier output trees, test
+    reruns."""
     claimed = {str(path) for path in (*experiments, *projects)}
     run_dirs = sorted({path.parent for path in experiments})
     found = []
     for run_dir in run_dirs:
+        live = [
+            root for root in experiments if registered is None or str(root.resolve()) in registered
+        ]
+        inputs = _input_paths(run_dir, live)
+        legacy_inputs = _input_paths(run_dir, [r for r in experiments if r not in live])
         for child in sorted(run_dir.iterdir()):
             if not child.is_dir() or child.is_symlink() or child.name.startswith("."):
                 continue
             if str(child) in claimed or any(c.startswith(str(child) + os.sep) for c in claimed):
                 continue
-            found.append({"path": child.as_posix(), "bytes": tree_bytes(child)})
+            named = _input_source(child, inputs)
+            legacy = None if named else _input_source(child, legacy_inputs)
+            found.append(
+                {
+                    "path": child.as_posix(),
+                    "bytes": tree_bytes(child),
+                    "kind": "input"
+                    if named
+                    else ("input_of_unregistered" if legacy else "unowned"),
+                    "named_by": named or legacy,
+                }
+            )
     return found
 
 
@@ -288,7 +365,7 @@ def storage_usage(directory: str | Path, *, projects: Iterable[str | Path] = ())
         )
         for root in experiments
     ]
-    unmanaged = _unmanaged(experiments, found_projects)
+    unmanaged = _unmanaged(experiments, found_projects, registered)
     workspaces = [ml_workspace_usage(path) for path in _ml_workspaces(experiments, all_projects)]
     caches = [c for c in (_cache_usage(p) for p in all_projects) if c is not None]
 
@@ -314,8 +391,8 @@ def storage_usage(directory: str | Path, *, projects: Iterable[str | Path] = ())
             "how": "smftools project ml-retention (superseded runs); unread models: SLC-04",
         },
         {
-            "bucket": "unmanaged directories beside experiment roots",
-            "bytes": sum(item["bytes"] for item in unmanaged),
+            "bucket": "unowned directories beside experiment roots",
+            "bytes": sum(item["bytes"] for item in unmanaged if item["kind"] == "unowned"),
             "how": "archive or remove by hand after checking no other project reads them",
         },
         {
@@ -381,17 +458,36 @@ def render_usage(report: dict[str, Any], *, top: int = 15) -> str:
         )
     if len(experiments) > top:
         lines.append(f"  ... {len(experiments) - top} more (--json for all)")
-    if report["unmanaged"]:
-        lines += ["", "UNMANAGED DIRECTORIES (beside experiment roots)"]
-        for item in sorted(report["unmanaged"], key=lambda i: -i["bytes"])[:top]:
+    for kind, title in (
+        (
+            "unowned",
+            "UNOWNED DIRECTORIES beside experiment roots (no experiment or config owns them)",
+        ),
+        (
+            "input_of_unregistered",
+            "INPUTS OF UNREGISTERED EXPERIMENTS only (go with those experiments)",
+        ),
+        ("input", "INPUT DIRECTORIES of registered experiments (kept)"),
+    ):
+        items = sorted(
+            (i for i in report["unmanaged"] if i.get("kind", "unowned") == kind),
+            key=lambda i: -i["bytes"],
+        )
+        if not items:
+            continue
+        lines += ["", f"{title}: {_human(sum(i['bytes'] for i in items))}"]
+        for item in items[:top]:
             lines.append(f"  {_human(item['bytes']):>9}  {rel(item['path'])}")
+        if len(items) > top:
+            lines.append(f"  ... {len(items) - top} more")
     for w in report["ml_workspaces"]:
         lines += [
             "",
             f"ML WORKSPACE {rel(w['root'])}: {w['models']['count']} models, "
             f"{_human(w['models']['bytes'])}; runs {_human(w['runs_bytes'])}",
         ]
-        for name, bucket in list(w["by_architecture"].items())[:6]:
+        largest = sorted(w["by_architecture"].items(), key=lambda kv: -kv[1]["bytes"])
+        for name, bucket in largest[:6]:
             lines.append(f"  {name:<28} {bucket['count']:>6} {_human(bucket['bytes']):>10}")
         lines.append(
             f"  never read by a run: {w['never_read']['count']} ({_human(w['never_read']['bytes'])}); "
