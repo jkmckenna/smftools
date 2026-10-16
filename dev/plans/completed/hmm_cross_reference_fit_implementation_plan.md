@@ -1,6 +1,9 @@
 # HMM fits shared across references (alleles) -- implementation plan
 
-Status: implemented and accepted on real data (`HXR-01`--`HXR-06`); stays
+Status: completed (`HXR-01`--`HXR-06` merged and accepted on real data). Shared
+emissions (`HPS`, now the default for deaminase runs with a sample sheet) fix the
+per-allele fit artefact while letting alleles keep their own transitions;
+`hmm_reference_groups` remains for sharing transitions too. Formerly: stays
 in progress until a store has been regenerated with it. Built on the merged context-emission work (`HCE`,
 `in-progress/hmm_context_emissions_implementation_plan.md`, through
 `HCE-07`).

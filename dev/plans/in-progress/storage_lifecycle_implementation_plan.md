@@ -3,7 +3,7 @@
 Status: in progress. Items `SLC-01`--`SLC-12`; `SLC-01`, `SLC-06`, `SLC-07`, `SLC-08`, `SLC-11` implemented. Extends `MLR-16` (model
 retention, merged) and replaces the deletion blocker of `EGL-03b`
 (`completed/generation_lifecycle_and_naming_implementation_plan.md`); folds in
-`EGL-03c` (`proposed/generation_prune_scope_implementation_plan.md`).
+`EGL-03c` (`completed/generation_prune_scope_implementation_plan.md`, superseded).
 
 ## Why
 
