@@ -71,6 +71,7 @@ An active branch, some items merged and others open.
 | `transfer_time_analysis_bundling_plan.md` | `TAB` bundle a run's analysis-tree generations into few large files before moving them between drives; `TAB-01`, `TAB-02` merged, `TAB-03` blocked (no tested configuration beat plain rsync); zarr v3 sharding and coarser source-side partitioning both ruled out first, on real data |
 | `motif_scanning_occupancy_implementation_plan.md` | `MOT-01`–`MOT-06` (`MOT-01`–`MOT-04` merged; `MOT-05`, `MOT-06` proposed) motif scanning (user-supplied motif file; built-in numpy engine, optional FIMO), bulk HMM-class tracks with motif lanes, and per-molecule motif occupancy from HMM classes (TF-sized, medium, nucleosome, accessible, uninformative), co-occupancy and group comparisons; an analysis + CLI, not a stage |
 | `barcode_qc_end_identity_implementation_plan.md` | `BQC-01`–`BQC-05` (`BQC-01`–`BQC-03b` merged; `BQC-01b`, `BQC-04`, `BQC-05` proposed) per-end barcode evidence (names, edit distances, boundaries, clips) for every read; a ligation / detection / tagging model separating miscalls, unbarcoded rear ends and free-adapter tagging; extract-then-trim before alignment; with / without a spike-in; extends `EGL-31` |
+| `hmm_cross_reference_fit_implementation_plan.md` | `HXR-01`–`HXR-06` HMM fits shared across a declared group of references (`hmm_reference_groups`; e.g. two alleles of one locus in one sample), so allele comparisons of HMM states are not fit artefacts (`HXR-01`–`HXR-05` implemented; unit / synthetic tests done, real-data acceptance pending) |
 
 ## `proposed/`
 
@@ -83,7 +84,6 @@ A plan with no implementation branch yet.
 | `generation_prune_scope_implementation_plan.md` | `EGL-03c` -- fan the existing read-only, dry-run-only prune planner (`EGL-03a`) out to a project and to an arbitrary directory of run roots; does not touch `EGL-03b` (deletion), still blocked |
 | `ml_model_runs_interpretability_plan.md` | `MLR-01`–`MLR-14` model runs as self-describing records (task, data, molecules per fold, fitted models, evaluation, curves), applying saved runs to new data, interpretability per run (position importance, per-molecule attributions, attribution clustermaps beside the input), run comparison, fold-matrix cache, validation role, detector catalogue for CNNs, detector-scale CNNs (pattern-detector span from sub-nucleosome to full locus; theoretical and effective span), model classes and per-task zoos (additive, tabular non-linear, spatial, global sequence), pretraining (masked reconstruction / AE / VAE encoders) and fine-tuning with a declared leakage policy |
 | `chimera_sensitivity_implementation_plan.md` | `CHS-01`–`CHS-04` detected vs estimated chimera rates: in-silico detector sensitivity, blind (same-allele / same-strand) chimeras, detector overlap |
-| `hmm_cross_reference_fit_implementation_plan.md` | `HXR-01`–`HXR-06` HMM fits shared across a declared group of references (e.g. two alleles of one locus in one sample), so allele comparisons of HMM states are not fit artefacts; equal-share read selection, provenance, tests; sequenced with `HCE` |
 
 ## `logs/` — not tracked
 

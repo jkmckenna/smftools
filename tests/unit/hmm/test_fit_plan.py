@@ -123,3 +123,149 @@ def test_invalid_partitioned_grouping_fails_early(field, value):
     cfg = _cfg(**{field: value})
     with pytest.raises(ValueError):
         build_hmm_fit_plan(_tasks(), [_spec()], cfg)
+
+
+# --- HXR: fits shared across references ------------------------------------------
+
+
+def _ref_task(
+    reference: str, barcode: str, read_ids: tuple[str, ...], *, width: int, core: int = 0
+) -> PreprocessTask:
+    return PreprocessTask(
+        task_id=f"{reference}|{barcode}|{core}-{core + width}|00000",
+        reference=reference,
+        barcode=barcode,
+        analysis_mode="locus",
+        chunk_index=0,
+        core_start=core,
+        core_end=core + width,
+        load_start=core,
+        load_end=core + width,
+        n_reads=len(read_ids),
+        estimated_memory_bytes=len(read_ids) * width * 8,
+        read_ids=read_ids,
+    )
+
+
+def _allele_tasks() -> list[PreprocessTask]:
+    wt = tuple(f"wt{i}" for i in range(10))
+    dl = tuple(f"dl{i}" for i in range(4))
+    return [
+        _ref_task("wt_top", "bc1", wt, width=100),
+        _ref_task("del_top", "bc1", dl, width=80),
+        _ref_task("spike_top", "bc1", ("s1", "s2"), width=50),
+        _ref_task("wt_top", "bc2", ("wt_b",), width=100),
+    ]
+
+
+def test_reference_group_pools_alleles_into_one_fit_per_sample():
+    cfg = _cfg(hmm_reference_groups={"alleles": ["wt", "del"]})
+    planning = build_hmm_fit_plan(_allele_tasks(), [_spec()], cfg)
+
+    by_reference = {(plan.reference, plan.barcode): plan for plan in planning.base_plans}
+    assert set(by_reference) == {
+        ("del_top+wt_top", "bc1"),
+        ("spike_top", "bc1"),  # not in the group: fits alone, as before
+        ("wt_top", "bc2"),  # only one allele present: an ordinary fit
+    }
+    pooled = by_reference[("del_top+wt_top", "bc1")]
+    assert pooled.references == ("del_top", "wt_top")
+    assert [m.load_end for m in pooled.members] == [80, 100]
+    assert {planning.apply_assignments[t]["GpC"] for t in pooled.apply_task_ids} == {pooled.fit_id}
+    assert len(pooled.apply_task_ids) == 2
+    assert not by_reference[("wt_top", "bc2")].members
+    record = pooled.to_dict()
+    assert record["references"] == ["del_top", "wt_top"]
+    assert "selected_read_ids" not in record["members"]
+    assert pooled.training_metadata()["reference_n_reads"] == {"del_top": 4, "wt_top": 10}
+
+
+def test_pooled_selection_draws_equal_shares_per_reference():
+    cfg = _cfg(hmm_reference_groups={"alleles": ["wt_top", "del_top"]}, hmm_max_fit_reads=6)
+    pooled = next(
+        plan
+        for plan in build_hmm_fit_plan(_allele_tasks(), [_spec()], cfg).base_plans
+        if plan.members
+    )
+    counts = {m.reference: len(m.selected_read_ids) for m in pooled.members}
+    assert counts == {"del_top": 3, "wt_top": 3}
+    assert pooled.candidate_n_reads == 14
+
+    few = _cfg(hmm_reference_groups={"alleles": ["wt", "del"]}, hmm_max_fit_reads=10)
+    pooled = next(
+        plan
+        for plan in build_hmm_fit_plan(_allele_tasks(), [_spec()], few).base_plans
+        if plan.members
+    )
+    # The smaller allele gives all it has; the larger one keeps to its share.
+    assert {m.reference: len(m.selected_read_ids) for m in pooled.members} == {
+        "del_top": 4,
+        "wt_top": 5,
+    }
+
+
+def test_reference_groups_leave_other_fits_and_ids_unchanged():
+    tasks = _allele_tasks()
+    plain = build_hmm_fit_plan(tasks, [_spec()], _cfg())
+    grouped = build_hmm_fit_plan(tasks, [_spec()], _cfg(hmm_reference_groups={"a": ["wt", "del"]}))
+    reverse = build_hmm_fit_plan(
+        list(reversed(tasks)), [_spec()], _cfg(hmm_reference_groups={"a": ["del", "wt"]})
+    )
+    plain_ids = {(p.reference, p.barcode): p.fit_id for p in plain.base_plans}
+    grouped_ids = {(p.reference, p.barcode): p.fit_id for p in grouped.base_plans}
+    for key in (("spike_top", "bc1"), ("wt_top", "bc2")):
+        assert grouped_ids[key] == plain_ids[key]
+    assert grouped_ids == {(p.reference, p.barcode): p.fit_id for p in reverse.base_plans}
+
+
+def test_reference_group_strands_fit_apart():
+    tasks = [
+        _ref_task("wt_top", "bc1", ("a",), width=100),
+        _ref_task("del_top", "bc1", ("b",), width=80),
+        _ref_task("wt_bottom", "bc1", ("c",), width=100),
+        _ref_task("del_bottom", "bc1", ("d",), width=80),
+    ]
+    cfg = _cfg(hmm_reference_groups={"alleles": ["wt", "del_top", "del_bottom"]})
+    references = {p.reference for p in build_hmm_fit_plan(tasks, [_spec()], cfg).base_plans}
+    assert references == {"del_top+wt_top", "del_bottom+wt_bottom"}
+
+
+def test_reference_group_shared_transitions_pool_base_and_adaptations():
+    cfg = _cfg(
+        hmm_fit_strategy="shared_transitions",
+        hmm_reference_groups={"alleles": ["wt", "del"]},
+    )
+    tasks = _allele_tasks()[:2] + [_ref_task("del_top", "bc2", ("dl_b",), width=80)]
+    tasks.append(_ref_task("wt_top", "bc2", ("wt_b",), width=100))
+    planning = build_hmm_fit_plan(tasks, [_spec()], cfg)
+    (base,) = planning.base_plans
+    assert base.fit_kind == "GLOBAL" and base.references == ("del_top", "wt_top")
+    assert {(a.barcode, a.references) for a in planning.adaptation_plans} == {
+        ("bc1", ("del_top", "wt_top")),
+        ("bc2", ("del_top", "wt_top")),
+    }
+
+
+@pytest.mark.parametrize(
+    "overrides, message",
+    [
+        ({"hmm_reference_groups": {"a": ["wt"], "b": ["wt"]}}, "both"),
+        (
+            {"hmm_reference_groups": {"a": ["wt", "del"]}, "hmm_distance_aware": True},
+            "hmm_distance_aware",
+        ),
+    ],
+)
+def test_invalid_reference_groups_fail_early(overrides, message):
+    with pytest.raises(ValueError, match=message):
+        build_hmm_fit_plan(_allele_tasks(), [_spec()], _cfg(**overrides))
+
+
+def test_reference_group_refuses_references_with_several_cores():
+    tasks = [
+        _ref_task("wt_top", "bc1", ("a",), width=100, core=0),
+        _ref_task("wt_top", "bc1", ("b",), width=100, core=100),
+        _ref_task("del_top", "bc1", ("c",), width=80),
+    ]
+    with pytest.raises(ValueError, match="several analysis cores"):
+        build_hmm_fit_plan(tasks, [_spec()], _cfg(hmm_reference_groups={"a": ["wt", "del"]}))

@@ -1693,3 +1693,78 @@ def test_violins_put_raw_beside_the_hmm_at_sites(tmp_path, monkeypatch):
     assert figure.exists()
     # 4 panels (accessible/footprint x span/sites) x 2 variants + raw in one panel.
     assert len(drawn) == 9
+
+
+# --- HXR: one fit per sample across a group of references -----------------------
+
+
+def _allele_run(tmp_path, monkeypatch, **overrides):
+    from smftools.tools import partitioned_hmm
+
+    frame = _frame()
+    frame.loc[frame["read_id"] == "read2", ["reference", "Reference_strand"]] = ["alt", "alt_top"]
+    frame.loc[frame["read_id"] == "read2", "reference_start"] = 2
+    frame.loc[frame["read_id"] == "read2", "reference_length"] = 10
+    raw = write_raw_store(
+        frame,
+        tmp_path / "raw_outputs",
+        reference_lengths={"ref_top": 12, "alt_top": 10},
+        analysis_mode="locus",
+        extra_uns={
+            "References": {
+                "ref_FASTA_sequence": "ACGCGTACGTAC",
+                "alt_FASTA_sequence": "TCGACGTCCA",
+            }
+        },
+    )
+    preprocess = execute_partitioned_preprocessing(
+        raw["spine"], _preprocess_cfg(), tmp_path / "preprocess_outputs"
+    )
+    for name in (
+        "_plot_feature_fractions",
+        "_plot_feature_count_size_histograms",
+        "_plot_molecule_fractions",
+        "_plot_hmm_vs_raw_scatter",
+        "_plot_hmm_parameters_across_barcodes",
+        "_plot_hmm_fit_history",
+        "_plot_feature_clustermaps",
+    ):
+        monkeypatch.setattr(partitioned_hmm, name, lambda *args, **kwargs: None)
+    cfg = _hmm_cfg(hmm_methbases=["C"], hmm_max_iter=3, target_task_memory_mb=1, **overrides)
+    outputs = execute_partitioned_hmm(preprocess["spine"], cfg, tmp_path / "hmm_outputs")
+    return cfg, outputs
+
+
+@pytest.mark.parametrize(
+    "context", [{}, {"hmm_context_model": "learned", "hmm_context_states": "all"}]
+)
+def test_reference_group_fits_alleles_once_and_decodes_each(tmp_path, monkeypatch, context):
+    cfg, outputs = _allele_run(
+        tmp_path, monkeypatch, hmm_reference_groups={"alleles": ["ref", "alt"]}, **context
+    )
+    fits = pd.read_parquet(outputs["fit_catalog"])
+    assert list(fits["reference"]) == ["alt_top+ref_top"]
+    assert list(fits["references"].iloc[0]) == ["alt_top", "ref_top"]
+    assert fits["fit_state"].iloc[0] == "complete"
+    selection = pd.read_parquet(outputs["fit_selection"])
+    assert dict(zip(selection["read_id"], selection["read_reference"])) == {
+        "read1": "ref_top",
+        "read2": "alt_top",
+    }
+
+    tasks = pd.read_parquet(outputs["task_catalog"])
+    assert set(tasks["reference"]) == {"ref_top", "alt_top"}
+    assert len({ids[0] for ids in tasks["hmm_model_ids"]}) == 1  # one model, both alleles
+    for _, task in tasks.iterrows():
+        assert any(layer.endswith("_all_accessible_features") for layer in task["layers"])
+    if context:
+        artifact = json.loads(tasks.iloc[0]["hmm_model_artifacts_json"])[0]
+        model = _load_model(cfg, outputs, artifact)
+        assert model.position_codes.size == 12 + 10  # both references' contexts
+        assert tuple(model.log_weights.shape) == (2, 16)
+
+
+def test_without_reference_groups_alleles_fit_apart(tmp_path, monkeypatch):
+    _, outputs = _allele_run(tmp_path, monkeypatch)
+    fits = pd.read_parquet(outputs["fit_catalog"])
+    assert sorted(fits["reference"]) == ["alt_top", "ref_top"]

@@ -221,24 +221,15 @@ def context_setup(adata, reference: str, cfg) -> dict[str, object]:
     ``hmm_context_table_group`` value its reads share (e.g. their enzyme).
     """
     from smftools.analysis.compute.site_context_bias import (
-        context_index,
         context_kmers,
         read_weight_table,
-        strand_of,
         weights_for,
     )
-    from smftools.tools.site_context_bias import sequences_from_uns
 
     mode = context_model(cfg)
     k = int(getattr(cfg, "hmm_context_k", 3))
-    base, strand = strand_of(str(reference))
-    sequences = sequences_from_uns(adata.uns)
-    if base not in sequences:
-        raise KeyError(f"no reference sequence for {base!r} to read contexts from")
-    sequence = sequences[base]
-    codes, _ = context_index(sequence, strand, np.arange(len(sequence)), k=k)
+    codes, cpg_codes = reference_context_codes(adata, reference, cfg)
     kmers = context_kmers(k)
-    cpg_codes = [code for code, kmer in enumerate(kmers) if k > 1 and kmer[k // 2 + 1] == "G"]
     if mode == "learned":
         log_weights = np.zeros(len(kmers))
     else:
@@ -253,6 +244,79 @@ def context_setup(adata, reference: str, cfg) -> dict[str, object]:
             raise ValueError(f"one fit's reads span {column} values {groups}; expected one")
         log_weights = np.log(weights_for(read_weight_table(path), groups[0], k))
     return {"log_weights": log_weights, "position_codes": codes, "cpg_codes": cpg_codes}
+
+
+def reference_context_codes(adata, reference: str, cfg) -> tuple[np.ndarray, list[int]]:
+    """Context code of every position of ``reference`` and the CpG codes."""
+    from smftools.analysis.compute.site_context_bias import (
+        context_index,
+        context_kmers,
+        strand_of,
+    )
+    from smftools.tools.site_context_bias import sequences_from_uns
+
+    k = int(getattr(cfg, "hmm_context_k", 3))
+    base, strand = strand_of(str(reference))
+    sequences = sequences_from_uns(adata.uns)
+    if base not in sequences:
+        raise KeyError(f"no reference sequence for {base!r} to read contexts from")
+    sequence = sequences[base]
+    codes, _ = context_index(sequence, strand, np.arange(len(sequence)), k=k)
+    kmers = context_kmers(k)
+    cpg_codes = [code for code, kmer in enumerate(kmers) if k > 1 and kmer[k // 2 + 1] == "G"]
+    return codes, cpg_codes
+
+
+def _pooled_model_input(spine_path, plan: HMMFitPlan, cfg, variant_cfg):
+    """Training input of a fit pooled across references (`HXR-03`).
+
+    Each member's reads are materialized on its own reference and stacked
+    left-aligned (NaN padding): the HMM's transitions and levels do not depend
+    on position, so rows of different lengths share one fit. A context model
+    gets one coordinate row per read pointing into the members' concatenated
+    context codes, so each read keeps its own reference's contexts.
+    """
+    blocks, setups = [], []
+    for member in plan.members:
+        adata = materialize(
+            spine_path,
+            references=member.reference,
+            read_ids=member.selected_read_ids,
+            start=member.load_start,
+            end=member.load_end,
+        )
+        for column in (REFERENCE_STRAND, "Barcode", "Sample"):
+            if column in adata.obs and isinstance(adata.obs[column].dtype, pd.CategoricalDtype):
+                adata.obs[column] = adata.obs[column].cat.remove_unused_categories()
+        values, coordinates, _ = _prepare_model_input(adata, member.reference, plan.model_spec, cfg)
+        blocks.append((np.asarray(values, dtype=float), np.asarray(coordinates, dtype=np.int64)))
+        if plan.model_spec.architecture == "context_single":
+            setups.append(context_setup(adata, member.reference, variant_cfg))
+    width = max(values.shape[1] for values, _ in blocks)
+    rows = sum(values.shape[0] for values, _ in blocks)
+    stacked = np.full((rows, width, *blocks[0][0].shape[2:]), np.nan)
+    row = 0
+    for values, _ in blocks:
+        stacked[row : row + values.shape[0], : values.shape[1]] = values
+        row += values.shape[0]
+    if not setups:
+        return stacked, np.arange(width), None
+    coords = np.full((rows, width), -1, dtype=np.int64)
+    row, offset = 0, 0
+    for (values, coordinates), setup in zip(blocks, setups, strict=True):
+        coords[row : row + values.shape[0], : coordinates.size] = coordinates + offset
+        row += values.shape[0]
+        offset += len(setup["position_codes"])
+    first = setups[0]
+    for setup in setups[1:]:
+        if not np.array_equal(setup["log_weights"], first["log_weights"]):
+            raise ValueError("pooled references resolved different context weight tables")
+    pooled = {
+        "log_weights": first["log_weights"],
+        "position_codes": np.concatenate([setup["position_codes"] for setup in setups]),
+        "cpg_codes": first["cpg_codes"],
+    }
+    return stacked, coords, pooled
 
 
 def _prepare_model_input(adata, reference: str, spec: HMMModelSpec, cfg):
@@ -444,6 +508,16 @@ def _annotate_task(
 
         layers_before = set(adata.uns.get(uns_key, []))
         model = trainer.load_artifact(assignment, device=device)
+        fitted_reference = str(dict(assignment.get("model_key") or {}).get("reference", ""))
+        if hasattr(model, "set_contexts") and fitted_reference not in ("", str(task.reference)):
+            # A fit pooled across references (`HXR-04`) decodes each reference
+            # with its own contexts and the shared weights.
+            codes, cpg_codes = reference_context_codes(adata, str(task.reference), cfg)
+            model.set_contexts(
+                log_weights=model.log_weights.detach().cpu().numpy(),
+                position_codes=codes,
+                cpg_codes=cpg_codes,
+            )
         prefix = spec.label
         if bool(getattr(cfg, "bypass_hmm_apply", False)):
             record_model_artifact([])
@@ -491,30 +565,39 @@ def execute_hmm_fit_task(
     parent_artifact: dict[str, object] | None = None,
 ) -> dict[str, object]:
     """Fit exactly one planned immutable model before apply workers start."""
-    adata = materialize(
-        spine_path,
-        references=plan.reference,
-        read_ids=plan.selected_read_ids,
-        start=plan.load_start,
-        end=plan.load_end,
-    )
-    for column in (REFERENCE_STRAND, "Barcode", "Sample"):
-        if column in adata.obs and isinstance(adata.obs[column].dtype, pd.CategoricalDtype):
-            adata.obs[column] = adata.obs[column].cat.remove_unused_categories()
-    try:
-        values, coordinates, _ = _prepare_model_input(adata, plan.reference, plan.model_spec, cfg)
-    except (KeyError, ValueError) as exc:
-        return {
-            "fit_id": plan.fit_id,
-            "skipped": True,
-            "reason": str(exc),
-        }
-
     # A variant fits under its own settings (`HCE-06`); the default under cfg.
     variant_cfg = plan.model_spec.config(cfg)
     trainer = HMMTrainer(cfg=variant_cfg, models_dir=Path(models_dir))
-    if plan.model_spec.architecture == "context_single":
-        trainer.context_setup = context_setup(adata, plan.reference, variant_cfg)
+    if plan.members:  # pooled across references (`HXR-03`)
+        try:
+            values, coordinates, trainer.context_setup = _pooled_model_input(
+                spine_path, plan, cfg, variant_cfg
+            )
+        except (KeyError, ValueError) as exc:
+            return {"fit_id": plan.fit_id, "skipped": True, "reason": str(exc)}
+    else:
+        adata = materialize(
+            spine_path,
+            references=plan.reference,
+            read_ids=plan.selected_read_ids,
+            start=plan.load_start,
+            end=plan.load_end,
+        )
+        for column in (REFERENCE_STRAND, "Barcode", "Sample"):
+            if column in adata.obs and isinstance(adata.obs[column].dtype, pd.CategoricalDtype):
+                adata.obs[column] = adata.obs[column].cat.remove_unused_categories()
+        try:
+            values, coordinates, _ = _prepare_model_input(
+                adata, plan.reference, plan.model_spec, cfg
+            )
+        except (KeyError, ValueError) as exc:
+            return {
+                "fit_id": plan.fit_id,
+                "skipped": True,
+                "reason": str(exc),
+            }
+        if plan.model_spec.architecture == "context_single":
+            trainer.context_setup = context_setup(adata, plan.reference, variant_cfg)
     device = resolve_torch_device(
         getattr(cfg, "hmm_device", None) or getattr(cfg, "device", "auto")
     )
@@ -1817,8 +1900,12 @@ def _fit_selection_frame(plans) -> pd.DataFrame:
                 "read_id": read_id,
                 "selection_rank": rank,
                 "selection_sha256": plan.selection_sha256,
+                "read_reference": read_reference.get(read_id, plan.reference),
             }
             for plan in plans
+            for read_reference in [
+                {r: m.reference for m in plan.members for r in m.selected_read_ids}
+            ]
             for rank, read_id in enumerate(plan.selected_read_ids)
         ]
     )

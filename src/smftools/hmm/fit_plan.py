@@ -50,6 +50,26 @@ class HMMModelSpec:
 
 
 @dataclass(frozen=True)
+class HMMFitMember:
+    """One reference's share of a fit pooled across references (`HXR-02`)."""
+
+    reference: str
+    core_start: int
+    core_end: int
+    load_start: int
+    load_end: int
+    candidate_n_reads: int
+    selected_read_ids: tuple[str, ...]
+
+    def to_dict(self, *, include_read_ids: bool = False) -> dict[str, Any]:
+        record = asdict(self)
+        record["selected_n_reads"] = len(self.selected_read_ids)
+        if not include_read_ids:
+            record.pop("selected_read_ids")
+        return record
+
+
+@dataclass(frozen=True)
 class HMMFitPlan:
     """One immutable model fit or adaptation completed before apply workers start."""
 
@@ -72,6 +92,16 @@ class HMMFitPlan:
     estimated_memory_bytes: int
     apply_task_ids: tuple[str, ...]
     parent_fit_id: str | None = None
+    # A fit pooled across references (`HXR`): one entry per reference, its
+    # window and selected reads; empty for a single-reference fit, whose
+    # ``reference`` is that reference. A pooled fit's ``reference`` is its
+    # members joined with "+".
+    members: tuple[HMMFitMember, ...] = ()
+
+    @property
+    def references(self) -> tuple[str, ...]:
+        """The references the fit is trained on and applied to."""
+        return tuple(m.reference for m in self.members) or (self.reference,)
 
     def to_dict(self, *, include_read_ids: bool = False) -> dict[str, Any]:
         """Serialize a fit plan, excluding selected molecule IDs by default."""
@@ -80,6 +110,11 @@ class HMMFitPlan:
         record["selected_n_reads"] = len(self.selected_read_ids)
         if not include_read_ids:
             record.pop("selected_read_ids")
+        record["references"] = list(self.references)
+        record["members"] = json.dumps(
+            [m.to_dict(include_read_ids=include_read_ids) for m in self.members],
+            separators=(",", ":"),
+        )
         return record
 
     def training_metadata(self) -> dict[str, Any]:
@@ -101,6 +136,16 @@ class HMMFitPlan:
             "core_start": self.core_start,
             "core_end": self.core_end,
             "parent_fit_id": self.parent_fit_id,
+            **(
+                {
+                    "references": list(self.references),
+                    "reference_n_reads": {
+                        m.reference: len(m.selected_read_ids) for m in self.members
+                    },
+                }
+                if self.members
+                else {}
+            ),
         }
 
 
@@ -137,6 +182,48 @@ def _normalize_group_fields(cfg: Any, name: str, default: Sequence[str]) -> tupl
     return tuple(dict.fromkeys(aliases))
 
 
+_STRAND_SUFFIXES = ("_top", "_bottom")
+
+
+def _strand_of(reference: str) -> tuple[str, str]:
+    for suffix in _STRAND_SUFFIXES:
+        if reference.endswith(suffix):
+            return reference[: -len(suffix)], suffix[1:]
+    return reference, ""
+
+
+def reference_groups(cfg: Any) -> dict[str, tuple[str, ...]]:
+    """``hmm_reference_groups`` (`HXR-01`): group name -> member references.
+
+    A member is a reference name or a base name standing for every strand of
+    it; a reference may belong to one group only.
+    """
+    raw = _cfg_value(cfg, "hmm_reference_groups", None) or {}
+    if not isinstance(raw, dict):
+        raise ValueError("hmm_reference_groups must map a group name to references")
+    groups: dict[str, tuple[str, ...]] = {}
+    owner: dict[str, str] = {}
+    for name, members in raw.items():
+        members = [members] if isinstance(members, str) else list(members or [])
+        groups[str(name)] = tuple(str(member) for member in members)
+        for member in groups[str(name)]:
+            if member in owner:
+                raise ValueError(
+                    f"hmm_reference_groups lists {member!r} in both {owner[member]!r} and {name!r}"
+                )
+            owner[member] = str(name)
+    return groups
+
+
+def _reference_group(reference: str, groups: dict[str, tuple[str, ...]]) -> str:
+    """The grouping key of ``reference``: its group and strand, or itself."""
+    base, strand = _strand_of(reference)
+    for name, members in groups.items():
+        if reference in members or base in members:
+            return f"\0{name}\0{strand}"
+    return reference
+
+
 def _stable_fit_id(payload: dict[str, Any]) -> str:
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return f"hmm-fit-{hashlib.sha256(encoded).hexdigest()[:24]}"
@@ -171,18 +258,38 @@ def _group_barcode(fields: Sequence[str], tasks: Sequence[Any]) -> str:
     return barcodes[0]
 
 
-def _group_tasks(tasks: Sequence[Any], *, include_sample: bool) -> list[list[Any]]:
+def _group_tasks(
+    tasks: Sequence[Any],
+    *,
+    include_sample: bool,
+    groups: dict[str, tuple[str, ...]] | None = None,
+) -> list[list[Any]]:
+    """Tasks sharing one fit: same reference and window (and sample), or --
+    for references in one ``hmm_reference_groups`` group -- every task of the
+    group's references (`HXR-02`), each reference holding one analysis core."""
+    groups = groups or {}
     grouped: dict[tuple[Any, ...], list[Any]] = {}
     for task in tasks:
-        key = (
-            str(task.reference),
-            int(task.core_start),
-            int(task.core_end),
-            int(task.load_start),
-            int(task.load_end),
-            str(task.barcode) if include_sample else "ALL",
+        group = _reference_group(str(task.reference), groups)
+        window = (
+            (int(task.core_start), int(task.core_end), int(task.load_start), int(task.load_end))
+            if group == str(task.reference)
+            else (0, 0, 0, 0)
         )
+        key = (group, *window, str(task.barcode) if include_sample else "ALL")
         grouped.setdefault(key, []).append(task)
+    for key, members in grouped.items():
+        windows: dict[str, set[tuple[int, int]]] = {}
+        for task in members:
+            windows.setdefault(str(task.reference), set()).add(
+                (int(task.core_start), int(task.core_end))
+            )
+        split = sorted(ref for ref, cores in windows.items() if len(cores) > 1)
+        if len(windows) > 1 and split:
+            raise ValueError(
+                "hmm_reference_groups pools whole references; "
+                f"{split} have several analysis cores (genome-scale references cannot be pooled)"
+            )
     return [grouped[key] for key in sorted(grouped)]
 
 
@@ -196,29 +303,63 @@ def _make_plan(
     fields: Sequence[str],
     parent_fit_id: str | None = None,
 ) -> HMMFitPlan:
-    first = tasks[0]
+    by_reference: dict[str, list[Any]] = {}
+    for task in tasks:
+        by_reference.setdefault(str(task.reference), []).append(task)
+    first = tasks[0] if len(by_reference) == 1 else by_reference[min(by_reference)][0]
     candidate_ids = sorted({str(read_id) for task in tasks for read_id in task.read_ids})
     configured_max = int(_cfg_value(cfg, "hmm_max_fit_reads", 1000))
     selection_seed = int(_cfg_value(cfg, "hmm_fit_selection_seed", 0))
-    loaded_width = int(first.load_end) - int(first.load_start)
+    loaded_width = max(int(task.load_end) - int(task.load_start) for task in tasks)
     bytes_per_read = max(
         1,
         loaded_width * spec.n_channels * HMM_FIT_BYTES_PER_SIGNAL_VALUE,
     )
     memory_bytes = int(_cfg_value(cfg, "target_task_memory_mb", 512)) * 1024**2
     memory_max = max(1, memory_bytes // bytes_per_read)
-    selected = _bounded_selection(
-        candidate_ids,
-        seed=selection_seed,
-        configured_max=configured_max,
-        memory_max=memory_max,
-    )
+    members: tuple[HMMFitMember, ...] = ()
+    if len(by_reference) == 1:
+        selected = _bounded_selection(
+            candidate_ids,
+            seed=selection_seed,
+            configured_max=configured_max,
+            memory_max=memory_max,
+        )
+    else:
+        # Equal shares per reference (`HXR-02`), so the larger allele does
+        # not dominate the shared fit; a reference with fewer reads than its
+        # share gives all of them and the rest is not redistributed.
+        n_references = len(by_reference)
+        member_list = []
+        for reference in sorted(by_reference):
+            ref_tasks = by_reference[reference]
+            ref_ids = sorted({str(read_id) for task in ref_tasks for read_id in task.read_ids})
+            ref_selected = _bounded_selection(
+                ref_ids,
+                seed=selection_seed,
+                configured_max=max(1, configured_max // n_references),
+                memory_max=max(1, memory_max // n_references),
+            )
+            member_list.append(
+                HMMFitMember(
+                    reference=reference,
+                    core_start=int(ref_tasks[0].core_start),
+                    core_end=int(ref_tasks[0].core_end),
+                    load_start=int(ref_tasks[0].load_start),
+                    load_end=int(ref_tasks[0].load_end),
+                    candidate_n_reads=len(ref_ids),
+                    selected_read_ids=ref_selected,
+                )
+            )
+        members = tuple(member_list)
+        selected = tuple(read_id for member in members for read_id in member.selected_read_ids)
     selection = training_selection_metadata(selected)
     barcode = _group_barcode(fields, tasks)
+    reference = "+".join(sorted(by_reference))
     identity = {
         "fit_kind": fit_kind,
         "strategy": strategy,
-        "reference": str(first.reference),
+        "reference": reference,
         "barcode": barcode,
         "core_start": int(first.core_start),
         "core_end": int(first.core_end),
@@ -227,11 +368,15 @@ def _make_plan(
         "fit_config_hash": hmm_fit_config_hash(spec.config(cfg)),
         "parent_fit_id": parent_fit_id,
     }
+    if members:
+        identity["members"] = [
+            [m.reference, m.core_start, m.core_end, m.load_start, m.load_end] for m in members
+        ]
     return HMMFitPlan(
         fit_id=_stable_fit_id(identity),
         fit_kind=fit_kind,
         strategy=strategy,
-        reference=str(first.reference),
+        reference=reference,
         barcode=barcode,
         core_start=int(first.core_start),
         core_end=int(first.core_end),
@@ -247,6 +392,7 @@ def _make_plan(
         estimated_memory_bytes=len(selected) * bytes_per_read,
         apply_task_ids=tuple(sorted(str(task.task_id) for task in tasks)),
         parent_fit_id=parent_fit_id,
+        members=members,
     )
 
 
@@ -269,14 +415,18 @@ def build_hmm_fit_plan(
         "hmm_shared_scope",
         ("reference", "methbase"),
     )
+    groups = reference_groups(cfg)
+    if groups and bool(_cfg_value(cfg, "hmm_distance_aware", False)):
+        raise ValueError("hmm_reference_groups does not combine with hmm_distance_aware")
     base_plans: list[HMMFitPlan] = []
     adaptations: list[HMMFitPlan] = []
     assignments: dict[str, dict[str, str]] = {str(task.task_id): {} for task in tasks}
 
     for spec in model_specs:
         if strategy == "per_group":
-            groups = _group_tasks(tasks, include_sample="sample" in group_fields)
-            for group in groups:
+            for group in _group_tasks(
+                tasks, include_sample="sample" in group_fields, groups=groups
+            ):
                 plan = _make_plan(
                     group,
                     spec,
@@ -290,7 +440,7 @@ def build_hmm_fit_plan(
                     assignments[task_id][spec.label] = plan.fit_id
             continue
 
-        shared_groups = _group_tasks(tasks, include_sample="sample" in shared_fields)
+        shared_groups = _group_tasks(tasks, include_sample="sample" in shared_fields, groups=groups)
         adapt_enabled = bool(_cfg_value(cfg, "hmm_adapt_emissions", True)) or bool(
             _cfg_value(cfg, "hmm_adapt_startprobs", True)
         )
@@ -308,7 +458,9 @@ def build_hmm_fit_plan(
                 for task_id in base.apply_task_ids:
                     assignments[task_id][spec.label] = base.fit_id
                 continue
-            for adapt_group in _group_tasks(shared_group, include_sample="sample" in group_fields):
+            for adapt_group in _group_tasks(
+                shared_group, include_sample="sample" in group_fields, groups=groups
+            ):
                 adapted = _make_plan(
                     adapt_group,
                     spec,

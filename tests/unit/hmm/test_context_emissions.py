@@ -319,3 +319,60 @@ def test_per_state_weights_export_one_state_per_table():
     assert len(default) == len(protected) == N_CONTEXTS
     np.testing.assert_allclose(np.log(default["weight"]), model.log_weights.numpy()[modified])
     np.testing.assert_allclose(np.log(protected["weight"]), model.log_weights.numpy()[1 - modified])
+
+
+# --- HXR-03: one fit over reads of several references ----------------------------
+
+
+def test_per_read_coordinates_match_shared_coordinates():
+    """One coordinate row per read, all equal, is the shared-row model exactly."""
+    calls, _, codes, _, _ = _simulate_two_preferences(n_reads=40, length=500)
+    shared = _learned(codes, context_states="all")
+    shared.fit(calls, np.arange(500), max_iter=15, tol=0.0, device="cpu")
+    per_read = _learned(codes, context_states="all")
+    per_read.fit(calls, np.tile(np.arange(500), (40, 1)), max_iter=15, tol=0.0, device="cpu")
+    torch.testing.assert_close(shared.emission, per_read.emission)
+    torch.testing.assert_close(shared.trans, per_read.trans)
+    torch.testing.assert_close(shared.log_weights, per_read.log_weights)
+
+
+def _accessible_bias(model, calls, states, codes):
+    """Called minus true accessible fraction, decoding with ``codes``."""
+    model.set_contexts(log_weights=model.log_weights.numpy(), position_codes=codes)
+    _, gamma = model.decode(calls, np.arange(calls.shape[1]), device="cpu")
+    return (gamma[..., model.modified_state_index()] > 0.5).mean() - states.mean()
+
+
+def test_pooled_references_share_one_fit_and_keep_their_own_contexts():
+    """Two references of different lengths and sequences, identical chromatin
+    and enzyme, unequal read counts. The pooled fit recovers the enzyme's
+    preference, and both references, decoded with their own contexts, carry
+    the same calling bias -- so a between-reference difference is chromatin,
+    not fit. Separate per-reference fits do not (the per-allele artefact)."""
+    a = _simulate_two_preferences(n_reads=150, length=1200, seed=21)
+    b = _simulate_two_preferences(n_reads=40, length=700, seed=22)
+    (calls_a, states_a, codes_a, acc, prot), (calls_b, states_b, codes_b, _, _) = a, b
+    stacked = np.full((190, 1200), np.nan)
+    stacked[:150] = calls_a
+    stacked[150:, :700] = calls_b
+    coords = np.full((190, 1200), -1)
+    coords[:150] = np.arange(1200)
+    coords[150:, :700] = 1200 + np.arange(700)
+    pooled = _learned(np.concatenate([codes_a, codes_b]), context_states="all")
+    pooled.fit(stacked, coords, max_iter=60, tol=1e-7, device="cpu")
+
+    weights = pooled.log_weights.numpy()
+    modified = pooled.modified_state_index()
+    assert np.corrcoef(_centred(weights[modified]), _centred(np.log(acc)))[0, 1] > 0.9
+    assert np.corrcoef(_centred(weights[1 - modified]), _centred(np.log(prot)))[0, 1] > 0.9
+
+    pooled_gap = _accessible_bias(pooled, calls_a, states_a, codes_a) - _accessible_bias(
+        pooled, calls_b, states_b, codes_b
+    )
+    alone_a = _fit(_learned(codes_a, context_states="all"), calls_a)
+    alone_b = _fit(_learned(codes_b, context_states="all"), calls_b)
+    separate_gap = _accessible_bias(alone_a, calls_a, states_a, codes_a) - _accessible_bias(
+        alone_b, calls_b, states_b, codes_b
+    )
+    assert abs(pooled_gap) < 0.01
+    assert abs(separate_gap) > abs(pooled_gap) + 0.01
