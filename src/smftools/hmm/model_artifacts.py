@@ -177,6 +177,22 @@ def hmm_fit_config(cfg: Any) -> dict[str, Any]:
     axis = str(values.get("hmm_axis") or "sites").lower()
     if axis != "sites":  # `HPS-11`: counts only when changed
         fitted["hmm_axis"] = axis
+    scope = str(values.get("hmm_emission_scope") or "fit_group").lower()
+    if scope != "fit_group":  # `HPS-01`: counts only when on
+        fitted.update(
+            {
+                "hmm_emission_scope": scope,
+                "hmm_emission_groupby": list(values.get("hmm_emission_groupby") or []),
+                "hmm_efficiency_groupby": list(values.get("hmm_efficiency_groupby") or []),
+                "hmm_efficiency_covariates": list(values.get("hmm_efficiency_covariates") or []),
+                "hmm_efficiency_prior_sd": float(values.get("hmm_efficiency_prior_sd", 1.0)),
+                "hmm_tied_rounds": int(values.get("hmm_tied_rounds", 8)),
+                "hmm_tied_transition_iters": int(values.get("hmm_tied_transition_iters", 3)),
+                "sample_sheet_sha256": file_sha256_or_missing(
+                    values.get("sample_sheet_path") or ""
+                ),
+            }
+        )
     mode = str(values.get("hmm_context_model") or "none").lower()
     if mode != "none":
         fitted.update({name: values.get(name) for name in HMM_CONTEXT_FIT_FIELDS})

@@ -1,6 +1,6 @@
 # HMM parameter scopes, fitting plans and a project model store
 
-Status: in progress. Items `HPS-01`--`HPS-11`; `HPS-11` implemented. Builds on `HCE` (context
+Status: in progress. Items `HPS-01`--`HPS-11`; `HPS-01`--`HPS-04`, `HPS-11` implemented. Builds on `HCE` (context
 emissions, `HCE-07` per-state weights), `HXR` (fits shared across
 references), `SUG-02` (stage-only refit) and `SLC` (storage lifecycle).
 
@@ -85,10 +85,10 @@ fit group within an emission group (as `HXR-02`).
 
 | id | item | status |
 |---|---|---|
-| `HPS-01` | config: `hmm_emission_scope` (`fit_group` \| `shared` \| `shared_efficiency`), `hmm_emission_groupby` (sample columns, default `[methbase]` plus what the sample table names, e.g. enzyme, dose), `hmm_efficiency_prior_sd`, `hmm_efficiency_anchor` (`none` \| `protected` \| a control reference). Unset: today's behaviour and fingerprints | proposed |
-| `HPS-02` | planner: emission groups over fit groups; one tied fit per emission group owning its fit groups' transitions; provenance lists both | proposed |
-| `HPS-03` | tied EM: per-group E-step (existing alpha / beta), pooled emission M-step on the hits / trials table with level, context-weight and offset penalties; convergence on the summed log-likelihood | proposed |
-| `HPS-04` | artifacts: one emission model per emission group plus per-group transition / offset records; apply composes them per task | proposed |
+| `HPS-01` | config: `hmm_emission_scope` (`fit_group` default \| `shared` \| `shared_efficiency`), `hmm_emission_groupby`, and the technical factors an offset may follow -- `hmm_efficiency_covariates` (numeric sample-sheet columns, log scale, one slope per emission group, e.g. enzyme per cell) and `hmm_efficiency_groupby` (categorical, e.g. batch); `hmm_efficiency_prior_sd`, `hmm_tied_rounds`, `hmm_tied_transition_iters`. Groups come from the existing `sample_sheet_path`. Biological factors are never offsets (see the per-sample offset finding below). Fingerprints and fit ids unchanged at the defaults | implemented |
+| `HPS-02` | planner: under a shared scope every fit is per sample (needs `per_group` with `sample` in `hmm_groupby`) and carries its emission group, efficiency key and log covariate values (in its fit id); missing sheet rows / columns and non-positive covariates refused | implemented |
+| `HPS-03` | tied EM (`hmm/tied_fit.py`): per member, transitions re-estimated with emissions fixed (the model's own EM, axis-aware); posterior hits / trials per state x context pooled; one penalised binomial fit of state levels, context weights (learned: ridge from `hmm_context_shrinkage`, bounded; table: fixed), covariate slopes (centred within the group) and categorical offsets (Gaussian prior). Simulation: shared levels within 0.25 log-odds, dose slope and per-member transitions recovered | implemented |
+| `HPS-04` | artifacts: one tied job per model x emission group publishes an ordinary model per member (shared emissions + its offset + its transitions), so apply, layers, `HXR` pooling and caching are unchanged; the fit catalog records `emission_group` and `efficiency_offset`, artifacts the slopes and any constant covariate | implemented |
 | `HPS-05` | named fitting plans: a versioned spec (architecture, emission / transition scopes, context model, reference groups, read selection) with a hash; config `hmm_plans: {name: spec}` generalising `hmm_variants` | proposed |
 | `HPS-06` | project HMM model store: content-addressed models with manifests (plan hash, training selection, source generations, samples and experiments spanned), so one emission model can serve several experiments of the same chemistry | proposed |
 | `HPS-07` | layer sets: decoding a plan writes a per-experiment layer-set generation (lineage: model ids, the spatial / preprocess generations read) beside the HMM stage; readers select `(layer, plan)`; fitting a new plan does not regenerate the HMM stage (`SUG-02`) | proposed |
@@ -161,4 +161,17 @@ offsets +0.56 / -0.20.
   barely moves.
 
 Recommended target: `shared_efficiency` on the bp axis.
+
+### Efficiency offsets must not follow biological factors
+
+Fitted per sample on the two-allele run (one enzyme, one dose, same cell
+input everywhere), the offsets tracked cell type: active NK +1.09 / +0.77,
+inactive NK +0.85 / -0.07, CD4 T +0.21 / -0.55, B +0.07 / -0.77 (two polyamine
+conditions), with replicates agreeing to ~0.1-0.2 -- the ordering of the
+locus's activity, estimated from the locus itself. An offset free across
+cell types absorbs the chromatin differences under study. Offsets therefore
+follow only declared technical factors; with a constant reaction (that run)
+there is no offset and `shared_efficiency` reduces to `shared`. A per-reaction
+control (naked DNA, plasmid or a silent locus at real coverage) would allow
+measuring efficiency across cell types (`hmm_efficiency_anchor`, future).
 

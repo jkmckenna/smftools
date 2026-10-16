@@ -363,3 +363,29 @@ def test_hmm_axis_at_its_default_changes_no_fingerprint():
     assert _parse_hmm_axis(None) == "sites" and _parse_hmm_axis("BP") == "bp"
     with pytest.raises(ValueError):
         _parse_hmm_axis("grid")
+
+
+def test_emission_scope_defaults_change_no_fingerprint():
+    """`HPS-01`: the emission-scope keys at their defaults fingerprint as before
+    they existed; a shared scope makes only the HMM stage stale."""
+    from smftools.hmm.model_artifacts import hmm_fit_config_hash
+
+    cfg = SimpleNamespace(output_directory="/run", hmm_methbases=["C"])
+    stages = ("preprocess", "spatial", "hmm")
+    before = {stage: helpers.stage_config_hash(cfg, stage) for stage in stages}
+    fit_before = hmm_fit_config_hash(cfg)
+    cfg.hmm_emission_scope = "fit_group"
+    cfg.hmm_emission_groupby = []
+    cfg.hmm_efficiency_groupby = []
+    cfg.hmm_efficiency_covariates = []
+    cfg.hmm_efficiency_prior_sd = 1.0
+    cfg.hmm_tied_rounds = 8
+    cfg.hmm_tied_transition_iters = 3
+    assert {stage: helpers.stage_config_hash(cfg, stage) for stage in stages} == before
+    assert hmm_fit_config_hash(cfg) == fit_before
+    cfg.hmm_emission_scope = "shared"
+    cfg.hmm_emission_groupby = ["enzyme"]
+    after = {stage: helpers.stage_config_hash(cfg, stage) for stage in stages}
+    assert after["preprocess"] == before["preprocess"]
+    assert after["hmm"] != before["hmm"]
+    assert hmm_fit_config_hash(cfg) != fit_before

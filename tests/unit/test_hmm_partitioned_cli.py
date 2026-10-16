@@ -1854,3 +1854,129 @@ def test_bp_axis_refuses_the_distance_binned_model():
         hmm_axis(SimpleNamespace(hmm_axis="bp", hmm_distance_aware=True))
     with pytest.raises(ValueError, match="'sites' or 'bp'"):
         hmm_axis(SimpleNamespace(hmm_axis="grid"))
+
+
+# --- HPS-01..04: shared emissions across samples (tied EM) ----------------------
+
+
+def _two_sample_run(tmp_path, monkeypatch, **overrides):
+    from smftools.tools import partitioned_hmm
+
+    for name in (
+        "_plot_feature_fractions",
+        "_plot_feature_count_size_histograms",
+        "_plot_molecule_fractions",
+        "_plot_hmm_vs_raw_scatter",
+        "_plot_hmm_parameters_across_barcodes",
+        "_plot_hmm_fit_history",
+        "_plot_feature_clustermaps",
+    ):
+        monkeypatch.setattr(partitioned_hmm, name, lambda *args, **kwargs: None)
+    frame = _frame()
+    frame.loc[frame["read_id"] == "read2", ["barcode", "sample"]] = "bc2"
+    raw = write_raw_store(
+        frame,
+        tmp_path / "raw_outputs",
+        reference_lengths={"ref_top": 12},
+        analysis_mode="locus",
+        extra_uns={"References": {"ref_FASTA_sequence": "ACGCGTACGTAC"}},
+    )
+    preprocess = execute_partitioned_preprocessing(
+        raw["spine"], _preprocess_cfg(), tmp_path / "preprocess_outputs"
+    )
+    sheet = tmp_path / "samples.csv"
+    pd.DataFrame(
+        {
+            "Barcode": ["bc1", "bc2"],
+            "enzyme": ["E1", "E1"],
+            "enzyme_per_cell": [1e-4, 4e-4],
+            "cell_type": ["NK", "B"],
+        }
+    ).to_csv(sheet, index=False)
+    cfg = _hmm_cfg(
+        hmm_methbases=["C"],
+        hmm_max_iter=3,
+        target_task_memory_mb=1,
+        sample_sheet_path=str(sheet),
+        sample_sheet_mapping_column="Barcode",
+        hmm_tied_rounds=2,
+        hmm_tied_transition_iters=2,
+        **overrides,
+    )
+    return cfg, execute_partitioned_hmm(preprocess["spine"], cfg, tmp_path / "hmm_outputs")
+
+
+@pytest.mark.parametrize(
+    "scope",
+    [
+        {"hmm_emission_scope": "shared"},
+        {
+            "hmm_emission_scope": "shared_efficiency",
+            "hmm_efficiency_covariates": ["enzyme_per_cell"],
+        },
+    ],
+)
+def test_shared_emission_scopes_fit_one_emission_model_per_group(tmp_path, monkeypatch, scope):
+    cfg, outputs = _two_sample_run(tmp_path, monkeypatch, hmm_emission_groupby=["enzyme"], **scope)
+    fits = pd.read_parquet(outputs["fit_catalog"])
+    assert set(fits["fit_state"]) == {"complete"}
+    assert set(fits["emission_group"]) == {"C|enzyme=E1"}
+    assert sorted(fits["barcode"]) == ["bc1", "bc2"]  # transitions stay per sample
+
+    tasks = pd.read_parquet(outputs["task_catalog"])
+    artifacts = [json.loads(a)[0] for a in tasks["hmm_model_artifacts_json"]]
+    models = [_load_model(cfg, outputs, a) for a in artifacts]
+    logits = [
+        np.log(m.emission.detach().numpy()) - np.log1p(-m.emission.detach().numpy()) for m in models
+    ]
+    shift = logits[1] - logits[0]
+    # one shared emission model: the samples differ by at most one offset,
+    # the same for both states
+    np.testing.assert_allclose(shift, shift[0], atol=1e-6)
+    if scope["hmm_emission_scope"] == "shared":
+        np.testing.assert_allclose(shift, 0.0, atol=1e-6)
+        assert fits["efficiency_offset"].notna().all()
+
+
+def test_shared_scope_needs_a_sample_sheet_and_technical_columns():
+    from smftools.hmm.fit_plan import HMMModelSpec, build_hmm_fit_plan
+    from smftools.preprocessing.dispatch_plan import PreprocessTask
+
+    task = PreprocessTask(
+        task_id="t",
+        reference="ref_top",
+        barcode="bc1",
+        analysis_mode="locus",
+        chunk_index=0,
+        core_start=0,
+        core_end=12,
+        load_start=0,
+        load_end=12,
+        n_reads=1,
+        estimated_memory_bytes=1,
+        read_ids=("r",),
+    )
+    spec = HMMModelSpec(
+        name="a", label="C", signals=("C",), feature_groups=(), architecture="single"
+    )
+    base = dict(
+        hmm_groupby=["sample", "reference", "methbase"], hmm_shared_scope=["reference", "methbase"]
+    )
+    with pytest.raises(ValueError, match="sample sheet"):
+        build_hmm_fit_plan([task], [spec], SimpleNamespace(hmm_emission_scope="shared", **base))
+    with pytest.raises(ValueError, match="hmm_efficiency_covariates"):
+        build_hmm_fit_plan(
+            [task],
+            [spec],
+            SimpleNamespace(hmm_emission_scope="shared_efficiency", **base),
+            sample_attributes={"bc1": {}},
+        )
+    with pytest.raises(ValueError, match="positive number"):
+        build_hmm_fit_plan(
+            [task],
+            [spec],
+            SimpleNamespace(
+                hmm_emission_scope="shared_efficiency", hmm_efficiency_covariates=["dose"], **base
+            ),
+            sample_attributes={"bc1": {"dose": "0"}},
+        )

@@ -11,9 +11,11 @@ import numpy as np
 import pandas as pd
 
 from smftools.constants import (
+    BARCODE,
     COVERED_BASE_MASK,
     DEFAULT_CLUSTERMAP_MAX_READS_PER_PLOT,
     REFERENCE_STRAND,
+    SAMPLE_COL,
 )
 from smftools.logging_utils import get_logger
 
@@ -587,6 +589,200 @@ def _annotate_task(
     return [name for name in adata.uns.get(uns_key, []) if name in adata.layers]
 
 
+def _fit_input(spine_path, plan: HMMFitPlan, cfg, variant_cfg):
+    """A plan's training matrix, coordinates and context setup (None unless a
+    context model). Raises KeyError / ValueError when the input is unusable."""
+    if plan.members:  # pooled across references (`HXR-03`)
+        return _pooled_model_input(spine_path, plan, cfg, variant_cfg)
+    adata = materialize(
+        spine_path,
+        references=plan.reference,
+        read_ids=plan.selected_read_ids,
+        start=plan.load_start,
+        end=plan.load_end,
+    )
+    for column in (REFERENCE_STRAND, "Barcode", "Sample"):
+        if column in adata.obs and isinstance(adata.obs[column].dtype, pd.CategoricalDtype):
+            adata.obs[column] = adata.obs[column].cat.remove_unused_categories()
+    values, coordinates, _ = _prepare_model_input(adata, plan.reference, plan.model_spec, cfg)
+    setup = (
+        context_setup(adata, plan.reference, variant_cfg)
+        if plan.model_spec.architecture == "context_single"
+        else None
+    )
+    return values, coordinates, setup
+
+
+def hmm_sample_attributes(spine, cfg) -> dict[str, dict[str, str]] | None:
+    """Barcode -> sample-sheet columns, for shared emission scopes (`HPS-02`);
+    None under the default scope. The sheet is ``sample_sheet_path``, matched
+    to reads by ``sample_sheet_mapping_column``."""
+    from ..hmm.fit_plan import emission_scope
+
+    if emission_scope(cfg) == "fit_group":
+        return None
+    path = getattr(cfg, "sample_sheet_path", None)
+    if not path:
+        raise ValueError("a shared hmm_emission_scope needs sample_sheet_path")
+    mapping = str(getattr(cfg, "sample_sheet_mapping_column", None) or SAMPLE_COL)
+    sheet = pd.read_csv(path, dtype=str)
+    if mapping not in sheet.columns:
+        raise ValueError(f"sample sheet {path} has no {mapping!r} column")
+    obs = spine.obs
+    if mapping not in obs or BARCODE not in obs:
+        raise ValueError(f"reads carry no {mapping!r} / {BARCODE!r} to match the sample sheet")
+    columns = [BARCODE] if mapping == BARCODE else [BARCODE, mapping]
+    pairs = obs[columns].astype(str).drop_duplicates()
+    merged = pairs.merge(sheet, on=mapping, how="inner")
+    attributes: dict[str, dict[str, str]] = {}
+    for barcode, rows in merged.groupby(BARCODE):
+        if len(rows) > 1:
+            raise ValueError(f"barcode {barcode!r} matches {len(rows)} sample-sheet rows")
+        attributes[str(barcode)] = {k: v for k, v in rows.iloc[0].items() if k != BARCODE}
+    return attributes
+
+
+def execute_tied_fit_task(spine_path, plans, cfg, models_dir) -> list[dict[str, object]]:
+    """Fit one emission group jointly (`HPS-03`): shared emissions and
+    efficiency offsets, each member's own transitions; publish one ordinary
+    model per member, so apply is unchanged."""
+    from ..hmm.HMM import create_hmm
+    from ..hmm.model_artifacts import checkpoint_path, metadata_path
+    from ..hmm.tied_fit import TiedMember, tied_em
+
+    variant_cfg = plans[0].model_spec.config(cfg)
+    device = resolve_torch_device(
+        getattr(cfg, "hmm_device", None) or getattr(cfg, "device", "auto")
+    )
+    trainers, keys, inputs, artifacts = [], [], [], {}
+    for plan in plans:
+        trainer = HMMTrainer(cfg=variant_cfg, models_dir=Path(models_dir))
+        key = trainer._key(
+            kind="PER",
+            sample=plan.barcode,
+            reference=plan.reference,
+            label=plan.model_spec.label,
+            arch=plan.model_spec.architecture,
+            core_start=plan.core_start,
+            core_end=plan.core_end,
+        )
+        trainers.append(trainer)
+        keys.append(key)
+    published = all(
+        checkpoint_path(Path(models_dir), key).exists()
+        and metadata_path(checkpoint_path(Path(models_dir), key)).exists()
+        for key in keys
+    )
+    members, member_plans = [], []
+    result = None
+    if not published:
+        for plan, trainer in zip(plans, trainers, strict=True):
+            try:
+                values, coordinates, setup = _fit_input(spine_path, plan, cfg, variant_cfg)
+            except (KeyError, ValueError) as exc:
+                artifacts[plan.fit_id] = {
+                    "fit_id": plan.fit_id,
+                    "skipped": True,
+                    "reason": str(exc),
+                }
+                continue
+            trainer.context_setup = setup
+            model = create_hmm(variant_cfg, arch=plan.model_spec.architecture, device=device)
+            trainer._apply_contexts(model)
+            trainer._configure_axis(model, values)
+            trainer._per_bp_start(model, values)
+            members.append(
+                TiedMember(
+                    model,
+                    values,
+                    coordinates,
+                    covariates=np.asarray(plan.efficiency_covariates, dtype=float),
+                    category=plan.efficiency_key or None,
+                )
+            )
+            member_plans.append(plan)
+        if members:
+            free_w, fixed_w = _tied_weight_masks(members[0].model, variant_cfg)
+            bounds = getattr(variant_cfg, "hmm_context_weight_bounds", None) or (0.1, 10.0)
+            result = tied_em(
+                members,
+                free_w=free_w,
+                fixed_w=fixed_w,
+                rounds=int(getattr(cfg, "hmm_tied_rounds", 8)),
+                transition_iters=int(getattr(cfg, "hmm_tied_transition_iters", 3)),
+                shrinkage=float(getattr(variant_cfg, "hmm_context_shrinkage", 50.0)),
+                bound=float(np.log(float(bounds[1]))),
+                prior_sd=float(getattr(cfg, "hmm_efficiency_prior_sd", 1.0)),
+                device=device,
+            )
+    fitted = {
+        plan.fit_id: (member, i) for i, (plan, member) in enumerate(zip(member_plans, members))
+    }
+    for plan, trainer, key in zip(plans, trainers, keys, strict=True):
+        if plan.fit_id in artifacts:
+            continue
+        member, index = fitted.get(plan.fit_id, (None, None))
+
+        def fit_model(member=member):
+            if member is None:
+                raise RuntimeError("tied HMM member was not fitted")
+            return member.model, list(result.history)
+
+        trainer._load_or_fit_artifact(
+            key=key,
+            arch=plan.model_spec.architecture,
+            device=device,
+            fit_model=fit_model,
+            training_selection=plan.training_metadata(),
+        )
+        artifact = dict(trainer.last_artifact or {})
+        artifact.update(
+            {
+                "fit_id": plan.fit_id,
+                "parent_fit_id": plan.parent_fit_id,
+                "skipped": False,
+                "emission_group": plan.emission_group,
+                "emission_group_size": len(plans),
+            }
+        )
+        if result is not None and index is not None:
+            artifact.update(
+                {
+                    "efficiency_offset": float(result.offsets[index]),
+                    "efficiency_slopes": [float(b) for b in result.beta],
+                    "efficiency_constant_covariates": list(result.constant_covariates),
+                }
+            )
+        artifacts[plan.fit_id] = artifact
+    return [artifacts[plan.fit_id] for plan in plans]
+
+
+def _tied_weight_masks(model, cfg) -> tuple[np.ndarray, np.ndarray]:
+    """Which context weights tied EM learns, and the fixed values of the rest:
+    none without a context model; a table's weights stay fixed; learned
+    weights are free for the modified state, or every state under
+    ``hmm_context_states: all``."""
+    n_states = int(model.n_states)
+    weights = getattr(model, "log_weights", None)
+    if weights is None:
+        return np.zeros((n_states, 0), bool), np.zeros((n_states, 0))
+    weights = weights.detach().cpu().numpy()
+    n_contexts = weights.shape[-1]
+    if weights.ndim == 1:
+        scale = model._state_scale().detach().cpu().numpy()
+        fixed = scale[:, None] * weights[None, :]
+    else:
+        fixed = weights.copy()
+    free = np.zeros((n_states, n_contexts), bool)
+    if context_model(cfg) == "learned":
+        if str(getattr(cfg, "hmm_context_states", "modified")) == "all":
+            free[:] = True
+        else:
+            free[model.modified_state_index()] = True
+        fixed = np.where(free, 0.0, fixed)
+    return free, fixed
+
+
 def execute_hmm_fit_task(
     spine_path,
     plan: HMMFitPlan,
@@ -598,36 +794,10 @@ def execute_hmm_fit_task(
     # A variant fits under its own settings (`HCE-06`); the default under cfg.
     variant_cfg = plan.model_spec.config(cfg)
     trainer = HMMTrainer(cfg=variant_cfg, models_dir=Path(models_dir))
-    if plan.members:  # pooled across references (`HXR-03`)
-        try:
-            values, coordinates, trainer.context_setup = _pooled_model_input(
-                spine_path, plan, cfg, variant_cfg
-            )
-        except (KeyError, ValueError) as exc:
-            return {"fit_id": plan.fit_id, "skipped": True, "reason": str(exc)}
-    else:
-        adata = materialize(
-            spine_path,
-            references=plan.reference,
-            read_ids=plan.selected_read_ids,
-            start=plan.load_start,
-            end=plan.load_end,
-        )
-        for column in (REFERENCE_STRAND, "Barcode", "Sample"):
-            if column in adata.obs and isinstance(adata.obs[column].dtype, pd.CategoricalDtype):
-                adata.obs[column] = adata.obs[column].cat.remove_unused_categories()
-        try:
-            values, coordinates, _ = _prepare_model_input(
-                adata, plan.reference, plan.model_spec, cfg
-            )
-        except (KeyError, ValueError) as exc:
-            return {
-                "fit_id": plan.fit_id,
-                "skipped": True,
-                "reason": str(exc),
-            }
-        if plan.model_spec.architecture == "context_single":
-            trainer.context_setup = context_setup(adata, plan.reference, variant_cfg)
+    try:
+        values, coordinates, trainer.context_setup = _fit_input(spine_path, plan, cfg, variant_cfg)
+    except (KeyError, ValueError) as exc:
+        return {"fit_id": plan.fit_id, "skipped": True, "reason": str(exc)}
     device = resolve_torch_device(
         getattr(cfg, "hmm_device", None) or getattr(cfg, "device", "auto")
     )
@@ -1903,6 +2073,7 @@ def _fit_catalog_frame(plans, artifacts: dict[str, dict[str, object]] | None = N
             portable["metadata"] = (Path(HMM_MODEL_SUBDIR) / str(portable["metadata"])).as_posix()
             record.update(
                 {
+                    "efficiency_offset": portable.get("efficiency_offset"),
                     "fit_state": "complete",
                     "model_id": portable["model_id"],
                     "model_checksum": portable["model_checksum"],
@@ -1984,29 +2155,53 @@ def execute_partitioned_hmm(spine_path, cfg, output_dir) -> dict[str, Path]:
     )
 
     model_specs = _configured_model_specs(cfg)
-    fit_planning = build_hmm_fit_plan(tasks, model_specs, cfg)
+    fit_planning = build_hmm_fit_plan(
+        tasks, model_specs, cfg, sample_attributes=hmm_sample_attributes(spine, cfg)
+    )
     fit_catalog_path = output_dir / HMM_FIT_CATALOG
     fit_selection_path = output_dir / HMM_FIT_SELECTION_CATALOG
     _fit_catalog_frame(fit_planning.all_plans).to_parquet(fit_catalog_path, index=False)
     _fit_selection_frame(fit_planning.all_plans).to_parquet(fit_selection_path, index=False)
 
+    single_plans = [plan for plan in fit_planning.base_plans if not plan.emission_group]
     base_results = run_tasks_parallel(
         execute_hmm_fit_task,
-        [(spine_path, plan, cfg, models_dir, None) for plan in fit_planning.base_plans],
+        [(spine_path, plan, cfg, models_dir, None) for plan in single_plans],
         cfg=cfg,
         force_sequential=str(device) != "cpu",
-        pool_label=f"hmm fit pool ({len(fit_planning.base_plans)} models, device={device})",
+        pool_label=f"hmm fit pool ({len(single_plans)} models, device={device})",
         per_item_memory_mb=max(
-            (plan.estimated_memory_bytes for plan in fit_planning.base_plans),
+            (plan.estimated_memory_bytes for plan in single_plans),
             default=1,
         )
         / (1024**2),
         estimator="hmm_fit_plan_peak",
     )
     artifacts_by_fit = {
-        plan.fit_id: artifact
-        for plan, artifact in zip(fit_planning.base_plans, base_results, strict=True)
+        plan.fit_id: artifact for plan, artifact in zip(single_plans, base_results, strict=True)
     }
+    # Shared emission scopes (`HPS-03`): one tied fit per model x emission group.
+    tied_groups: dict[tuple[str, str], list[HMMFitPlan]] = {}
+    for plan in fit_planning.base_plans:
+        if plan.emission_group:
+            tied_groups.setdefault((plan.model_spec.label, plan.emission_group), []).append(plan)
+    tied_jobs = [tied_groups[key] for key in sorted(tied_groups)]
+    tied_results = run_tasks_parallel(
+        execute_tied_fit_task,
+        [(spine_path, group, cfg, models_dir) for group in tied_jobs],
+        cfg=cfg,
+        force_sequential=str(device) != "cpu",
+        pool_label=f"hmm tied fit pool ({len(tied_jobs)} emission groups, device={device})",
+        per_item_memory_mb=max(
+            (sum(plan.estimated_memory_bytes for plan in group) for group in tied_jobs),
+            default=1,
+        )
+        / (1024**2),
+        estimator="hmm_tied_fit_peak",
+    )
+    for group, results in zip(tied_jobs, tied_results, strict=True):
+        for plan, artifact in zip(group, results, strict=True):
+            artifacts_by_fit[plan.fit_id] = artifact
     adaptation_results = run_tasks_parallel(
         execute_hmm_fit_task,
         [

@@ -166,7 +166,16 @@ def _downstream_config_prefixes(stage: str) -> tuple[str, ...]:
 #: before". They join a stage's semantic config only when set, so adding the key
 #: does not invalidate every stored generation that predates it.
 _OMIT_WHEN_UNSET_CONFIG_KEYS = {"barcodes_to_include", "hmm_reference_groups"}
-_OMIT_AT_DEFAULT_CONFIG_KEYS = {"hmm_axis": "sites"}
+_OMIT_AT_DEFAULT_CONFIG_KEYS = {
+    "hmm_axis": "sites",
+    "hmm_emission_scope": "fit_group",
+    "hmm_emission_groupby": [],
+    "hmm_efficiency_groupby": [],
+    "hmm_efficiency_covariates": [],
+    "hmm_efficiency_prior_sd": 1.0,
+    "hmm_tied_rounds": 8,
+    "hmm_tied_transition_iters": 3,
+}
 
 
 def _is_unset(value) -> bool:

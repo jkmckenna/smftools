@@ -442,6 +442,55 @@ To compare emission models in one run, add them as `hmm_variants` (each
 writes its own layers), e.g. `{learned_all: {hmm_context_model: learned,
 hmm_context_states: all}}`.
 
+## HMM emissions shared across samples
+
+The HMM's transitions describe chromatin (how long accessible and protected
+stretches last); its emissions describe the measurement (how often each state
+is modified, and the enzyme's sequence-context preference). By default each
+sample x reference fits both. Then "more modification" can be read either as
+more open chromatin or as a more active enzyme, and comparisons between
+samples inherit that freedom -- on a two-allele run, per-allele fits got the
+allele difference backwards in two thirds of samples.
+
+`hmm_emission_scope` shares the emissions while transitions stay per sample
+x reference x strand:
+
+| scope | emissions |
+|---|---|
+| `fit_group` (default) | each sample x reference its own |
+| `shared` | one model per emission group (`hmm_emission_groupby`, e.g. `[enzyme]`) |
+| `shared_efficiency` | shared, plus an efficiency offset from technical factors only |
+
+The offset (on the log-odds of both states) follows only what you declare
+technical:
+
+- `hmm_efficiency_covariates`: numeric sample-sheet columns, used on the log
+  scale with one slope per emission group -- e.g. enzyme per cell
+  (`enzyme_amount_uL / cell_input`). Samples with the same value get the same
+  offset;
+- `hmm_efficiency_groupby`: categorical technical columns (a processing batch,
+  an enzyme lot).
+
+Everything left out -- cell type, genotype, treatment, mouse / replicate -- is
+read as chromatin. Do not put a biological factor among the efficiency
+columns: an offset per cell type absorbs exactly the chromatin differences
+between cell types (on one run the offsets fitted per sample tracked the
+locus's activity across cell types). Offsets are shrunk toward 0
+(`hmm_efficiency_prior_sd`, log-odds) and written to the fit catalog
+(`efficiency_offset`); a covariate constant within an emission group gives
+no offset.
+
+```yaml
+sample_sheet_path: samples.csv          # matched by sample_sheet_mapping_column
+hmm_emission_scope: shared_efficiency
+hmm_emission_groupby: [enzyme]
+hmm_efficiency_covariates: [enzyme_per_cell]
+```
+
+Fitting is tied EM (`hmm_tied_rounds` rounds of `hmm_tied_transition_iters`
+transition iterations per sample, then one pooled emission update); every
+sample still gets its own model artifact, so layers are written as before.
+
 ## HMM position axis
 
 `hmm_axis: sites` (default) fits the HMM on the modification-site columns

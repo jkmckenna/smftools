@@ -470,6 +470,26 @@ hmm_reference_groups: {}
 # no site: transitions per bp, footprints in bp, a posterior at every bp; ~4x the
 # columns on C-targeting amplicons). Not with hmm_distance_aware.
 hmm_axis: sites
+# Emission scopes (plan HPS). Transitions are always per fit group (sample x
+# reference x strand); emissions are measurement, not chromatin:
+#   fit_group          each fit group has its own emissions (default; within-sample QC)
+#   shared             one emission model per emission group (hmm_emission_groupby
+#                      columns of the sample sheet, e.g. [enzyme, enzyme_amount_uL])
+#   shared_efficiency  shared + an efficiency offset from technical factors only:
+#                      hmm_efficiency_covariates (numeric columns, e.g. enzyme per cell;
+#                      offset = slope * log value, one slope per emission group) and/or
+#                      hmm_efficiency_groupby (categorical, e.g. [batch]). Biological
+#                      factors (cell type, genotype, treatment, replicate) never enter
+#                      it, so differences along them are read as chromatin.
+# Groups come from sample_sheet_path (mapped by sample_sheet_mapping_column).
+# Fitted by tied EM: per-group transitions, pooled emission M-step.
+hmm_emission_scope: fit_group
+hmm_emission_groupby: []
+hmm_efficiency_groupby: []
+hmm_efficiency_covariates: []
+hmm_efficiency_prior_sd: 1.0 # log-odds; offsets shrink to 0 without strong evidence
+hmm_tied_rounds: 8
+hmm_tied_transition_iters: 3
 hmm_groupby: ["sample", "reference", "methbase"]
 # If hmm_fit_strategy == shared_transitions
 hmm_adapt_emissions: true

@@ -860,6 +860,17 @@ def load_defaults_with_inheritance(
 _DEFAULT_LEIDEN_RESOLUTION_BY_STRATEGY = {"pca": 0.5, "umap": 0.01, "nmf": 0.01, "cp": 0.0005}
 
 
+HMM_EMISSION_SCOPES = ("fit_group", "shared", "shared_efficiency")
+
+
+def _parse_hmm_emission_scope(value: Any) -> str:
+    """``hmm_emission_scope`` (`HPS-01`): fit_group (default) | shared | shared_efficiency."""
+    scope = str(value or "fit_group").strip().lower()
+    if scope not in HMM_EMISSION_SCOPES:
+        raise ValueError(f"hmm_emission_scope must be one of {HMM_EMISSION_SCOPES}, not {value!r}")
+    return scope
+
+
 def _parse_hmm_axis(value: Any) -> str:
     """``hmm_axis`` (`HPS-11`): ``sites`` (default) or ``bp``."""
     axis = str(value or "sites").strip().lower()
@@ -1420,6 +1431,14 @@ class ExperimentConfig:
     hmm_reference_groups: Dict[str, List[str]] = field(default_factory=dict)
     # Position axis (`HPS-11`): "sites" (site columns) | "bp" (full per-bp grid).
     hmm_axis: str = "sites"
+    # Emission scopes (`HPS-01`): what the emission model is shared across.
+    hmm_emission_scope: str = "fit_group"
+    hmm_emission_groupby: List[str] = field(default_factory=list)
+    hmm_efficiency_groupby: List[str] = field(default_factory=list)
+    hmm_efficiency_covariates: List[str] = field(default_factory=list)
+    hmm_efficiency_prior_sd: float = 1.0
+    hmm_tied_rounds: int = 8
+    hmm_tied_transition_iters: int = 3
     hmm_dtype: str = "float64"
     hmm_annotation_threshold: float = 0.5
     hmm_batch_size: int = 1024
@@ -2797,6 +2816,19 @@ class ExperimentConfig:
             hmm_variants=_parse_hmm_variants(merged.get("hmm_variants")),
             hmm_reference_groups=_parse_hmm_reference_groups(merged.get("hmm_reference_groups")),
             hmm_axis=_parse_hmm_axis(merged.get("hmm_axis")),
+            hmm_emission_scope=_parse_hmm_emission_scope(merged.get("hmm_emission_scope")),
+            hmm_emission_groupby=[
+                str(v) for v in _parse_list(merged.get("hmm_emission_groupby", []))
+            ],
+            hmm_efficiency_groupby=[
+                str(v) for v in _parse_list(merged.get("hmm_efficiency_groupby", []))
+            ],
+            hmm_efficiency_covariates=[
+                str(v) for v in _parse_list(merged.get("hmm_efficiency_covariates", []))
+            ],
+            hmm_efficiency_prior_sd=float(merged.get("hmm_efficiency_prior_sd", 1.0)),
+            hmm_tied_rounds=int(merged.get("hmm_tied_rounds", 8)),
+            hmm_tied_transition_iters=int(merged.get("hmm_tied_transition_iters", 3)),
             hmm_fit_strategy=hmm_fit_strategy,
             hmm_shared_scope=hmm_shared_scope,
             hmm_groupby=hmm_groupby,
