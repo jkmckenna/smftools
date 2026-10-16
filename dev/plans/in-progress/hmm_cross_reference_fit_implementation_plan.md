@@ -1,8 +1,7 @@
 # HMM fits shared across references (alleles) -- implementation plan
 
-Status: in progress. `HXR-01`--`HXR-05` implemented; `HXR-06` unit and
-synthetic tests done, real-data acceptance pending (it needs an HMM
-regeneration). Built on the merged context-emission work (`HCE`,
+Status: implemented and accepted on real data (`HXR-01`--`HXR-06`); stays
+in progress until a store has been regenerated with it. Built on the merged context-emission work (`HCE`,
 `in-progress/hmm_context_emissions_implementation_plan.md`, through
 `HCE-07`).
 
@@ -40,7 +39,7 @@ when not requested.
 | `HXR-03` | fitting: members are materialized on their own references and stacked left-aligned (NaN padding; transitions and levels are position-independent). `ContextBernoulliHMM` takes one coordinate row per read (N, L) into the members' concatenated context codes, so each read keeps its reference's contexts and the fit learns one set of (per-state) weights. `PER`, `GLOBAL` and `ADAPT` all pool; not with `hmm_distance_aware` (refused at planning) | implemented |
 | `HXR-04` | apply and provenance: every member's tasks map to the pooled fit; a context model is given the task's own reference codes before decoding (shared weights kept); `fit_catalog` lists `references` and `members` (windows, candidate / selected counts), `fit_selection` each read's `read_reference`, checkpoint training metadata `reference_n_reads`; layers and names unchanged | implemented |
 | `HXR-05` | invalidation and docs: `hmm_reference_groups` is omitted from stage fingerprints while empty (existing stores stay current) and, when set, makes the HMM stage and later ones stale, not preprocess or spatial; the experiment-config tutorial documents allele setups | implemented |
-| `HXR-06` | tests: unit -- grouping keys, strands, equal shares, stable ids (and unchanged ids for ungrouped fits), shared-transition pooling, refusals; model -- per-read coordinates equal shared ones exactly; synthetic -- two references of different lengths and sequences, identical chromatin and enzyme, unequal reads: the pooled fit recovers both preferences and the two references carry the same calling bias (difference 0.002), while separate fits differ (0.032); end-to-end -- one fit, both alleles decoded, plain and learned-every-state models; acceptance -- on a two-allele deaminase run, HMM accessible tracks raw rates per allele (direction and ratio) after the shared fit | unit / synthetic done; acceptance pending |
+| `HXR-06` | tests: unit -- grouping keys, strands, equal shares, stable ids (and unchanged ids for ungrouped fits), shared-transition pooling, refusals; model -- per-read coordinates equal shared ones exactly; synthetic -- two references of different lengths and sequences, identical chromatin and enzyme, unequal reads: the pooled fit recovers both preferences and the two references carry the same calling bias (difference 0.002), while separate fits differ (0.032); end-to-end -- one fit, both alleles decoded, plain and learned-every-state models; acceptance -- on a two-allele deaminase run, HMM accessible tracks raw rates per allele (direction and ratio) after the shared fit | done (below) |
 
 ## Coordination
 
@@ -58,3 +57,30 @@ one set of context weights from both references' contexts).
 - A stage-only rerun mode (rerunning `hmm` / `spatial` without re-checking
   raw when raw is stale): a separate concern, noted here because a
   shared-fit refit is most useful exactly when upstream stages must not move.
+
+## Acceptance (`HXR-06`)
+
+A deaminase run with intact and enhancer-deletion alleles in the same cells
+(30 samples: active and inactive NK cells, CD4 T and B cells, two
+polyamine doses). Each sample was fitted directly with the run's HMM
+settings, four ways: plain or learned every-state emissions (`HCE-07`), one
+fit per allele or one shared fit through this planner (equal reads per
+allele). Enhancer-deletion / intact ratio, outside the deletion, median over
+samples:
+
+| cells | raw rate | per-allele fit | shared fit | shared fit, learned every state |
+|---|---|---|---|---|
+| active NK | 0.57-0.67 | 0.85-0.92 | 0.28-0.50 | 0.31-0.58 |
+| inactive NK | 0.91-0.92 | 1.16-1.52 | 0.88 | 0.90-0.92 |
+| CD4 T | 0.96 | 1.10-1.23 | 0.94 | 0.95-0.96 |
+| B | 0.99-1.00 | 0.95-0.96 | 0.99-1.00 | 0.99-1.00 |
+
+- The HMM ratio's direction matches the raw one in 33 % (plain) / 17 %
+  (learned) of samples with per-allele fits and in 100 % / 93 % with a
+  shared fit (the misses: B cells, ratio ~1).
+- Median |log2(HMM ratio / raw ratio)|: 0.33 per allele, 0.035 shared
+  (plain), 0.012 shared (learned every state).
+- Per-allele fits nearly erased the deletion's effect in active NK cells and
+  invented a gain in the other cells; a shared fit keeps the raw difference
+  and, as a two-state call, sharpens it.
+
