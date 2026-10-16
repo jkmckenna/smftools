@@ -1,6 +1,6 @@
 # Storage lifecycle: model store, generation pruning, one usage report
 
-Status: in progress. Items `SLC-01`--`SLC-12`; `SLC-01`, `SLC-06`, `SLC-07` implemented. Extends `MLR-16` (model
+Status: in progress. Items `SLC-01`--`SLC-12`; `SLC-01`, `SLC-06`, `SLC-07`, `SLC-11` implemented. Extends `MLR-16` (model
 retention, merged) and replaces the deletion blocker of `EGL-03b`
 (`completed/generation_lifecycle_and_naming_implementation_plan.md`); folds in
 `EGL-03c` (`proposed/generation_prune_scope_implementation_plan.md`).
@@ -82,7 +82,7 @@ honest inventory, reference-aware protection, then deletion / archiving.
 
 | id | item | status |
 |---|---|---|
-| `SLC-11` | `smftools data usage DIR [--json]`: per experiment and stage -- current, referenced, superseded, pinned bytes; per ML workspace -- models by architecture and job tags, read vs never read, compressed vs not, retired; project analysis caches (`project analyses list`) current vs stale; output trees under a run directory that no registered experiment root, project registry or generation pointer reaches (reported with size and whether they carry an `experiment_manifest.json`, never deleted by smftools -- other projects may read them); and for each bucket the command that reclaims it | proposed |
+| `SLC-11` | `smftools data usage DIR [--project] [--top] [--json]` (`data/storage_usage.py`): one walk finds experiment roots and projects; per experiment the `SLC-07` planner (`keep_last=0`, project registries as `--protect-from`) buckets generations into current / pinned / referenced / prune candidate / unreadable, plus other bytes and a not-registered flag; directories beside experiment roots that no experiment owns; ML workspaces (models by architecture, never read by a run, uncompressed payloads, retired); analysis caches by status; reclaimable bytes per bucket with the command that addresses it. Read-only | implemented |
 | `SLC-12` | docs: a "managing disk space" page (what grows, retention order: compact, retire unread, prune superseded generations, archive), config reference for the new settings, `cli/AGENTS.md` command map | proposed |
 
 ## Order

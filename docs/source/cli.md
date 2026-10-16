@@ -255,6 +255,25 @@ not be read, so nothing non-current is offered), `keep_unreadable`, `keep_last`,
 versioned plan (`dry_run: true`, `deletion_supported: false`); applying a plan
 (archive or confirmed delete) is planned as `SLC-08`.
 
+## Where the disk space went
+
+`smftools data usage DIR [--project PROJECT] [--top N] [--json]` walks a
+directory of runs and projects once and reports, read-only:
+
+- per experiment root: stage generations by disposition -- current, pinned,
+  read by a live generation, prune candidate -- and the other bytes (inputs,
+  BAMs); roots no scanned project registers are flagged;
+- directories beside experiment roots that no experiment owns (earlier
+  output trees, test reruns) -- smftools never removes these;
+- ML workspaces: model bytes by architecture, models no run ever read,
+  uncompressed payloads, models already retired;
+- project analysis caches, current vs stale;
+- the bytes in each reclaimable bucket and the command that addresses it.
+
+Projects under `DIR` (a `registry.json` beside `project_outputs`) are found
+automatically; their registries protect the generations they name. On a large
+drive the walk takes minutes.
+
 ## Project analysis cache inventory
 
 Use `smftools project analyses list PROJECT_DIR` to inspect periodicity and
