@@ -1,6 +1,6 @@
 # Motif scanning and per-molecule motif occupancy (`MOT`)
 
-**Status:** in progress. `MOT-01`–`MOT-03` merged, `MOT-04` implemented. One PR per item, in order.
+**Status:** in progress. `MOT-01`–`MOT-04` merged (`MOT-04`: #696); `MOT-05`, `MOT-06` proposed. One PR per item, in order.
 
 ## Question
 
@@ -148,7 +148,7 @@ metadata.
 | `MOT-01` motif files and the built-in scanner | merged | MEME parser (exact), numpy scanner, exact p-values, interval table; `smftools motifs scan` |
 | `MOT-02` FIMO engine | merged | optional `engine: fimo`, background parity, same table |
 | `MOT-03` bulk class tracks with motif lanes | merged | per group x reference: class fractions along the locus, motif lanes below, per-instance inside-vs-flank contrast table; `project|experiment motif-tracks` |
-| `MOT-04` per-molecule occupancy | implemented, not merged | states per read x instance from HMM layers via a plan dataset; group fractions; `project|experiment motif-occupancy` |
+| `MOT-04` per-molecule occupancy | merged (#696) | states per read x instance from HMM layers via a plan dataset; group fractions; `project|experiment motif-occupancy` |
 | `MOT-05` co-occupancy, comparisons, figures | proposed | pair tables, group tests, locus track, bars, heatmap, volcano |
 | `MOT-06` qualification | proposed | built-in vs FIMO agreement on real references; occupancy vs the earlier per-read TetO script on its data; NKG2A locus run |
 

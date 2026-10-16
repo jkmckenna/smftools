@@ -1,6 +1,6 @@
 # Sequence-context-aware HMM emissions (`HCE`)
 
-**Status:** in progress. `HCE-01`–`HCE-04` merged; `HCE-05` qualified (not adopted as the default); `HCE-06`, `HCE-08`, `HCE-09` merged; `HCE-07` proposed. One PR per item, in order. The
+**Status:** in progress. `HCE-01`–`HCE-04` merged; `HCE-05` qualified (not adopted as the default); `HCE-06`, `HCE-08`, `HCE-09`, `HCE-10` merged (`HCE-10`: #690); `HCE-07`, `HCE-11` proposed. One PR per item, in order. The
 default stays `none` unless `HCE-05` qualifies a mode.
 
 ## Question
@@ -88,7 +88,7 @@ hmm_context_weight_bounds: [0.1, 10]
 | `HCE-07` context weights for every state (learned) | proposed | the protected state's background modification follows the enzyme's preference too |
 | `HCE-08` HMM vs raw per-molecule scatter | merged | per read: HMM accessible fraction against the raw modified-site fraction, per barcode, variants overlaid |
 | `HCE-09` HMM fractions at observed sites | merged | per read: the share of the model's observed sites inside each feature, beside the raw modified-site fraction |
-| `HCE-10` per-read fraction backfill | implemented, not merged | `HCE-06`/`-08`/`-09` per-read fractions and figures for HMM generations made before them |
+| `HCE-10` per-read fraction backfill | merged (#690) | `HCE-06`/`-08`/`-09` per-read fractions and figures for HMM generations made before them |
 | `HCE-11` fit / apply on a site subset | proposed | fit or apply the HMM using only one context's sites (e.g. GpC on a deaminase read), so its segments do not see the other sites -- needed when those sites are a prediction target (imputation baselines, measurement-model segments) |
 
 ### `HCE-01` — context indices and weight tables
