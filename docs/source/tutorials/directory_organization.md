@@ -97,11 +97,11 @@ smftools experiment generations <experiment_id> pin raw <generation_id> \
   --reason "paper figure 3"
 ```
 
-`smftools experiment generations <experiment_id> prune --keep-last 2` is
-currently a dry-run planner only. It protects current, pinned, unreadable,
-recent, and newest generations. Even older policy matches remain blocked until
-their byte-level reproducibility from retained inputs is represented
-authoritatively; this phase does not expose deletion or force behavior.
+`smftools experiment generations <experiment_id> prune --keep-last 2` is a
+dry-run planner: it never deletes. It keeps current and pinned generations and
+every generation they read (spine pointers, refresh lineage), plus those named by
+`--protect-from` (e.g. a project registry); what remains, within the policy, is
+reported as a prune candidate. `... refs` lists which generation reads which.
 
 ### Analysis caches across smftools versions
 

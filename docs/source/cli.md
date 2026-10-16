@@ -233,20 +233,27 @@ smftools experiment generations OUTPUT_ROOT unpin raw GENERATION_ID \
   --all-reasons
 ```
 
-Pruning is planning-only in EGL-03a. The command evaluates age and count policy,
-walks generation sizes, and never deletes artifacts:
+Pruning is planning-only: the command never deletes or moves anything. It
+keeps current and pinned generations, **every generation they read** -- a
+refreshed generation keeps its parent's rows, and a downstream spine points at
+the upstream generations it was built from, which need not be current -- and
+generations named by `--protect-from` files (a project directory stands for its
+`registry.json`). The age / count policy then chooses among the rest:
 
 ```shell
 smftools experiment generations OUTPUT_ROOT prune \
   --keep-last 2 \
-  --older-than 2026-01-01T00:00:00Z
+  --older-than 2026-01-01T00:00:00Z \
+  --protect-from PROJECT_DIR
+smftools experiment generations OUTPUT_ROOT refs   # which generation reads which
 ```
 
-Current, pinned, unreadable, recent, and newest retained generations are always
-kept. Older policy matches are reported as `blocked_reproducibility`, with zero
-reclaimable bytes, until retained inputs and provenance can prove byte-level
-reproducibility. `--json` emits a versioned plan with `dry_run: true` and
-`deletion_supported: false`; there is no delete or force mode in this phase.
+Dispositions: `keep_current`, `keep_pinned`, `keep_referenced` (with the read
+that protects it), `keep_references_unknown` (some generation's references could
+not be read, so nothing non-current is offered), `keep_unreadable`, `keep_last`,
+`keep_recent`, and `prune_candidate` -- nothing live reads it. `--json` emits a
+versioned plan (`dry_run: true`, `deletion_supported: false`); applying a plan
+(archive or confirmed delete) is planned as `SLC-08`.
 
 ## Project analysis cache inventory
 

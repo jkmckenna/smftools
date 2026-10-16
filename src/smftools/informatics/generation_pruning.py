@@ -1,8 +1,13 @@
 """Conservative, read-only pruning plans for immutable generations.
 
-EGL-03a intentionally does not delete anything. It identifies generations that
-retention policy would consider, then blocks those candidates until byte-level
-reproducibility has an authoritative representation in generation provenance.
+The planner never deletes. It keeps current and pinned generations, every
+generation they read -- transitively, through spine pointers and manifest
+lineage (`SLC-06`) -- and every generation an outside file (a project
+registry) names; then applies the age / count policy to what is left. A
+generation that nothing live reads is a prune candidate (`SLC-07`): no
+current result depends on it, so its byte reproducibility (the former
+`EGL-03a` blocker) is not needed to remove it safely. When any generation's
+references cannot be read, every non-current generation is kept.
 """
 
 from __future__ import annotations
@@ -18,15 +23,23 @@ from .generation_listing import (
     GenerationRecord,
     list_experiment_generations,
 )
+from .generation_references import (
+    GenerationReferenceError,
+    build_reference_graph,
+    external_references,
+    protected_generations,
+)
 
-PRUNE_PLAN_SCHEMA_VERSION = 1
+PRUNE_PLAN_SCHEMA_VERSION = 2
 
 KEEP_CURRENT = "keep_current"
 KEEP_PINNED = "keep_pinned"
 KEEP_UNREADABLE = "keep_unreadable"
 KEEP_LAST = "keep_last"
 KEEP_RECENT = "keep_recent"
-BLOCKED_REPRODUCIBILITY = "blocked_reproducibility"
+KEEP_REFERENCED = "keep_referenced"
+KEEP_REFERENCES_UNKNOWN = "keep_references_unknown"
+PRUNE_CANDIDATE = "prune_candidate"
 
 
 class GenerationPruneError(ValueError):
@@ -68,14 +81,14 @@ class PrunePlan:
 
     @property
     def candidate_bytes(self) -> int:
-        """Bytes matching age/count policy before reproducibility protection."""
+        """Bytes of the generations the policy selects for pruning."""
         return sum(
             decision.size_bytes or 0 for decision in self.decisions if decision.policy_candidate
         )
 
     @property
     def reclaimable_bytes(self) -> int:
-        """Bytes safe to delete under current provenance contracts."""
+        """Bytes of candidates nothing live reads (equal to ``candidate_bytes``)."""
         return sum(
             decision.size_bytes or 0 for decision in self.decisions if decision.deletion_allowed
         )
@@ -148,8 +161,14 @@ def plan_experiment_generation_prune(
     keep_last: int | None = None,
     older_than: str | datetime | None = None,
     stages: Iterable[str] | None = None,
+    protect_from: Iterable[str | Path] = (),
 ) -> PrunePlan:
-    """Evaluate retention policy without deleting or modifying any artifact."""
+    """Evaluate retention policy without deleting or modifying any artifact.
+
+    ``protect_from``: files (or directories, read as their ``registry.json``)
+    whose ``<stage dir>/generations/<id>`` paths name generations that must
+    stay, with everything they read.
+    """
     output_root = Path(output_root)
     if keep_last is None and older_than is None:
         raise GenerationPruneError("prune planning requires --keep-last or --older-than")
@@ -162,6 +181,31 @@ def plan_experiment_generation_prune(
         for record in list_experiment_generations(output_root, include_size=True)
         if record.kind in selected_stages
     ]
+
+    graph = build_reference_graph(output_root)
+    try:
+        named = external_references(protect_from, graph)
+    except GenerationReferenceError as exc:
+        raise GenerationPruneError(str(exc)) from exc
+    all_records = list_experiment_generations(output_root, include_size=False)
+    roots = {
+        (record.kind, record.generation_id): "current"
+        for record in all_records
+        if record.is_current
+    }
+    roots.update(
+        {
+            (record.kind, record.generation_id): "pinned"
+            for record in all_records
+            if record.pinned and (record.kind, record.generation_id) not in roots
+        }
+    )
+    for key, why in named.items():
+        roots.setdefault(key, why)
+    referenced = protected_generations(graph, roots)
+    references_unknown = sorted(
+        f"{kind} {gid[:8]}: {error}" for (kind, gid), error in graph.unreadable.items()
+    )
 
     newest_ids: dict[str, set[str]] = {}
     if keep_last is not None:
@@ -188,6 +232,15 @@ def plan_experiment_generation_prune(
             reasons = tuple(f"retention: {reason}" for reason in record.retention_reasons) or (
                 "pinned by retention.json",
             )
+        elif (record.kind, record.generation_id) in named:
+            disposition = KEEP_REFERENCED
+            reasons = (named[(record.kind, record.generation_id)],)
+        elif (record.kind, record.generation_id) in referenced:
+            disposition = KEEP_REFERENCED
+            reasons = (referenced[(record.kind, record.generation_id)],)
+        elif references_unknown:
+            disposition = KEEP_REFERENCES_UNKNOWN
+            reasons = ("references could not be read: " + "; ".join(references_unknown),)
         elif record.state != STATE_OK or record.issues or timestamp is None:
             disposition = KEEP_UNREADABLE
             reasons = tuple(record.issues) or ("generation metadata is incomplete",)
@@ -198,10 +251,10 @@ def plan_experiment_generation_prune(
             disposition = KEEP_RECENT
             reasons = (f"not older than {cutoff.isoformat()}",)
         else:
-            disposition = BLOCKED_REPRODUCIBILITY
-            reasons = ("matches retention policy but byte reproducibility is not yet proven",)
+            disposition = PRUNE_CANDIDATE
+            reasons = ("matches retention policy; no current, pinned or named generation reads it",)
 
-        policy_candidate = disposition == BLOCKED_REPRODUCIBILITY
+        policy_candidate = disposition == PRUNE_CANDIDATE
         decisions.append(
             PruneDecision(
                 kind=record.kind,
@@ -209,7 +262,7 @@ def plan_experiment_generation_prune(
                 path=record.path,
                 disposition=disposition,
                 policy_candidate=policy_candidate,
-                deletion_allowed=False,
+                deletion_allowed=policy_candidate,
                 is_current=record.is_current,
                 pinned=record.pinned,
                 timestamp=raw_timestamp,
