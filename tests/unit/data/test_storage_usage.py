@@ -126,7 +126,7 @@ def test_usage_buckets_generations_unmanaged_and_models(tmp_path: Path) -> None:
 
     reclaim = {item["bucket"]: item["bytes"] for item in report["reclaim"]}
     assert reclaim["generations nothing live reads"] == g["prune_candidate"]["bytes"]
-    assert reclaim["unmanaged directories beside experiment roots"] == 5000
+    assert reclaim["unowned directories beside experiment roots"] == 5000
     text = render_usage(report)
     assert "outputs_old" in text and "ML WORKSPACE" in text
     # read-only
@@ -151,3 +151,50 @@ def test_cli_usage(tmp_path: Path) -> None:
     assert json.loads(result.output)["dry_run"] is True
     table = CliRunner().invoke(cli, ["data", "usage", str(drive)])
     assert table.exit_code == 0 and "RECLAIMABLE" in table.output
+
+
+def test_directories_a_run_config_names_are_inputs(tmp_path: Path) -> None:
+    drive = _drive(tmp_path)
+    run_dir = drive / "runs" / "run_a"
+    (run_dir / "basecalls").mkdir()
+    (run_dir / "basecalls" / "reads.fastq").write_bytes(b"f" * 700)
+    (run_dir / "experiment_config.csv").write_text(
+        f"variable,value\ninput_data_path,{run_dir / 'basecalls'}\n"
+        f"output_directory,{run_dir / 'outputs_old'}\n"  # an earlier output tree, not an input
+    )
+    report = storage_usage(drive)
+    kinds = {Path(item["path"]).name: item["kind"] for item in report["unmanaged"]}
+    assert kinds == {"basecalls": "input", "outputs_old": "unowned"}
+    reclaim = {item["bucket"]: item["bytes"] for item in report["reclaim"]}
+    assert reclaim["unowned directories beside experiment roots"] == 5000
+    text = render_usage(report)
+    assert "INPUT DIRECTORIES" in text and "UNOWNED DIRECTORIES" in text
+
+
+def test_manifest_inputs_count_as_inputs(tmp_path: Path) -> None:
+    drive = _drive(tmp_path)
+    run_dir = drive / "runs" / "run_a"
+    (run_dir / "reads").mkdir()
+    (run_dir / "reads" / "calls.bam").write_bytes(b"r" * 10)
+    (run_dir / "exp_a" / "experiment_manifest.json").write_text(
+        json.dumps({"input_data_path": str(run_dir / "reads" / "calls.bam")})
+    )
+    kinds = {Path(i["path"]).name: i["kind"] for i in storage_usage(drive)["unmanaged"]}
+    assert kinds == {"reads": "input", "outputs_old": "unowned"}
+
+
+def test_inputs_only_an_unregistered_experiment_declares_are_labelled(tmp_path: Path) -> None:
+    drive = _drive(tmp_path)
+    run_dir = drive / "runs" / "run_a"
+    legacy_root = run_dir / "outputs_v1"
+    legacy_root.mkdir()
+    (legacy_root / "experiment_manifest.json").write_text(
+        json.dumps({"input_data_path": str(run_dir / "old_bams" / "x.bam")})
+    )
+    (run_dir / "old_bams").mkdir()
+    (run_dir / "old_bams" / "x.bam").write_bytes(b"x" * 10)
+    report = storage_usage(drive)
+    kinds = {Path(i["path"]).name: i["kind"] for i in report["unmanaged"]}
+    assert kinds["old_bams"] == "input_of_unregistered"
+    flags = {Path(e["root"]).name: e["registered"] for e in report["experiments"]}
+    assert flags["outputs_v1"] is False
