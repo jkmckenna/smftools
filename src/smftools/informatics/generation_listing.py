@@ -67,6 +67,10 @@ _TIMESTAMP_KEYS = ("created_at", "completed_at", "published_at", "fitted_at")
 STATE_OK = "ok"
 STATE_UNREADABLE = "unreadable"
 STATE_MISSING = "missing"
+STATE_PRUNED = "pruned"
+"""Archived or deleted by `generations prune --archive/--delete` (`SLC-08`):
+the directory holds only its manifest and ``pruned.json``."""
+PRUNED_RECORD = "pruned.json"
 
 
 @dataclass(frozen=True)
@@ -237,6 +241,7 @@ def _records_for_container(
             )
             continue
 
+        pruned, _ = _read_json(generation_dir / PRUNED_RECORD)
         declared_id = str(manifest.get("generation_id", "") or "")
         if declared_id and declared_id != generation_dir.name:
             issues.append(f"manifest generation_id {declared_id!r} does not match directory name")
@@ -249,8 +254,12 @@ def _records_for_container(
                 generation_id=declared_id or generation_dir.name,
                 path=generation_dir.relative_to(root).as_posix(),
                 is_current=generation_dir.name == current_id,
-                state=STATE_OK,
-                status=str(manifest.get("status")) if manifest.get("status") else None,
+                state=STATE_PRUNED if pruned is not None else STATE_OK,
+                status=(
+                    str(pruned.get("action"))
+                    if pruned is not None
+                    else (str(manifest.get("status")) if manifest.get("status") else None)
+                ),
                 config_hash=(
                     str(manifest.get("config_hash")) if manifest.get("config_hash") else None
                 ),

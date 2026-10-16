@@ -757,15 +757,86 @@ def experiment_generations_unpin_cmd(ctx, stage, generation_id, reason, all_reas
         "and everything they read; repeat for several."
     ),
 )
+@click.option(
+    "--archive",
+    "archive_dir",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help="Apply: move the candidates to this directory (another volume), leaving stubs.",
+)
+@click.option("--delete", "delete", is_flag=True, help="Apply: remove the candidates.")
+@click.option(
+    "--confirm",
+    "confirm",
+    default="",
+    metavar="ID[,ID...]",
+    help="With --delete: the generation ids to delete (each must be a candidate).",
+)
+@click.option(
+    "--generation",
+    "generation_ids",
+    multiple=True,
+    help="Apply only to these candidate ids (default: every candidate).",
+)
+@click.option(
+    "--allow-same-volume",
+    is_flag=True,
+    help="Archive even when the archive is on the experiment's volume (frees no space).",
+)
 @click.option("--json", "as_json", is_flag=True, help="Emit the versioned pruning plan.")
 @click.pass_context
-def experiment_generations_prune_cmd(ctx, stages, keep_last, older_than, protect_from, as_json):
-    """Plan retention pruning without deleting anything.
+def experiment_generations_prune_cmd(
+    ctx,
+    stages,
+    keep_last,
+    older_than,
+    protect_from,
+    archive_dir,
+    delete,
+    confirm,
+    generation_ids,
+    allow_same_volume,
+    as_json,
+):
+    """Plan retention pruning; with --archive or --delete, apply it.
 
     Current and pinned generations, everything they read (spine pointers,
     manifest lineage) and generations named by --protect-from are kept; the
-    age / count policy chooses among the rest.
+    age / count policy chooses among the rest. Applying re-checks each
+    candidate, holds the experiment's workflow lock, refuses while a stage is
+    staging, and leaves a stub (manifest + pruned.json) per generation.
     """
+    if archive_dir is not None or delete:
+        from .informatics.generation_prune_apply import PruneApplyError, apply_prune
+
+        try:
+            actions = apply_prune(
+                ctx.obj["output_root"],
+                keep_last=keep_last,
+                older_than=older_than,
+                stages=stages or None,
+                protect_from=protect_from,
+                generation_ids=generation_ids,
+                archive_dir=archive_dir,
+                delete=delete,
+                confirm=[item.strip() for item in confirm.split(",") if item.strip()],
+                allow_same_volume=allow_same_volume,
+            )
+        except PruneApplyError as exc:
+            raise click.ClickException(str(exc)) from exc
+        if as_json:
+            import json
+
+            click.echo(json.dumps([action.to_dict() for action in actions], indent=2))
+            return
+        for action in actions:
+            where = f" -> {action.archive_path}" if action.archive_path else ""
+            click.echo(
+                f"{action.action} {action.kind} {action.generation_id} "
+                f"({action.size_bytes} bytes){where}"
+            )
+        click.echo(f"{len(actions)} generation(s) pruned.")
+        return
     from .cli.generations import plan_experiment_prune, render_prune_json, render_prune_table
     from .informatics.generation_pruning import GenerationPruneError
 
@@ -780,6 +851,21 @@ def experiment_generations_prune_cmd(ctx, stages, keep_last, older_than, protect
     except GenerationPruneError as exc:
         raise click.ClickException(str(exc)) from exc
     click.echo(render_prune_json(plan) if as_json else render_prune_table(plan))
+
+
+@experiment_generations_cmd.command("restore")
+@click.argument("stage", type=click.Choice(_GENERATION_STAGES, case_sensitive=False))
+@click.argument("generation_id")
+@click.pass_context
+def experiment_generations_restore_cmd(ctx, stage, generation_id):
+    """Bring an archived generation back from its archive."""
+    from .informatics.generation_prune_apply import PruneApplyError, restore_generation
+
+    try:
+        path = restore_generation(ctx.obj["output_root"], stage.lower(), generation_id)
+    except PruneApplyError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"Restored {stage}/{generation_id} to {path}.")
 
 
 @experiment_generations_cmd.command("refs")

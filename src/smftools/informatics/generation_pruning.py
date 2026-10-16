@@ -20,6 +20,7 @@ from typing import Any, Iterable
 from .generation_listing import (
     STAGE_GENERATION_DIRS,
     STATE_OK,
+    STATE_PRUNED,
     GenerationRecord,
     list_experiment_generations,
 )
@@ -40,6 +41,7 @@ KEEP_RECENT = "keep_recent"
 KEEP_REFERENCED = "keep_referenced"
 KEEP_REFERENCES_UNKNOWN = "keep_references_unknown"
 PRUNE_CANDIDATE = "prune_candidate"
+PRUNED = "pruned"
 
 
 class GenerationPruneError(ValueError):
@@ -224,7 +226,10 @@ def plan_experiment_generation_prune(
     decisions: list[PruneDecision] = []
     for record in records:
         timestamp, raw_timestamp = _record_timestamp(record)
-        if record.is_current:
+        if record.state == STATE_PRUNED:
+            disposition = PRUNED
+            reasons = (f"already {record.status or 'pruned'}",)
+        elif record.is_current:
             disposition = KEEP_CURRENT
             reasons = ("selected by current.json",)
         elif record.pinned:
