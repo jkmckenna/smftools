@@ -1,6 +1,6 @@
 # Storage lifecycle: model store, generation pruning, one usage report
 
-Status: proposed. Items `SLC-01`--`SLC-12`. Extends `MLR-16` (model
+Status: in progress. Items `SLC-01`--`SLC-12`; `SLC-01` implemented. Extends `MLR-16` (model
 retention, merged) and replaces the deletion blocker of `EGL-03b`
 (`completed/generation_lifecycle_and_naming_implementation_plan.md`); folds in
 `EGL-03c` (`proposed/generation_prune_scope_implementation_plan.md`).
@@ -62,7 +62,7 @@ honest inventory, reference-aware protection, then deletion / archiving.
 
 | id | item | status |
 |---|---|---|
-| `SLC-01` | compressed payloads for new models: skops `compression=ZIP_DEFLATED` (level 6) in `sklearn_artifacts`; torch checkpoints likewise where the format allows; setting `ml_model_compression: deflate \| none` (default deflate). New models only -- identities of existing ones untouched | proposed |
+| `SLC-01` | compressed payloads for new models: `publish_sklearn_model(..., compression="deflate")` (default; `"none"` keeps the old encoding) writes the skops zip with `ZIP_DEFLATED` level 6; identities hash the written bytes as before, existing models untouched. A config setting was not needed (no caller wants uncompressed). Torch checkpoints left as they are: `torch.save` has no compression option and they are ~0.1 % of the measured store | implemented |
 | `SLC-02` | compact existing payloads: `project ml-storage compact [--apply]` rewrites stored skops zips compressed. Model identity hashes the payload reference (sha256, size), so the manifest gains a `storage` block (`encoding`, `stored_sha256`, `stored_size`) while the identity keeps the original reference; compaction verifies every zip member's uncompressed bytes against the original before replacing it, atomically, under the publication lock; validation checks `stored_sha256` when present | proposed |
 | `SLC-03` | persistence policy per job: `persist_models: all \| needed \| none` (default `all`, as now). `needed` keeps payloads only for models a later job of the same plan reads (explain / apply / transfer sources) or an alias names; `none` keeps the model manifest with `payload: not_persisted`. A plan whose later job reads a model that would not be persisted fails validation before training | proposed |
 | `SLC-04` | payload retirement for kept runs (extends `MLR-16`): `project ml-retention --unread [--older-than]` retires payloads of models no run has read, no alias names and no kept model descends from, even when their run is not superseded; the run record and model manifest stay (`retired_models.json` gains `reason: unread`). Optional refit check: a retired model records dataset snapshot, split and seed, so it can be refit | proposed |

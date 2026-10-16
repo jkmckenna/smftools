@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import tempfile
+import zipfile
 from dataclasses import dataclass
 from importlib.metadata import version
 from pathlib import Path
@@ -33,6 +34,11 @@ if TYPE_CHECKING:
 SKLEARN_ARTIFACT_SCHEMA_VERSION = 1
 SKLEARN_ARTIFACT_FILENAME = "payload/model.skops"
 _VERSIONED_PACKAGES = ("numpy", "scipy", "scikit-learn", "skops")
+# Payload zip encodings (`SLC-01`). skops writes uncompressed members by
+# default; forests' node arrays deflate ~7x losslessly, and skops reads
+# either encoding.
+PAYLOAD_COMPRESSION = {"deflate": zipfile.ZIP_DEFLATED, "none": zipfile.ZIP_STORED}
+PAYLOAD_COMPRESSLEVEL = 6
 
 
 class SklearnArtifactError(ValueError):
@@ -97,13 +103,22 @@ def publish_sklearn_model(
     environment: EnvironmentRecord,
     created_at: str,
     lineage: ModelLineage | None = None,
+    compression: str = "deflate",
 ) -> PublishedSklearnModel:
     """Serialize and atomically publish a fitted sklearn inference artifact.
 
     The serializer inspects every type that ``skops`` considers untrusted and
     refuses the payload unless the only such type is the exact registered
     estimator class. No pickle or joblib fallback is attempted.
+
+    ``compression`` is the payload zip's encoding (`SLC-01`): ``"deflate"``
+    (default) or ``"none"``; the model's identity hashes the written bytes,
+    as before.
     """
+    if compression not in PAYLOAD_COMPRESSION:
+        raise SklearnArtifactError(
+            f"compression must be one of {sorted(PAYLOAD_COMPRESSION)}, not {compression!r}"
+        )
     skops_io = require("skops.io", extra="ml-base", purpose="safe sklearn persistence")
     expected_type = _qualified_type(model.estimator)
     expected_estimator = BUILTIN_MODEL_REGISTRY.build(model.architecture)
@@ -111,7 +126,15 @@ def publish_sklearn_model(
         raise SklearnArtifactError("fitted estimator type differs from its registered family")
     with tempfile.TemporaryDirectory(prefix="smftools-sklearn-") as temporary:
         source = Path(temporary) / "model.skops"
-        skops_io.dump(_payload(model), source)
+        if compression == "none":
+            skops_io.dump(_payload(model), source)
+        else:
+            skops_io.dump(
+                _payload(model),
+                source,
+                compression=PAYLOAD_COMPRESSION[compression],
+                compresslevel=PAYLOAD_COMPRESSLEVEL,
+            )
         unknown_types = tuple(sorted(skops_io.get_untrusted_types(file=source)))
         unexpected = sorted(set(unknown_types).difference({expected_type}))
         if unexpected:

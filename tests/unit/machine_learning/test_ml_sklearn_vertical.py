@@ -441,3 +441,54 @@ def test_publisher_rejects_estimator_outside_registered_family(tmp_path: Path) -
             environment=_environment(),
             created_at=DONE,
         )
+
+
+@pytest.mark.parametrize("family", ["bernoulli_nb", "random_forest"])
+def test_payloads_are_deflated_by_default_and_load_identically(tmp_path: Path, family) -> None:
+    """`SLC-01`: compressed payloads, same predictions as uncompressed ones."""
+    import zipfile
+
+    dataset = _Dataset()
+    trained = fit_sklearn_partition_model(dataset, _resolved(dataset, family))
+    before = apply_sklearn_partition_model(trained.model, dataset.data)
+    sizes, encodings = {}, {}
+    for compression in ("deflate", "none"):
+        (tmp_path / compression).mkdir()
+        workspace = _workspace(tmp_path / compression)
+        run_manifest = _publish_completed_run(tmp_path / compression, workspace)
+        kwargs = {} if compression == "deflate" else {"compression": "none"}
+        published = publish_sklearn_model(
+            trained.model,
+            workspace,
+            model_key="nb",
+            originating_run_id=run_manifest.run_id,
+            environment=_environment(),
+            created_at=DONE,
+            **kwargs,
+        )
+        payload = workspace.model_dir(published.manifest.model_id) / "payload" / "model.skops"
+        with zipfile.ZipFile(payload) as archive:
+            encodings[compression] = {item.compress_type for item in archive.infolist()}
+        sizes[compression] = payload.stat().st_size
+        assert published.manifest.artifact.size_bytes == sizes[compression]
+        loaded = load_published_sklearn_model(workspace, published.manifest.model_id)
+        after = apply_sklearn_partition_model(loaded, dataset.data)
+        np.testing.assert_allclose(after.probabilities, before.probabilities)
+    assert encodings == {"deflate": {zipfile.ZIP_DEFLATED}, "none": {zipfile.ZIP_STORED}}
+    assert sizes["deflate"] < sizes["none"]
+
+
+def test_unknown_payload_compression_is_refused(tmp_path: Path) -> None:
+    dataset = _Dataset()
+    trained = fit_sklearn_partition_model(dataset, _resolved(dataset, "bernoulli_nb"))
+    workspace = _workspace(tmp_path)
+    with pytest.raises(SklearnArtifactError, match="compression must be"):
+        publish_sklearn_model(
+            trained.model,
+            workspace,
+            model_key="nb",
+            originating_run_id=RUN_ID,
+            environment=_environment(),
+            created_at=DONE,
+            compression="lzma",
+        )
