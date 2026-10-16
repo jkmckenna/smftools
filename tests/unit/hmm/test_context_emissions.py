@@ -376,3 +376,47 @@ def test_pooled_references_share_one_fit_and_keep_their_own_contexts():
     )
     assert abs(pooled_gap) < 0.01
     assert abs(separate_gap) > abs(pooled_gap) + 0.01
+
+
+# --- HPS-11: transitions on a per-bp grid with calls only at sites -------------
+
+
+def test_span_counting_recovers_per_bp_transitions_from_sparse_sites():
+    """Chromatin simulated per bp (stay 0.98 / 0.99), calls only at ~1 in 4
+    positions: counting every step inside the read recovers the per-bp
+    transitions; counting only observed adjacent pairs overestimates the
+    protected state's persistence. (A per-bp start matters: from 0.5 EM
+    barely moves, since unobserved steps are counted at the current guess.)"""
+    rng = np.random.default_rng(5)
+    n_reads, length = 60, 800
+    stay = np.array([0.98, 0.99])
+    states = np.zeros((n_reads, length), dtype=int)
+    for read in range(n_reads):
+        state = int(rng.integers(0, 2))
+        for position in range(length):
+            states[read, position] = state
+            if rng.random() > stay[state]:
+                state = 1 - state
+    p = np.where(states == 1, 0.6, 0.05)
+    calls = (rng.random(p.shape) < p).astype(float)
+    sites = rng.random(length) < 0.25
+    calls[:, ~sites] = np.nan
+    learned = {}
+    for counting in ("span", "observed_pairs"):
+        model = SingleBernoulliHMM(init_emission=[0.1, 0.5])
+        model.transition_counting = counting
+        model.trans.data = torch.tensor([[0.95, 0.05], [0.05, 0.95]], dtype=model.dtype)
+        model.fit(calls, np.arange(length), max_iter=200, tol=1e-9, device="cpu")
+        modified = model.modified_state_index()
+        learned[counting] = np.array(
+            [model.trans[1 - modified, 1 - modified].item(), model.trans[modified, modified].item()]
+        )
+    np.testing.assert_allclose(learned["span"], stay, atol=0.002)
+    assert np.abs(learned["observed_pairs"] - stay).max() > 2 * np.abs(learned["span"] - stay).max()
+
+
+def test_transition_counting_is_validated():
+    model = SingleBernoulliHMM()
+    model.transition_counting = "everything"
+    with pytest.raises(ValueError, match="transition_counting"):
+        model.fit(np.array([[1.0, 0.0, np.nan, 1.0]]), np.arange(4), max_iter=1, device="cpu")

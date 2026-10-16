@@ -1,6 +1,6 @@
 # HMM parameter scopes, fitting plans and a project model store
 
-Status: proposed. Items `HPS-01`--`HPS-11`. Builds on `HCE` (context
+Status: in progress. Items `HPS-01`--`HPS-11`; `HPS-11` implemented. Builds on `HCE` (context
 emissions, `HCE-07` per-state weights), `HXR` (fits shared across
 references), `SUG-02` (stage-only refit) and `SLC` (storage lifecycle).
 
@@ -95,7 +95,7 @@ fit group within an emission group (as `HXR-02`).
 | `HPS-08` | storage: layer sets are generations under `SLC` (reference graph, prune, archive); posteriors optional, features stored compactly | proposed |
 | `HPS-09` | acceptance (below) | direct-fit comparison done; pipeline acceptance after `HPS-01`--`HPS-04` |
 | `HPS-10` | docs: choosing scopes for a comparison, config reference | proposed |
-| `HPS-11` | position axis (span transition counting implemented): `hmm_axis: sites` (default, today) \| `bp` -- fit and decode on the full position grid with unobserved positions masked; per-bp posteriors without span filling; transitions comparable across references and targets; supersedes `single_distance_binned` for new configs | proposed |
+| `HPS-11` | position axis: `hmm_axis: sites` (default) \| `bp`. `bp` places the site calls on the window's full per-bp grid (single and multi-channel; NaN elsewhere; coverage masking unchanged), decodes every position, sets `transition_counting = "span"` for fits and adaptations, and scales a new model's configured per-site starting transitions by the observed site spacing (stay `s ** (1 / spacing)`); refused with `hmm_distance_aware`; fingerprints and fit ids unchanged at `sites` | implemented |
 
 ## Acceptance (`HPS-09`)
 

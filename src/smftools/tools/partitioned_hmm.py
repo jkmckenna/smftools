@@ -319,8 +319,38 @@ def _pooled_model_input(spine_path, plan: HMMFitPlan, cfg, variant_cfg):
     return stacked, coords, pooled
 
 
+def hmm_axis(cfg) -> str:
+    """``hmm_axis`` (`HPS-11`): ``sites`` or ``bp``."""
+    axis = str(getattr(cfg, "hmm_axis", "sites") or "sites").lower()
+    if axis not in ("sites", "bp"):
+        raise ValueError(f"hmm_axis must be 'sites' or 'bp', not {axis!r}")
+    if axis == "bp" and bool(getattr(cfg, "hmm_distance_aware", False)):
+        raise ValueError("hmm_axis 'bp' replaces hmm_distance_aware; use one of them")
+    return axis
+
+
+def _on_bp_grid(adata, values: np.ndarray, coordinates: np.ndarray):
+    """Site calls placed on the window's full position grid, NaN elsewhere
+    (`HPS-11`); the position mask then covers every position."""
+    positions = np.asarray(adata.var_names, dtype=np.int64)
+    column = {int(position): index for index, position in enumerate(positions)}
+    columns = np.asarray([column[int(c)] for c in np.asarray(coordinates)], dtype=int)
+    grid = np.full((values.shape[0], positions.size, *values.shape[2:]), np.nan)
+    grid[:, columns] = values
+    return grid, positions, np.ones(positions.size, dtype=bool)
+
+
 def _prepare_model_input(adata, reference: str, spec: HMMModelSpec, cfg):
-    """Materialize one configured HMM signal matrix and its position mask."""
+    """Materialize one configured HMM signal matrix and its position mask
+    (on the per-bp grid under ``hmm_axis: bp``)."""
+    values, coordinates, position_mask = _prepare_site_input(adata, reference, spec, cfg)
+    if hmm_axis(cfg) == "bp":
+        values, coordinates, position_mask = _on_bp_grid(adata, values, coordinates)
+    return _mask_uncovered_model_input(adata, values, coordinates), coordinates, position_mask
+
+
+def _prepare_site_input(adata, reference: str, spec: HMMModelSpec, cfg):
+    """One configured HMM signal matrix on its site columns."""
     smf_modality = str(getattr(cfg, "smf_modality", "conversion"))
     if len(spec.signals) == 1:
         signal = spec.signals[0]
@@ -332,7 +362,7 @@ def _prepare_model_input(adata, reference: str, spec: HMMModelSpec, cfg):
             cfg=cfg,
         )
         position_mask = _resolve_pos_mask_for_methbase(adata, reference, signal)
-        return _mask_uncovered_model_input(adata, values, coordinates), coordinates, position_mask
+        return values, coordinates, position_mask
 
     values, coordinates, used_signals = build_multi_channel_union(
         adata,
@@ -345,7 +375,7 @@ def _prepare_model_input(adata, reference: str, spec: HMMModelSpec, cfg):
     for signal in used_signals:
         signal_mask = _resolve_pos_mask_for_methbase(adata, reference, signal)
         position_mask = signal_mask if position_mask is None else position_mask | signal_mask
-    return _mask_uncovered_model_input(adata, values, coordinates), coordinates, position_mask
+    return values, coordinates, position_mask
 
 
 # Feature layers summarised per molecule (`HCE-06`): the fraction of the read's

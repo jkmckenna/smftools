@@ -174,6 +174,9 @@ def hmm_fit_config(cfg: Any) -> dict[str, Any]:
         for name in HMM_FIT_CONFIG_FIELDS
         if name in values or name in HMM_FIT_CONFIG_DEFAULTS
     }
+    axis = str(values.get("hmm_axis") or "sites").lower()
+    if axis != "sites":  # `HPS-11`: counts only when changed
+        fitted["hmm_axis"] = axis
     mode = str(values.get("hmm_context_model") or "none").lower()
     if mode != "none":
         fitted.update({name: values.get(name) for name in HMM_CONTEXT_FIT_FIELDS})
