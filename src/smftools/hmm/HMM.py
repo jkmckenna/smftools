@@ -1687,6 +1687,12 @@ class ContextBernoulliHMM(SingleBernoulliHMM):
     "modified"``) or all of them (``"all"``) -- else 0. EM fits the per-state
     levels ``emission[k]``; with every weight 1 the model is
     `SingleBernoulliHMM` exactly.
+
+    ``log_weights`` is one vector (contexts,) shared by the weighted states,
+    or a matrix (states, contexts) giving each state its own weights
+    (``w[k, c(i)]``, `HCE-07`): learned mode with ``context_states="all"``
+    learns one row per state, so the protected state's background
+    modification follows the enzyme's preference too.
     """
 
     NEWTON_STEPS = 25
@@ -1710,8 +1716,6 @@ class ContextBernoulliHMM(SingleBernoulliHMM):
         super().__init__(n_states=n_states, init_emission=init_emission, eps=eps, dtype=dtype)
         if context_states not in ("modified", "all"):
             raise ValueError("context_states must be 'modified' or 'all'")
-        if learn and context_states != "modified":
-            raise ValueError("learned contexts weight the modified state only")
         if cpg not in ("separate", "exclude", "none"):
             raise ValueError("cpg must be 'separate', 'exclude' or 'none'")
         if not 0 < weight_bounds[0] <= 1 <= weight_bounds[1]:
@@ -1815,8 +1819,12 @@ class ContextBernoulliHMM(SingleBernoulliHMM):
         log_weights = np.asarray(log_weights, dtype=float)
         if not np.isfinite(log_weights).all():
             raise ValueError("log weights must be finite")
+        if log_weights.ndim == 2 and log_weights.shape[0] != self.n_states:
+            raise ValueError("a weight matrix needs one row per state")
+        if log_weights.ndim not in (1, 2):
+            raise ValueError("log weights must be a vector or a (states, contexts) matrix")
         codes = np.asarray(position_codes, dtype=np.int64)
-        if codes.size and codes.max() >= log_weights.size:
+        if codes.size and codes.max() >= log_weights.shape[-1]:
             raise ValueError("a position code has no weight")
         self.log_weights = log_weights
         self.position_codes = codes
@@ -1852,10 +1860,28 @@ class ContextBernoulliHMM(SingleBernoulliHMM):
         excluded = np.isin(self._column_codes(n_columns), self.cpg_codes)
         return torch.as_tensor(excluded, device=self.emission.device)
 
+    def _column_shift(self, n_columns: int) -> torch.Tensor:
+        """(L, K) log-odds shift per column and state (0 where no context)."""
+        weights = self.log_weights.to(self.emission.device)
+        if weights.dim() == 2:  # one row per state (`HCE-07`)
+            codes = self._column_codes(n_columns)
+            shift = torch.zeros(
+                n_columns, self.n_states, dtype=self.dtype, device=self.emission.device
+            )
+            has = codes >= 0
+            if has.any():
+                index = torch.as_tensor(codes[has], device=self.emission.device)
+                shift[torch.as_tensor(has, device=self.emission.device)] = weights[:, index].T
+            return shift
+        return self._column_log_weights(n_columns).unsqueeze(1) * self._state_scale().unsqueeze(0)
+
     def _column_log_weights(self, n_columns: int) -> torch.Tensor:
-        """``log w[c(i)]`` per column of the current call (0 where no context)."""
+        """``log w[c(i)]`` per column of the current call (0 where no context);
+        a per-state matrix gives the modified state's row."""
         codes = self._column_codes(n_columns)
         weights = self.log_weights.to(self.emission.device)
+        if weights.dim() == 2:
+            weights = weights[self.modified_state_index()]
         column = torch.zeros(n_columns, dtype=self.dtype, device=self.emission.device)
         has = torch.as_tensor(codes >= 0, device=self.emission.device)
         if bool(has.any()):
@@ -1867,13 +1893,13 @@ class ContextBernoulliHMM(SingleBernoulliHMM):
         eps = float(self.eps)
         p = self.emission.clamp(min=eps, max=1.0 - eps)
         base = torch.log(p) - torch.log1p(-p)  # logit, (K,)
-        shift = self._column_log_weights(n_columns).unsqueeze(1) * self._state_scale().unsqueeze(0)
+        shift = self._column_shift(n_columns)
         return torch.sigmoid(base.unsqueeze(0) + shift).clamp(min=eps, max=1.0 - eps)
 
     def _log_emission(self, obs: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         """obs: (N,L), mask: (N,L) -> logB: (N,L,K)."""
         mask = mask & ~self._excluded_columns(obs.shape[1]).unsqueeze(0)
-        if not bool((self._column_log_weights(obs.shape[1]) != 0).any()):
+        if not bool((self._column_shift(obs.shape[1]) != 0).any()):
             return super()._log_emission(obs, mask)  # every weight 1: the plain model, exactly
         p = self._site_probabilities(obs.shape[1]).unsqueeze(0)  # (1,L,K)
         o = obs.unsqueeze(-1)
@@ -1905,15 +1931,15 @@ class ContextBernoulliHMM(SingleBernoulliHMM):
         mask = mask & ~self._excluded_columns(obs.shape[1]).unsqueeze(0)
         if self.learn:
             return self._learned_m_step(gamma, obs, mask)
-        shift = self._column_log_weights(obs.shape[1])  # (L,)
-        scale = self._state_scale()
-        if not bool((shift != 0).any()):
+        shifts = self._column_shift(obs.shape[1])  # (L,K)
+        if not bool((shifts != 0).any()):
             return super()._emission_m_step(gamma, obs, mask)
         super()._emission_m_step(gamma, obs, mask)  # closed form: unweighted states, start point
         weight = gamma * mask.float().unsqueeze(-1)  # (N,L,K)
         o = obs.unsqueeze(-1)
         for k in range(self.n_states):
-            if float(scale[k]) == 0.0:
+            shift = shifts[:, k]
+            if not bool((shift != 0).any()):
                 continue
             p0 = self.emission.data[k].clamp(min=eps, max=1.0 - eps)
             theta = torch.log(p0) - torch.log1p(-p0)
@@ -1931,52 +1957,73 @@ class ContextBernoulliHMM(SingleBernoulliHMM):
             self.emission.data[k] = torch.sigmoid(theta).clamp(min=eps, max=1.0 - eps)
 
     def _learned_m_step(self, gamma: torch.Tensor, obs: torch.Tensor, mask: torch.Tensor) -> None:
-        """Per-context emissions of the modified state, shrunk to its overall rate (`HCE-03`).
+        """Per-context emissions of the weighted states, shrunk to each state's
+        overall rate (`HCE-03`; every state with ``context_states="all"``, `HCE-07`).
 
-        The state levels are the closed form over every site; for the modified
+        The state levels are the closed form over every site; for each weighted
         state each context's emission is
         ``(sum gamma*obs + m * p) / (sum gamma + m)`` over that context's sites,
         stored as a log weight on the odds (bounded), so `_log_emission`
-        applies it unchanged.
+        applies it unchanged: a vector for the modified state alone, a
+        (states, contexts) matrix for every state.
         """
         eps = float(self.eps)
         SingleBernoulliHMM._emission_m_step(self, gamma, obs, mask)  # per-state levels
-        k = self.modified_state_index()
-        level = self.emission.data[k].clamp(min=eps, max=1.0 - eps)
         codes = torch.as_tensor(self._column_codes(obs.shape[1]), device=obs.device)
         has = codes >= 0
-        n_contexts = self.log_weights.numel()
-        g = gamma[:, :, k] * mask.float()  # (N,L)
-        hits = (g * obs).sum(dim=0)[has]  # per column
-        trials = g.sum(dim=0)[has]
-        num = torch.zeros(n_contexts, dtype=self.dtype, device=obs.device)
-        den = torch.zeros(n_contexts, dtype=self.dtype, device=obs.device)
-        num.index_add_(0, codes[has], hits)
-        den.index_add_(0, codes[has], trials)
+        n_contexts = int(self.log_weights.shape[-1])
         m = self.shrinkage
-        rate = ((num + m * level) / (den + m)).clamp(min=eps, max=1.0 - eps)
         log_odds = lambda p: torch.log(p) - torch.log1p(-p)  # noqa: E731
         low, high = (float(np.log(bound)) for bound in self.weight_bounds)
-        self.log_weights = (log_odds(rate) - log_odds(level)).clamp(min=low, max=high)
-        self._learned_support = (den.detach().cpu().numpy(), num.detach().cpu().numpy())
+        states = (
+            list(range(self.n_states))
+            if self.context_states == "all"
+            else [self.modified_state_index()]
+        )
+        rows, support = [], {}
+        for k in states:
+            level = self.emission.data[k].clamp(min=eps, max=1.0 - eps)
+            g = gamma[:, :, k] * mask.float()  # (N,L)
+            hits = (g * obs).sum(dim=0)[has]  # per column
+            trials = g.sum(dim=0)[has]
+            num = torch.zeros(n_contexts, dtype=self.dtype, device=obs.device)
+            den = torch.zeros(n_contexts, dtype=self.dtype, device=obs.device)
+            num.index_add_(0, codes[has], hits)
+            den.index_add_(0, codes[has], trials)
+            rate = ((num + m * level) / (den + m)).clamp(min=eps, max=1.0 - eps)
+            rows.append((log_odds(rate) - log_odds(level)).clamp(min=low, max=high))
+            support[k] = (den.detach().cpu().numpy(), num.detach().cpu().numpy())
+        self.log_weights = torch.stack(rows) if self.context_states == "all" else rows[0]
+        self._learned_support = support[self.modified_state_index()]
+        self._learned_support_by_state = support
 
-    def weight_table(self, group: str, k: int) -> "pd.DataFrame":
-        """The context weights as a weight table (`HCE-01` format), source ``learned``."""
+    def weight_table(self, group: str, k: int, *, state: Optional[int] = None) -> "pd.DataFrame":
+        """The context weights as a weight table (`HCE-01` format), source ``learned``.
+
+        With per-state weights (`HCE-07`) ``state`` picks the row (default: the
+        modified state), so the table format is unchanged.
+        """
         import pandas as pd
 
         from smftools.analysis.compute.site_context_bias import context_kmers
 
         kmers = context_kmers(k)
-        if len(kmers) != self.log_weights.numel():
-            raise ValueError(f"{self.log_weights.numel()} weights do not match k={k}")
-        support = getattr(self, "_learned_support", None)
+        weights = self.log_weights
+        if weights.dim() == 2:
+            state = self.modified_state_index() if state is None else int(state)
+            weights = weights[state]
+            support = getattr(self, "_learned_support_by_state", {}).get(state)
+        else:
+            support = getattr(self, "_learned_support", None)
+        if len(kmers) != weights.numel():
+            raise ValueError(f"{weights.numel()} weights do not match k={k}")
         sites = np.bincount(self.position_codes[self.position_codes >= 0], minlength=len(kmers))
         return pd.DataFrame(
             {
                 "group": str(group),
                 "k": k,
                 "kmer": kmers,
-                "weight": np.exp(self.log_weights.detach().cpu().numpy()),
+                "weight": np.exp(weights.detach().cpu().numpy()),
                 "n_sites": sites,
                 "observed": support[0] if support is not None else np.zeros(len(kmers)),
                 "source": "learned",

@@ -443,7 +443,7 @@ stage_context_qc_kmers: [1, 3] # odd, centred k-mers for rate tables
 # probability shifted per site by its centred k-mer's relative weight (on the odds).
 hmm_context_model: none # none | table (weights from hmm_context_table) | learned (estimated in the fit)
 hmm_context_k: 3 # odd; C-centred k-mer
-hmm_context_states: modified # modified (accessible state) | all (table mode only)
+hmm_context_states: modified # modified (accessible state) | all (table: one weight vector for every state; learned: one learned row per state, HCE-07)
 hmm_context_table: null # weight table (smftools context-bias --export-weights); mode table
 hmm_context_table_group: enzyme # sample column choosing the table's group per fit
 hmm_context_cpg: separate # separate | exclude (CpG sites left out of the HMM) | none

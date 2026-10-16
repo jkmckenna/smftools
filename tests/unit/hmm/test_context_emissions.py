@@ -214,9 +214,108 @@ def test_learned_weights_export_as_a_table(tmp_path):
 
 
 def test_learned_mode_validation():
-    with pytest.raises(ValueError, match="modified state only"):
-        ContextBernoulliHMM(learn=True, context_states="all")
+    ContextBernoulliHMM(learn=True, context_states="all")  # allowed since `HCE-07`
     with pytest.raises(ValueError, match="cpg"):
         ContextBernoulliHMM(cpg="maybe")
     with pytest.raises(ValueError, match="bracket"):
         ContextBernoulliHMM(weight_bounds=(2.0, 10.0))
+
+
+# --- HCE-07: learned weights for every state -------------------------------
+
+
+def _simulate_two_preferences(n_reads=160, length=1200, seed=11, protected=0.08):
+    """Accessible and protected sites both modified by context.
+
+    The accessible state follows ``acc`` (disfavoured 0.2 / favoured 1.6 by
+    parity) on the log-odds of 0.55; the protected state's background follows
+    its own preference ``prot`` (favoured contexts 4x the odds, others 0.5x)
+    on the log-odds of ``protected``.
+    """
+    rng = np.random.default_rng(seed)
+    codes = rng.integers(0, N_CONTEXTS, size=length)
+    acc = np.where(np.arange(N_CONTEXTS) % 2 == 0, 0.2, 1.6)
+    prot = np.where(np.arange(N_CONTEXTS) < N_CONTEXTS // 2, 4.0, 0.5)
+    states = np.zeros((n_reads, length), dtype=int)
+    for read in range(n_reads):
+        position, state = 0, int(rng.integers(0, 2))
+        while position < length:
+            run = int(rng.integers(60, 180))
+            states[read, position : position + run] = state
+            position, state = position + run, 1 - state
+    logit_acc = np.log(0.55 / 0.45) + np.log(acc[codes])
+    logit_prot = np.log(protected / (1 - protected)) + np.log(prot[codes])
+    p = np.where(states == 1, 1 / (1 + np.exp(-logit_acc)), 1 / (1 + np.exp(-logit_prot)))
+    calls = (rng.random(p.shape) < p).astype(float)
+    calls[rng.random(p.shape) < 0.5] = np.nan
+    return calls, states, codes, acc, prot
+
+
+def _centred(v):
+    v = np.asarray(v, dtype=float)
+    return v - v.mean()
+
+
+def test_learned_every_state_recovers_both_preferences():
+    calls, _, codes, acc, prot = _simulate_two_preferences()
+    model = _fit(_learned(codes, context_states="all"), calls)
+    weights = model.log_weights.numpy()
+    assert weights.shape == (2, N_CONTEXTS)
+    modified = model.modified_state_index()
+    protected_row, modified_row = weights[1 - modified], weights[modified]
+    assert np.corrcoef(_centred(modified_row), _centred(np.log(acc)))[0, 1] > 0.9
+    assert np.corrcoef(_centred(protected_row), _centred(np.log(prot)))[0, 1] > 0.9
+    # the modified-state-only model has a single vector, as before
+    assert _fit(_learned(codes), calls).log_weights.numpy().shape == (N_CONTEXTS,)
+
+
+def test_learned_every_state_reads_fewer_stray_modifications_as_accessibility():
+    """Inside protected stretches, favoured contexts modified by the enzyme's
+    background are less often called accessible once the protected state has
+    its own context weights."""
+    calls, states, codes, _, prot = _simulate_two_preferences(protected=0.12)
+    coords = np.arange(calls.shape[1])
+    favoured = prot[codes] > 1
+    stray = (states == 0) & favoured[None, :] & (calls == 1)
+
+    def accessible_posterior(model):
+        _, gamma = model.decode(calls, coords, device="cpu")
+        return gamma[..., model.modified_state_index()]
+
+    modified_only = accessible_posterior(_fit(_learned(codes), calls))
+    every_state = accessible_posterior(_fit(_learned(codes, context_states="all"), calls))
+    assert every_state[stray].mean() < modified_only[stray].mean() - 0.05
+
+
+def test_per_state_weights_round_trip_and_validate(tmp_path):
+    calls, _, codes, _, _ = _simulate_two_preferences(n_reads=40, length=600, seed=12)
+    model = _fit(_learned(codes, context_states="all"), calls)
+    path = tmp_path / "model.pt"
+    model.save(path)
+    loaded = ContextBernoulliHMM.load(path)
+    torch.testing.assert_close(loaded.log_weights, model.log_weights)
+    assert loaded.context_states == "all" and loaded.learn
+    coords = np.arange(calls.shape[1])
+    np.testing.assert_allclose(
+        loaded.decode(calls, coords, device="cpu")[1],
+        model.decode(calls, coords, device="cpu")[1],
+        rtol=1e-5,
+        atol=1e-6,
+    )
+    # adapting hands the matrix back to set_contexts
+    loaded.set_contexts(log_weights=model.log_weights.numpy(), position_codes=codes)
+    with pytest.raises(ValueError, match="one row per state"):
+        loaded.set_contexts(log_weights=np.zeros((3, N_CONTEXTS)), position_codes=codes)
+    with pytest.raises(ValueError, match="no weight"):
+        loaded.set_contexts(log_weights=np.zeros((2, 4)), position_codes=codes)
+
+
+def test_per_state_weights_export_one_state_per_table():
+    calls, _, codes, _, _ = _simulate_two_preferences(n_reads=40, length=600, seed=13)
+    model = _fit(_learned(codes, context_states="all"), calls)
+    modified = model.modified_state_index()
+    default = model.weight_table("CseDa01", k=3)
+    protected = model.weight_table("CseDa01", k=3, state=1 - modified)
+    assert len(default) == len(protected) == N_CONTEXTS
+    np.testing.assert_allclose(np.log(default["weight"]), model.log_weights.numpy()[modified])
+    np.testing.assert_allclose(np.log(protected["weight"]), model.log_weights.numpy()[1 - modified])
