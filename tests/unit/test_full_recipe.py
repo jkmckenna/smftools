@@ -339,3 +339,27 @@ def test_reference_groups_invalidate_hmm_only_and_unset_changes_nothing():
     assert _parse_hmm_reference_groups({"one": "6B6"}) == {"one": ["6B6"]}
     with pytest.raises(ValueError):
         _parse_hmm_reference_groups("[6B6]")
+
+
+def test_hmm_axis_at_its_default_changes_no_fingerprint():
+    """`HPS-11`: hmm_axis 'sites' fingerprints as before the key existed; 'bp'
+    makes the HMM stage stale, not preprocess / spatial, and changes fit ids."""
+    from smftools.config.experiment_config import _parse_hmm_axis
+    from smftools.hmm.model_artifacts import hmm_fit_config_hash
+
+    cfg = SimpleNamespace(output_directory="/run", hmm_methbases=["C"])
+    stages = ("preprocess", "spatial", "hmm")
+    before = {stage: helpers.stage_config_hash(cfg, stage) for stage in stages}
+    fit_before = hmm_fit_config_hash(cfg)
+    cfg.hmm_axis = "sites"
+    assert {stage: helpers.stage_config_hash(cfg, stage) for stage in stages} == before
+    assert hmm_fit_config_hash(cfg) == fit_before
+    cfg.hmm_axis = "bp"
+    after = {stage: helpers.stage_config_hash(cfg, stage) for stage in stages}
+    assert after["preprocess"] == before["preprocess"]
+    assert after["spatial"] == before["spatial"]
+    assert after["hmm"] != before["hmm"]
+    assert hmm_fit_config_hash(cfg) != fit_before
+    assert _parse_hmm_axis(None) == "sites" and _parse_hmm_axis("BP") == "bp"
+    with pytest.raises(ValueError):
+        _parse_hmm_axis("grid")

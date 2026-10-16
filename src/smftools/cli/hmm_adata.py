@@ -453,6 +453,37 @@ class HMMTrainer:
             return "multi"
         return "single_distance_binned" if use_dist else "single"
 
+    def _configure_axis(self, model, X) -> None:
+        """Per-bp grid (`HPS-11`): count every step inside a read when
+        re-estimating transitions (see :meth:`_per_bp_start` for the start)."""
+        if str(getattr(self.cfg, "hmm_axis", "sites") or "sites").lower() != "bp":
+            return
+        model.transition_counting = "span"
+
+    def _per_bp_start(self, model, X) -> None:
+        """A new model's configured per-site starting transitions as per-bp
+        ones, by the observed site spacing: per-site stay ``s`` becomes
+        ``s ** (1 / spacing)``, leaving mass split as configured. From a
+        per-site start EM on a sparse per-bp grid barely moves."""
+        if str(getattr(self.cfg, "hmm_axis", "sites") or "sites").lower() != "bp":
+            return
+        observed = np.isfinite(np.asarray(X, dtype=float))
+        while observed.ndim > 2:
+            observed = observed.any(axis=-1)
+        site_columns = int(observed.any(axis=0).sum())
+        spacing = observed.shape[1] / max(site_columns, 1)
+        if spacing <= 1.0:
+            return
+        with torch.no_grad():
+            trans = model.trans.detach().clone()
+            stay = torch.diagonal(trans).clamp(min=1e-6, max=1 - 1e-6) ** (1.0 / spacing)
+            off = (1.0 - torch.diagonal(trans)).clamp(min=1e-12)
+            scaled = trans.clone()
+            for k in range(trans.shape[0]):
+                scaled[k] = trans[k] / off[k] * (1.0 - stay[k])
+                scaled[k, k] = stay[k]
+            model.trans.data = scaled
+
     def _apply_contexts(self, model, *, adapting: bool = False) -> None:
         """Give a context model this fit's sequence contexts (`HCE-04`).
 
@@ -619,6 +650,7 @@ class HMMTrainer:
 
         def fit_adapted():
             adapted = copy.deepcopy(base_model).to(device)
+            self._configure_axis(adapted, X)
             self._apply_contexts(adapted, adapting=True)
             history = adapted.fit(
                 X,
@@ -671,6 +703,8 @@ class HMMTrainer:
 
         def fit_new():
             model = create_hmm(self.cfg, arch=arch, device=device)
+            self._configure_axis(model, X)
+            self._per_bp_start(model, X)
             self._apply_contexts(model)
             if arch == "single_distance_binned":
                 history = model.fit(
@@ -724,6 +758,7 @@ class HMMTrainer:
 
             def fit_adapted():
                 adapted = copy.deepcopy(base).to(device)
+                self._configure_axis(adapted, X)
                 self._apply_contexts(adapted, adapting=True)
                 history = adapted.adapt_emissions(
                     X,

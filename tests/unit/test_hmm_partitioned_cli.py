@@ -1768,3 +1768,89 @@ def test_without_reference_groups_alleles_fit_apart(tmp_path, monkeypatch):
     _, outputs = _allele_run(tmp_path, monkeypatch)
     fits = pd.read_parquet(outputs["fit_catalog"])
     assert sorted(fits["reference"]) == ["alt_top", "ref_top"]
+
+
+# --- HPS-11: the per-bp position axis -------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "context", [{}, {"hmm_context_model": "learned", "hmm_context_states": "all"}]
+)
+def test_bp_axis_fits_and_decodes_every_position(tmp_path, monkeypatch, context):
+    from smftools.tools import partitioned_hmm
+
+    for name in (
+        "_plot_feature_fractions",
+        "_plot_feature_count_size_histograms",
+        "_plot_molecule_fractions",
+        "_plot_hmm_vs_raw_scatter",
+        "_plot_hmm_parameters_across_barcodes",
+        "_plot_hmm_fit_history",
+        "_plot_feature_clustermaps",
+    ):
+        monkeypatch.setattr(partitioned_hmm, name, lambda *args, **kwargs: None)
+    cfg, outputs, artifacts = _context_run(tmp_path, hmm_axis="bp", **context)
+    fits = pd.read_parquet(outputs["fit_catalog"])
+    assert set(fits["fit_state"]) == {"complete"}
+    model = _load_model(cfg, outputs, artifacts[0])
+    assert model.trans.shape == (2, 2)
+
+    raw = write_raw_store(
+        _frame(),
+        tmp_path / "raw2",
+        reference_lengths={"ref_top": 12},
+        analysis_mode="locus",
+        extra_uns={"References": {"ref_FASTA_sequence": "ACGCGTACGTAC"}},
+    )
+    preprocess = execute_partitioned_preprocessing(
+        raw["spine"], _preprocess_cfg(), tmp_path / "pre2"
+    )
+    adata = materialize(preprocess["spine"], references="ref_top", start=0, end=12)
+    spec = partitioned_hmm._configured_model_specs(cfg)[0]
+    sites_cfg = _hmm_cfg(hmm_methbases=["C"])
+    site_values, site_coords, _ = partitioned_hmm._prepare_model_input(
+        adata, "ref_top", spec, sites_cfg
+    )
+    values, coords, mask = partitioned_hmm._prepare_model_input(adata, "ref_top", spec, cfg)
+    assert values.shape[1] == adata.n_vars == coords.size and mask.all()
+    columns = [list(coords).index(c) for c in site_coords]
+    np.testing.assert_array_equal(np.isnan(values[:, columns]), np.isnan(site_values))
+    others = np.setdiff1d(np.arange(coords.size), columns)
+    assert np.isnan(values[:, others]).all()
+
+
+def test_bp_axis_scales_starting_transitions_and_counts_spans():
+    import torch
+
+    from smftools.cli.hmm_adata import HMMTrainer
+    from smftools.hmm.HMM import SingleBernoulliHMM
+
+    trainer = HMMTrainer.__new__(HMMTrainer)
+    trainer.cfg = SimpleNamespace(hmm_axis="bp")
+    model = SingleBernoulliHMM()
+    model.trans.data = torch.tensor([[0.9, 0.1], [0.2, 0.8]], dtype=model.dtype)
+    X = np.full((3, 40), np.nan)
+    X[:, ::4] = 1.0  # one site per 4 bp
+    trainer._configure_axis(model, X)
+    trainer._per_bp_start(model, X)
+    assert model.transition_counting == "span"
+    expected = np.array([0.9**0.25, 0.8**0.25])
+    np.testing.assert_allclose(torch.diagonal(model.trans).numpy(), expected, rtol=1e-6)
+    np.testing.assert_allclose(model.trans.sum(dim=1).numpy(), 1.0)
+
+    trainer.cfg = SimpleNamespace(hmm_axis="sites")
+    plain = SingleBernoulliHMM()
+    before = plain.trans.detach().clone()
+    trainer._configure_axis(plain, X)
+    trainer._per_bp_start(plain, X)
+    assert plain.transition_counting == "observed_pairs"
+    assert torch.equal(plain.trans, before)
+
+
+def test_bp_axis_refuses_the_distance_binned_model():
+    from smftools.tools.partitioned_hmm import hmm_axis
+
+    with pytest.raises(ValueError, match="replaces hmm_distance_aware"):
+        hmm_axis(SimpleNamespace(hmm_axis="bp", hmm_distance_aware=True))
+    with pytest.raises(ValueError, match="'sites' or 'bp'"):
+        hmm_axis(SimpleNamespace(hmm_axis="grid"))

@@ -465,6 +465,11 @@ hmm_shared_scope: ["reference", "methbase"]
 # drawn in equal shares per reference; every read of each member is decoded with
 # the shared fit. Unlisted references fit alone. Not with hmm_distance_aware.
 hmm_reference_groups: {}
+# Position axis (plan HPS-11): sites (one column per modification site; a step is
+# site to site whatever the bp gap) | bp (the full per-bp grid, NaN where there is
+# no site: transitions per bp, footprints in bp, a posterior at every bp; ~4x the
+# columns on C-targeting amplicons). Not with hmm_distance_aware.
+hmm_axis: sites
 hmm_groupby: ["sample", "reference", "methbase"]
 # If hmm_fit_strategy == shared_transitions
 hmm_adapt_emissions: true

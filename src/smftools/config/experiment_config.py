@@ -860,6 +860,14 @@ def load_defaults_with_inheritance(
 _DEFAULT_LEIDEN_RESOLUTION_BY_STRATEGY = {"pca": 0.5, "umap": 0.01, "nmf": 0.01, "cp": 0.0005}
 
 
+def _parse_hmm_axis(value: Any) -> str:
+    """``hmm_axis`` (`HPS-11`): ``sites`` (default) or ``bp``."""
+    axis = str(value or "sites").strip().lower()
+    if axis not in ("sites", "bp"):
+        raise ValueError(f"hmm_axis must be 'sites' or 'bp', not {value!r}")
+    return axis
+
+
 def _parse_hmm_reference_groups(value: Any) -> Dict[str, List[str]]:
     """``hmm_reference_groups`` from config (`HXR-01`): name -> references sharing
     one HMM fit; a mapping, or its JSON/YAML text (CSV configs)."""
@@ -1410,6 +1418,8 @@ class ExperimentConfig:
     hmm_variants: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     # References sharing one HMM fit per sample (`HXR`): name -> references.
     hmm_reference_groups: Dict[str, List[str]] = field(default_factory=dict)
+    # Position axis (`HPS-11`): "sites" (site columns) | "bp" (full per-bp grid).
+    hmm_axis: str = "sites"
     hmm_dtype: str = "float64"
     hmm_annotation_threshold: float = 0.5
     hmm_batch_size: int = 1024
@@ -2786,6 +2796,7 @@ class ExperimentConfig:
             hmm_context_weight_bounds=list(merged.get("hmm_context_weight_bounds", [0.1, 10.0])),
             hmm_variants=_parse_hmm_variants(merged.get("hmm_variants")),
             hmm_reference_groups=_parse_hmm_reference_groups(merged.get("hmm_reference_groups")),
+            hmm_axis=_parse_hmm_axis(merged.get("hmm_axis")),
             hmm_fit_strategy=hmm_fit_strategy,
             hmm_shared_scope=hmm_shared_scope,
             hmm_groupby=hmm_groupby,

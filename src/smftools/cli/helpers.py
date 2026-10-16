@@ -166,6 +166,7 @@ def _downstream_config_prefixes(stage: str) -> tuple[str, ...]:
 #: before". They join a stage's semantic config only when set, so adding the key
 #: does not invalidate every stored generation that predates it.
 _OMIT_WHEN_UNSET_CONFIG_KEYS = {"barcodes_to_include", "hmm_reference_groups"}
+_OMIT_AT_DEFAULT_CONFIG_KEYS = {"hmm_axis": "sites"}
 
 
 def _is_unset(value) -> bool:
@@ -348,6 +349,13 @@ def resolved_stage_config(cfg, stage: str | None = None) -> dict[str, Any]:
         and not (key in _OMIT_WHEN_UNSET_CONFIG_KEYS and _is_unset(value))
     }
     resolved = _with_hmm_context_identity(resolved)
+    # Keys added with a default that reproduces earlier behaviour fingerprint
+    # only when changed, so existing stages stay current.
+    resolved = {
+        key: value
+        for key, value in resolved.items()
+        if not (key in _OMIT_AT_DEFAULT_CONFIG_KEYS and value == _OMIT_AT_DEFAULT_CONFIG_KEYS[key])
+    }
     selected = _STAGE_SEMANTIC_CONFIG_KEYS.get(str(stage))
     if selected is not None:
         return {key: resolved[key] for key in sorted(selected) if key in resolved}

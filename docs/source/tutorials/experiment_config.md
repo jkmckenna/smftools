@@ -442,6 +442,28 @@ To compare emission models in one run, add them as `hmm_variants` (each
 writes its own layers), e.g. `{learned_all: {hmm_context_model: learned,
 hmm_context_states: all}}`.
 
+## HMM position axis
+
+`hmm_axis: sites` (default) fits the HMM on the modification-site columns
+only: one step is "from one site to the next" whatever the gap in bp, so the
+learned transitions depend on site density -- which differs between references,
+regions and targets (GpC vs all C) -- and bp-level layers are filled in between
+sites afterwards.
+
+`hmm_axis: bp` fits and decodes on the full per-bp grid of each window, with
+no observation where there is no site. Transitions are per bp, footprint and
+accessible-patch lengths are in bp, and every bp gets its own posterior. Two
+fitting details are handled for you: transition re-estimation counts every
+step inside a read (counting only observed neighbours biases it on a sparse
+grid), and the configured starting transitions are scaled to per bp by the
+observed site spacing. Expect ~4x the columns on C-targeting amplicons. It
+replaces `hmm_distance_aware` (the two are refused together) and combines with
+context emissions and reference groups.
+
+On a six-enzyme panel and a two-allele deaminase run the bp axis gave
+nucleosome-scale protected stretches where the site axis fragmented them,
+and better agreement between enzymes (`HPS` design record).
+
 ## HMM fits shared across references (alleles)
 
 The HMM is fitted per sample and per reference by default. When one sample
