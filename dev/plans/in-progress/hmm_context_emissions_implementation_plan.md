@@ -1,6 +1,6 @@
 # Sequence-context-aware HMM emissions (`HCE`)
 
-**Status:** in progress. `HCE-01`–`HCE-04` merged; `HCE-05` qualified (not adopted as the default); `HCE-06`, `HCE-08`, `HCE-09`, `HCE-10` merged (`HCE-10`: #690); `HCE-07` implemented (qualification pending); `HCE-11` proposed. One PR per item, in order. The
+**Status:** in progress. `HCE-01`–`HCE-04` merged; `HCE-05` qualified (not adopted as the default); `HCE-06`, `HCE-08`, `HCE-09`, `HCE-10` merged (`HCE-10`: #690); `HCE-07` qualified (with `learned`, prefer `hmm_context_states: all`); `HCE-11` proposed. One PR per item, in order. The
 default stays `none` unless `HCE-05` qualifies a mode.
 
 ## Question
@@ -85,7 +85,7 @@ hmm_context_weight_bounds: [0.1, 10]
 | `HCE-04` pipeline integration | merged | config, partitioned fit/apply, model artifacts, fingerprint |
 | `HCE-05` qualification | qualified: default stays `none`, `learned` opt-in | on a panel of several enzymes applied to the same cells |
 | `HCE-06` HMM variants | merged | several emission models in one HMM stage: namespaced layers, plots comparing them |
-| `HCE-07` context weights for every state (learned) | implemented; qualification pending | the protected state's background modification follows the enzyme's preference too |
+| `HCE-07` context weights for every state (learned) | qualified: preferred with `learned` | the protected state's background modification follows the enzyme's preference too |
 | `HCE-08` HMM vs raw per-molecule scatter | merged | per read: HMM accessible fraction against the raw modified-site fraction, per barcode, variants overlaid |
 | `HCE-09` HMM fractions at observed sites | merged | per read: the share of the model's observed sites inside each feature, beside the raw modified-site fraction |
 | `HCE-10` per-read fraction backfill | merged (#690) | `HCE-06`/`-08`/`-09` per-read fractions and figures for HMM generations made before them |
@@ -325,8 +325,36 @@ context preference, both rows are recovered (r 0.98-1.00 over seeds), and
 stray modifications at favoured contexts inside protected stretches drop
 from a 0.92-0.93 accessible posterior (modified-state weights only) to
 0.36-0.56; state-calling error falls from 0.38-0.43 to 0.22-0.29.
-Qualification on real data (the `HCE-05` panel, against `learned`) is the
-remaining step.
+**Qualified** on the `HCE-05` panel (same reads, settings and fits as
+`HCE-05`; arm `learned_all` = learned, `hmm_context_states: all`,
+0.1-10x; allele 1 / allele 2):
+
+| arm | between-enzyme r (worst pair) | footprint-length JS | context gap | per-read SNR | residual context bias (RMS log2) |
+|---|---|---|---|---|---|
+| `none` | 0.597 / 0.629 (0.34 / 0.43) | 0.199 / 0.184 | 0.063 / 0.059 | 13.1 / 11.2 | 0.32 / 0.28 |
+| `learned` | 0.626 / 0.654 (0.50 / 0.55) | 0.302 / 0.290 | 0.024 / 0.022 | 14.8 / 13.3 | 0.16 / 0.17 |
+| **`learned_all`** | **0.654 / 0.693 (0.55 / 0.61)** | **0.246 / 0.228** | 0.023 / 0.023 | 13.4 / 12.0 | 0.16 / 0.16 |
+| cell table | 0.620 / 0.647 (0.45 / 0.49) | 0.312 / 0.296 | 0.038 / 0.036 | 14.7 / 13.4 | 0.18 / 0.18 |
+
+- Enzymes agree best under `learned_all` (mean and worst pair, both
+  alleles), and their footprint-length distributions move back toward each
+  other (JS 0.30 -> 0.25) while keeping `learned`'s small context gap and
+  flat residual context bias.
+- The gain is concentrated in the enzymes with the strongest preference.
+  With modified-state weights only, CseDa01's favoured-context stray
+  deaminations inside protected DNA were read as accessibility: large
+  protected stretches fell to 7 % of sites and medium footprints rose to
+  15 %; `learned_all` assigns them to the protected background (large 21 %,
+  medium 7 %), close to the other enzymes. Pooled over enzymes
+  (DddA11 excluded): accessible 26-27 % (`none`), 31-32 % (`learned`),
+  28 % (`learned_all`); large protected stretches 25-27 %, 18 %, 25-26 %.
+- Per-read SNR falls back toward `none` (13.4 vs 14.8): fewer short
+  accessible gaps inside protected stretches -- partly the artefact `learned`
+  introduced.
+
+Recommendation: when `learned` is used, use `hmm_context_states: all`; the
+default stays `none` until the shared cross-allele fit (`HXR`) and a
+re-extracted panel confirm it.
 
 ## Out of scope
 
