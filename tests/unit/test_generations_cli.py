@@ -245,15 +245,15 @@ def test_cli_prune_is_dry_run_and_never_deletes(tmp_path: Path) -> None:
     payload = json.loads(result.output)
     assert payload["dry_run"] is True
     assert payload["deletion_supported"] is False
-    assert payload["reclaimable_bytes"] == 0
+    assert payload["reclaimable_bytes"] == payload["candidate_bytes"] > 0
     assert {decision["disposition"] for decision in payload["decisions"]} == {
         "keep_current",
-        "blocked_reproducibility",
+        "prune_candidate",
     }
     assert sorted(path.relative_to(run_root) for path in run_root.rglob("*")) == paths_before
 
 
-def test_cli_prune_table_is_explicitly_blocked(tmp_path: Path) -> None:
+def test_cli_prune_table_is_explicitly_a_dry_run(tmp_path: Path) -> None:
     run_root = tmp_path / "outputs"
     _publish(run_root / RAW_DIR, "raw-old")
     _publish(run_root / RAW_DIR, "raw-current", current=True)
@@ -271,8 +271,8 @@ def test_cli_prune_table_is_explicitly_blocked(tmp_path: Path) -> None:
     )
 
     assert result.exit_code == 0
-    assert "DRY RUN: deletion is not available" in result.output
-    assert "BLOCKED" in result.output
+    assert "DRY RUN: this planner never deletes" in result.output
+    assert "PRUNE" in result.output
 
 
 def test_cli_project_generations_project_only_skips_experiments(tmp_path: Path) -> None:
@@ -287,3 +287,35 @@ def test_cli_project_generations_project_only_skips_experiments(tmp_path: Path) 
     assert result.exit_code == 0
     payload = json.loads(result.output)
     assert [entry["kind"] for entry in payload["generations"]] == ["embedding"]
+
+
+def test_cli_refs_and_protect_from(tmp_path: Path) -> None:
+    run_root = tmp_path / "outputs"
+    _publish(run_root / RAW_DIR, "raw-old")
+    _publish(run_root / RAW_DIR, "raw-current", current=True)
+    registry = tmp_path / "registry.json"
+    registry.write_text(json.dumps({"raw": f"{RAW_DIR}/generations/raw-old/spine.h5ad"}))
+
+    refs = CliRunner().invoke(cli, ["experiment", "generations", str(run_root), "refs"])
+    assert refs.exit_code == 0
+    assert "No generation reads another." in refs.output
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "experiment",
+            "generations",
+            str(run_root),
+            "prune",
+            "--older-than",
+            "2100-01-01T00:00:00Z",
+            "--protect-from",
+            str(registry),
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    old = next(d for d in payload["decisions"] if d["generation_id"] == "raw-old")
+    assert old["disposition"] == "keep_referenced"
+    assert payload["candidate_bytes"] == 0

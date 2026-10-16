@@ -165,6 +165,7 @@ def plan_experiment_prune(
     keep_last: int | None,
     older_than: str | None,
     stages: tuple[str, ...],
+    protect_from: tuple[str, ...] = (),
 ) -> PrunePlan:
     """Build a dry-run-only generation pruning plan."""
     return plan_experiment_generation_prune(
@@ -172,7 +173,26 @@ def plan_experiment_prune(
         keep_last=keep_last,
         older_than=older_than,
         stages=stages or None,
+        protect_from=protect_from,
     )
+
+
+def render_references(output_root: str | Path, *, as_json: bool) -> str:
+    """Which generations each generation reads (`SLC-06`)."""
+    from ..informatics.generation_references import build_reference_graph
+
+    graph = build_reference_graph(output_root)
+    if as_json:
+        return json.dumps(graph.to_dict(), sort_keys=True, indent=2)
+    lines = [
+        f"{ref.source_kind} {ref.source_id} -> {ref.target_kind} {ref.target_id}  ({ref.via})"
+        for ref in graph.references
+    ]
+    lines += [
+        f"UNREADABLE {kind} {gid}: {error}"
+        for (kind, gid), error in sorted(graph.unreadable.items())
+    ]
+    return "\n".join(lines) if lines else "No generation reads another."
 
 
 def render_prune_table(plan: PrunePlan) -> str:
@@ -180,7 +200,7 @@ def render_prune_table(plan: PrunePlan) -> str:
     columns = ("ACTION", "KIND", "GENERATION", "SIZE", "REASON")
     rows = [
         (
-            "BLOCKED" if decision.policy_candidate else "KEEP",
+            "PRUNE" if decision.policy_candidate else "KEEP",
             decision.kind,
             decision.generation_id,
             _human_bytes(decision.size_bytes),
@@ -191,15 +211,14 @@ def render_prune_table(plan: PrunePlan) -> str:
     table_rows = [columns, *rows]
     widths = [max(len(row[index]) for row in table_rows) for index in range(len(columns))]
     lines = [
-        "DRY RUN: deletion is not available in EGL-03a.",
+        "DRY RUN: this planner never deletes or moves anything.",
         "",
         *[
             "  ".join(cell.ljust(widths[index]) for index, cell in enumerate(row)).rstrip()
             for row in table_rows
         ],
         "",
-        f"Policy candidates: {_human_bytes(plan.candidate_bytes)}; "
-        f"safely reclaimable now: {_human_bytes(plan.reclaimable_bytes)}.",
+        f"Prune candidates (nothing live reads them): {_human_bytes(plan.candidate_bytes)}.",
     ]
     return "\n".join(lines)
 

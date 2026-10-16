@@ -747,10 +747,25 @@ def experiment_generations_unpin_cmd(ctx, stage, generation_id, reason, all_reas
     metavar="ISO_TIMESTAMP",
     help="Consider only generations older than this ISO-8601 timestamp.",
 )
+@click.option(
+    "--protect-from",
+    "protect_from",
+    multiple=True,
+    type=click.Path(exists=True, path_type=Path),
+    help=(
+        "Keep generations named by this file (a project directory reads its registry.json), "
+        "and everything they read; repeat for several."
+    ),
+)
 @click.option("--json", "as_json", is_flag=True, help="Emit the versioned pruning plan.")
 @click.pass_context
-def experiment_generations_prune_cmd(ctx, stages, keep_last, older_than, as_json):
-    """Plan retention pruning without deleting anything."""
+def experiment_generations_prune_cmd(ctx, stages, keep_last, older_than, protect_from, as_json):
+    """Plan retention pruning without deleting anything.
+
+    Current and pinned generations, everything they read (spine pointers,
+    manifest lineage) and generations named by --protect-from are kept; the
+    age / count policy chooses among the rest.
+    """
     from .cli.generations import plan_experiment_prune, render_prune_json, render_prune_table
     from .informatics.generation_pruning import GenerationPruneError
 
@@ -760,10 +775,21 @@ def experiment_generations_prune_cmd(ctx, stages, keep_last, older_than, as_json
             keep_last=keep_last,
             older_than=older_than,
             stages=stages,
+            protect_from=tuple(str(path) for path in protect_from),
         )
     except GenerationPruneError as exc:
         raise click.ClickException(str(exc)) from exc
     click.echo(render_prune_json(plan) if as_json else render_prune_table(plan))
+
+
+@experiment_generations_cmd.command("refs")
+@click.option("--json", "as_json", is_flag=True, help="Emit the reference graph as JSON.")
+@click.pass_context
+def experiment_generations_refs_cmd(ctx, as_json):
+    """List which generations each generation reads (read-only)."""
+    from .cli.generations import render_references
+
+    click.echo(render_references(ctx.obj["output_root"], as_json=as_json))
 
 
 ##########################################
