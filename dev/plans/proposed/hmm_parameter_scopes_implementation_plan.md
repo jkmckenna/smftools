@@ -93,9 +93,9 @@ fit group within an emission group (as `HXR-02`).
 | `HPS-06` | project HMM model store: content-addressed models with manifests (plan hash, training selection, source generations, samples and experiments spanned), so one emission model can serve several experiments of the same chemistry | proposed |
 | `HPS-07` | layer sets: decoding a plan writes a per-experiment layer-set generation (lineage: model ids, the spatial / preprocess generations read) beside the HMM stage; readers select `(layer, plan)`; fitting a new plan does not regenerate the HMM stage (`SUG-02`) | proposed |
 | `HPS-08` | storage: layer sets are generations under `SLC` (reference graph, prune, archive); posteriors optional, features stored compactly | proposed |
-| `HPS-09` | acceptance (below) | proposed |
+| `HPS-09` | acceptance (below) | direct-fit comparison done; pipeline acceptance after `HPS-01`--`HPS-04` |
 | `HPS-10` | docs: choosing scopes for a comparison, config reference | proposed |
-| `HPS-11` | position axis: `hmm_axis: sites` (default, today) \| `bp` -- fit and decode on the full position grid with unobserved positions masked; per-bp posteriors without span filling; transitions comparable across references and targets; supersedes `single_distance_binned` for new configs | proposed |
+| `HPS-11` | position axis (span transition counting implemented): `hmm_axis: sites` (default, today) \| `bp` -- fit and decode on the full position grid with unobserved positions masked; per-bp posteriors without span filling; transitions comparable across references and targets; supersedes `single_distance_binned` for new configs | proposed |
 
 ## Acceptance (`HPS-09`)
 
@@ -114,3 +114,51 @@ arms `fit_group` / emissions shared per sample (across its references) /
 without offsets is expected to fail where efficiency differs. The same arms
 on the `bp` axis (`HPS-11`) are compared on footprint lengths in bp and on
 the same agreement metrics.
+
+### Results (direct fits; tied EM; learned per-state context weights)
+
+Same cells, six enzymes x three doses (B6 allele; the other allele alike):
+
+| arm | between-enzyme r | between-dose r | accessible spread across doses | protected median (bp) | 120-200 bp share | < 50 bp share |
+|---|---|---|---|---|---|---|
+| `fit_group`, sites | 0.65 | 0.90 | 0.024 | 110 | 0.34 | 0.25 |
+| `shared`, sites | 0.66 | 0.90 | **0.053** | 111 | 0.34 | 0.27 |
+| `shared_efficiency`, sites | 0.65 | 0.90 | 0.031 | 109 | 0.34 | 0.27 |
+| `fit_group`, bp | **0.68** | 0.91 | 0.030 | 117 | **0.37** | **0.22** |
+| `shared_efficiency`, bp | **0.67** | 0.91 | 0.038 | 118 | **0.37** | **0.23** |
+
+Efficiency offsets rise with dose for five of six enzymes without being told
+the dose (one enzyme's run backwards -- a sample to check).
+
+Two alleles in the same cells (30 samples), enhancer-deletion / intact,
+outside the deletion:
+
+| arm | HMM ratio direction = raw | median abs log2 gap | protected median intact / deletion (bp) | < 50 bp share |
+|---|---|---|---|---|
+| `fit_group`, sites | **33 %** | 0.20 | 72 / 51 | 0.40-0.50 |
+| per sample (alleles share), sites | 87 % | 0.11 | 65 / 58 | 0.42-0.48 |
+| `shared`, sites | 93 % | 0.09 | 70 / 55 | 0.42-0.49 |
+| `shared_efficiency`, sites | 87 % | 0.10 | 63 / 57 | 0.44-0.50 |
+| `fit_group`, bp | **33 %** | 0.22 | 124 / 114 | 0.20-0.24 |
+| `shared_efficiency`, bp | 83 % | 0.18 | 124 / 135 | 0.21-0.24 |
+
+Polyamine condition (0.5 / 0 mM, same mouse, cell type and allele): raw 0.62;
+HMM 0.75 (`fit_group`), **0.44** (`shared`), 0.70 (`shared_efficiency`);
+offsets +0.56 / -0.20.
+
+- Free emissions per fit group invert allele comparisons on either axis;
+  emission sharing fixes that, the axis does not.
+- Shared emissions without offsets turn efficiency differences (dose,
+  polyamine) into chromatin; offsets restore within-enzyme stability.
+- The bp axis gives physical footprints (fewer sub-50 bp fragments, more
+  nucleosome-sized stretches; on a site-sparse deaminase run the site axis
+  halves footprint lengths) and better agreement between enzymes; it widens
+  HMM allele ratios relative to raw and slightly loosens dose stability.
+- On a per-bp grid EM must count every step inside the read
+  (`transition_counting = "span"`, implemented) and start from per-bp-scaled
+  transitions: counting only observed adjacent pairs overestimates protected
+  persistence (~20 % on a 1-site-per-4-bp simulation), and from 0.5 / 0.5 EM
+  barely moves.
+
+Recommended target: `shared_efficiency` on the bp axis.
+
