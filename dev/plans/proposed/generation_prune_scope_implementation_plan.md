@@ -1,6 +1,6 @@
 # Generation prune scope expansion (`EGL-03c`)
 
-**Status:** proposed; folded into `SLC-09` (`proposed/storage_lifecycle_implementation_plan.md`), which also lifts the deletion blocker this plan leaves in place.
+**Status:** proposed; folded into `SLC-09` (`in-progress/storage_lifecycle_implementation_plan.md`), which also lifts the deletion blocker this plan leaves in place.
 
 **Predecessor:** `completed/generation_lifecycle_and_naming_implementation_plan.md`
 (`EGL-03` -- retention, pinning, and pruning). `EGL-03a` shipped a read-only,
