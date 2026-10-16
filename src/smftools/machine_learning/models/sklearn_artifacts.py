@@ -39,6 +39,23 @@ _VERSIONED_PACKAGES = ("numpy", "scipy", "scikit-learn", "skops")
 # either encoding.
 PAYLOAD_COMPRESSION = {"deflate": zipfile.ZIP_DEFLATED, "none": zipfile.ZIP_STORED}
 PAYLOAD_COMPRESSLEVEL = 6
+# Types an estimator's payload may hold besides the estimator class itself,
+# reviewed as safe. Which of them skops reports as untrusted depends on the
+# skops / scikit-learn versions (forests' trees are trusted by some, not by
+# others), so a payload may list any subset.
+REVIEWED_COMPONENT_TYPES: dict[str, frozenset[str]] = {
+    "sklearn.ensemble._forest.RandomForestClassifier": frozenset(
+        {"sklearn.tree._classes.DecisionTreeClassifier", "sklearn.tree._tree.Tree"}
+    ),
+    "sklearn.ensemble._forest.RandomForestRegressor": frozenset(
+        {"sklearn.tree._classes.DecisionTreeRegressor", "sklearn.tree._tree.Tree"}
+    ),
+}
+
+
+def _reviewed_types(estimator_type: str) -> frozenset[str]:
+    """The estimator class and its reviewed component types."""
+    return frozenset({estimator_type}) | REVIEWED_COMPONENT_TYPES.get(estimator_type, frozenset())
 
 
 class SklearnArtifactError(ValueError):
@@ -136,7 +153,7 @@ def publish_sklearn_model(
                 compresslevel=PAYLOAD_COMPRESSLEVEL,
             )
         unknown_types = tuple(sorted(skops_io.get_untrusted_types(file=source)))
-        unexpected = sorted(set(unknown_types).difference({expected_type}))
+        unexpected = sorted(set(unknown_types).difference(_reviewed_types(expected_type)))
         if unexpected:
             raise SklearnArtifactError(f"skops payload contains unreviewed types: {unexpected}")
         reference = ArtifactReference(
@@ -213,12 +230,13 @@ def load_published_sklearn_model(
     definition = registry.definition(manifest.family)
     config = definition.config_type.from_dict(manifest.architecture.parameters)
     expected_type = _qualified_type(definition.builder(config))
-    if set(policy.allowed_types) != {expected_type}:
+    allowed = set(policy.allowed_types)
+    if expected_type not in allowed or not allowed <= _reviewed_types(expected_type):
         raise SklearnArtifactError("serialization policy differs from reviewed model type")
     skops_io = require("skops.io", extra="ml-base", purpose="safe sklearn persistence")
     source = _artifact_path(bundle, manifest)
     unknown_types = tuple(sorted(skops_io.get_untrusted_types(file=source)))
-    unexpected = sorted(set(unknown_types).difference({expected_type}))
+    unexpected = sorted(set(unknown_types).difference(allowed))
     if unexpected:
         raise SklearnArtifactError(f"skops payload contains unapproved types: {unexpected}")
     payload = skops_io.load(source, trusted=list(unknown_types))
