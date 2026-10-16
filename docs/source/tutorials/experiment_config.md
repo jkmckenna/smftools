@@ -403,6 +403,45 @@ Partitioned latent generations additionally write `resource_plan.json` and task-
 containing estimator version, resource-envelope ID, requested and effective read counts, limiting
 operation, CP skip reason, predicted peak, and measured process-tree peak.
 
+## HMM sequence-context emissions
+
+Deaminases modify C sites at different rates depending on the neighbouring
+bases (see `smftools experiment context-bias`). The accessibility HMM can
+account for this: each state's modification probability is shifted per site
+by a relative weight for the site's centred k-mer, on the log-odds scale
+(1 = the state's average rate). Without it, an accessible site in a context
+the enzyme modifies poorly looks protected, and a stray modification of
+protected DNA in a favoured context looks accessible.
+
+| field | values | meaning |
+|---|---|---|
+| `hmm_context_model` | `none` (default) / `table` / `learned` | no context weights; weights read from `hmm_context_table` (e.g. exported by `context-bias --export-weights`, chosen per fit by `hmm_context_table_group`); or weights estimated inside the HMM fit from the state posteriors |
+| `hmm_context_states` | `modified` (default) / `all` | which states are weighted: the accessible state only, or every state. With `learned`, `all` learns one weight vector per state, so the protected state's background modification follows the enzyme's preference too |
+| `hmm_context_k` | odd integer (default 3) | the C-centred k-mer defining a context |
+| `hmm_context_cpg` | `separate` (default) / `exclude` / `none` | CpG contexts get their own weights (so CpG methylation's resistance to deamination stays visible), are left out of the HMM, or are treated like any context |
+| `hmm_context_shrinkage` | default 50 | `learned`: pseudo-observations at the state's overall rate per context, so rare contexts stay near 1 |
+| `hmm_context_weight_bounds` | default `[0.1, 10.0]` | `learned`: weight clamp |
+
+**Recommendation.** The default stays `none`. If you use `learned`, set
+`hmm_context_states: all`. On cells treated with six deaminases (same
+chromatin, different preferences), `learned` with every state weighted gave
+the best agreement between enzymes and between their footprint-length
+distributions, with the same low residual context bias as `learned`;
+weighting the accessible state alone let strong-preference enzymes' stray
+modifications inside protected DNA fragment nucleosome-sized footprints. The
+measurements are in the `HCE` design record
+(`dev/plans/in-progress/hmm_context_emissions_implementation_plan.md`,
+`HCE-05` and `HCE-07`).
+
+```yaml
+hmm_context_model: learned
+hmm_context_states: all
+```
+
+To compare emission models in one run, add them as `hmm_variants` (each
+writes its own layers), e.g. `{learned_all: {hmm_context_model: learned,
+hmm_context_states: all}}`.
+
 ## Tips
 
 - Keep paths absolute whenever possible to avoid ambiguity.
