@@ -132,14 +132,19 @@ def _stage_runners():
     }
 
 
-def run_experiment_target(config_path: str, target: str):
-    """Execute one public experiment target through the semantic graph."""
+def run_experiment_target(config_path: str, target: str, *, allow_upstream: bool = True):
+    """Execute one public experiment target through the semantic graph.
+
+    ``allow_upstream=False`` (the stage commands' default) refuses when an
+    earlier stage with existing outputs would be recomputed.
+    """
     from ..pipeline.experiment_graph import execute_experiment_target
 
     execution = execute_experiment_target(
         config_path,
         target,
         stage_runners=_stage_runners(),
+        allow_upstream=allow_upstream,
     )
     return execution.final_result
 
