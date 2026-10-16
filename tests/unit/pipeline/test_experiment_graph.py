@@ -526,7 +526,7 @@ def test_direct_stage_cli_commands_submit_semantic_target_requests(
     monkeypatch.setattr(
         recipes,
         "run_experiment_target",
-        lambda path, requested: requests.append((path, requested)),
+        lambda path, requested, **kwargs: requests.append((path, requested, kwargs)),
     )
 
     result = CliRunner().invoke(
@@ -535,7 +535,9 @@ def test_direct_stage_cli_commands_submit_semantic_target_requests(
     )
 
     assert result.exit_code == 0, result.output
-    assert requests == [(str(config_path), target)]
+    # stage commands refuse upstream recompute by default; raw has nothing upstream
+    expected = {} if target == "raw" else {"allow_upstream": False}
+    assert requests == [(str(config_path), target, expected)]
 
 
 def test_stage_result_metadata_is_deterministic_and_versioned():
@@ -587,7 +589,7 @@ def test_batch_surfaces_target_planning_failures(tmp_path, monkeypatch):
     config_table = tmp_path / "configs.txt"
     config_table.write_text(f"{config}\n", encoding="utf-8")
 
-    def fail_plan(_config_path, _target):
+    def fail_plan(_config_path, _target, **_kwargs):
         raise ValueError("simulated target planning failure")
 
     monkeypatch.setattr(recipes, "run_experiment_target", fail_plan)
@@ -680,3 +682,97 @@ def test_the_run_gate_agrees_with_the_planner_about_algorithm_version(tmp_path, 
     assert not partitioned_stage_is_complete(cfg, "raw", required=()), (
         "a bumped algorithm version must make the run gate report incomplete"
     )
+
+
+def _runners(calls):
+    return {
+        stage: lambda _config_path, stage=stage: calls.append(stage) or f"{stage}-result"
+        for stage in experiment_graph.EXPERIMENT_STAGES
+    }
+
+
+def test_stage_target_refuses_to_replace_existing_upstream_outputs(tmp_path, monkeypatch):
+    """A stale upstream stage with outputs is never recomputed silently."""
+    cfg = _cfg(tmp_path)
+    paths = _paths(tmp_path)
+    _record_stage(cfg, "raw", config_value="old-config")
+    _record_stage(cfg, "preprocess")
+    monkeypatch.setattr(experiment_graph, "stage_is_complete", lambda *_args, **_kwargs: True)
+    _trust_current_preprocess(monkeypatch, tmp_path)
+    calls = []
+    before = (tmp_path / "experiment_manifest.json").read_bytes()
+
+    with pytest.raises(experiment_graph.UpstreamRecomputeRefusedError) as raised:
+        experiment_graph.execute_experiment_target(
+            "experiment.csv",
+            "spatial",
+            cfg=cfg,
+            paths=paths,
+            stage_runners=_runners(calls),
+            allow_upstream=False,
+        )
+
+    assert calls == []
+    assert (tmp_path / "experiment_manifest.json").read_bytes() == before
+    refused = {decision.analysis_id for decision in raised.value.decisions}
+    assert experiment_graph.EXPERIMENT_NODE_IDS["raw"] in refused
+    assert experiment_graph.EXPERIMENT_NODE_IDS["spatial"] not in refused
+    assert "--allow-upstream" in str(raised.value)
+
+
+def test_stage_target_still_builds_missing_upstream_stages(tmp_path, monkeypatch):
+    """A first run of a later stage builds its missing inputs (nothing replaced)."""
+    cfg = _cfg(tmp_path)
+    paths = _paths(tmp_path)
+    calls = []
+
+    result = experiment_graph.execute_experiment_target(
+        "experiment.csv",
+        "spatial",
+        cfg=cfg,
+        paths=paths,
+        stage_runners=_runners(calls),
+        allow_upstream=False,
+    )
+
+    assert calls == ["raw", "preprocess", "spatial"]
+    assert result.final_result == "spatial-result"
+
+
+def test_allow_upstream_recomputes_stale_upstream_stages(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    paths = _paths(tmp_path)
+    _record_stage(cfg, "raw", config_value="old-config")
+    _record_stage(cfg, "preprocess")
+    monkeypatch.setattr(experiment_graph, "stage_is_complete", lambda *_args, **_kwargs: True)
+    _trust_current_preprocess(monkeypatch, tmp_path)
+    calls = []
+
+    experiment_graph.execute_experiment_target(
+        "experiment.csv",
+        "spatial",
+        cfg=cfg,
+        paths=paths,
+        stage_runners=_runners(calls),
+        allow_upstream=True,
+    )
+
+    assert calls[0] == "raw"
+    assert calls[-1] == "spatial"
+
+
+def test_stage_cli_reports_refusal_without_running(tmp_path, monkeypatch):
+    from smftools.cli import recipes
+
+    config_path = tmp_path / "experiment.csv"
+    config_path.touch()
+
+    def refuse(_path, target, **_kwargs):
+        raise experiment_graph.UpstreamRecomputeRefusedError(target, (), None)
+
+    monkeypatch.setattr(recipes, "run_experiment_target", refuse)
+    result = CliRunner().invoke(cli_entry.cli, ["experiment", "hmm", str(config_path)])
+
+    assert result.exit_code != 0
+    assert "--allow-upstream" in result.output
+    assert "Traceback" not in result.output

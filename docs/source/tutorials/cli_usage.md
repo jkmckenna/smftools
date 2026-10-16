@@ -22,6 +22,21 @@ smftools experiment batch raw /path/to/config_paths.csv
 Each command creates or reuses stage-specific artifacts in the output directory. Later commands
 reuse results from earlier stages unless you explicitly force a redo via configuration flags.
 
+### Stage commands and earlier stages
+
+`preprocess`, `spatial`, `hmm` and `latent` plan their target first (as
+`smftools experiment plan --target <stage>` does). Earlier stages that do not exist yet are built.
+Earlier stages whose existing outputs are stale -- changed configuration, a newer algorithm
+version, changed inputs -- are **not** recomputed silently: the command stops before running
+anything and names them. Inspect with `smftools experiment plan`, then either fix the cause or
+rerun with `--allow-upstream` to recompute them (`batch` takes the same flag). `full` and `run`
+execute the whole plan as before.
+
+```shell
+smftools experiment plan --target hmm experiment_config.csv
+smftools experiment hmm experiment_config.csv --allow-upstream
+```
+
 ### Workflow-engine invocation
 
 Use `experiment run` when another workflow engine owns staging and resources:

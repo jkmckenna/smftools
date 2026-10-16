@@ -7,6 +7,7 @@ from .experiment_graph import (
     EXPERIMENT_STAGES,
     EXPERIMENT_TARGETS,
     ExperimentExecutionResult,
+    UpstreamRecomputeRefusedError,
     build_experiment_plan,
     build_experiment_upgrade_impact,
     execute_experiment_target,
@@ -16,6 +17,7 @@ from .experiment_graph import (
     plan_experiment,
     plan_experiment_upgrade_impact,
     resolve_experiment_target,
+    upstream_replacements,
 )
 from .project_graph import (
     PROJECT_COMMAND_CLASSES,
@@ -221,7 +223,9 @@ __all__ = [
     "compatibility_fingerprint",
     "derive_descendant_config",
     "descendant_raw_provenance",
+    "UpstreamRecomputeRefusedError",
     "execute_experiment_target",
+    "upstream_replacements",
     "execute_rebasecall_basecall",
     "experiment_node_specs",
     "experiment_stage_result_metadata",

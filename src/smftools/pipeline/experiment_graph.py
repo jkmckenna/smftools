@@ -408,6 +408,51 @@ def plan_experiment_upgrade_impact(
     return build_experiment_upgrade_impact(cfg, target)
 
 
+class UpstreamRecomputeRefusedError(RuntimeError):
+    """A stage request would replace existing outputs of earlier stages.
+
+    Raised before anything executes when ``allow_upstream`` is false and the
+    plan for the requested target recomputes an upstream stage that already
+    has outputs (stale, invalid or dependent); ``decisions`` lists them.
+    """
+
+    def __init__(self, target: str, decisions: tuple[Any, ...], plan: SemanticPlan):
+        self.target = target
+        self.decisions = decisions
+        self.plan = plan
+        stages = "; ".join(
+            f"{_stage_from_analysis_id(d.analysis_id)} ({d.state.value}: {d.reason})"
+            for d in decisions
+        )
+        super().__init__(
+            f"'{target}' would also recompute upstream stage(s) with existing outputs: {stages}. "
+            f"Nothing was run. Inspect with `smftools experiment plan --target {target} <config>`; "
+            "rerun with --allow-upstream to recompute them."
+        )
+
+
+# Upstream states that replace an existing output; MISSING (nothing there yet)
+# is not one of them, so a first run of a later stage still builds its inputs.
+_REPLACING_STATES = frozenset(
+    {
+        PlanState.STALE_CONFIG,
+        PlanState.STALE_ALGORITHM,
+        PlanState.STALE_INPUT,
+        PlanState.INVALID_ARTIFACT,
+        PlanState.DEPENDENT_RECOMPUTE,
+    }
+)
+
+
+def upstream_replacements(plan: SemanticPlan, target_analysis_id: str) -> tuple[Any, ...]:
+    """Decisions that would replace existing outputs of stages before the target."""
+    return tuple(
+        decision
+        for decision in plan.decisions
+        if decision.analysis_id != target_analysis_id and decision.state in _REPLACING_STATES
+    )
+
+
 def execute_experiment_target(
     config_path: str | Path,
     target: str,
@@ -415,8 +460,15 @@ def execute_experiment_target(
     cfg: Any | None = None,
     paths: Any | None = None,
     stage_runners: Mapping[str, Any] | None = None,
+    allow_upstream: bool = True,
 ) -> ExperimentExecutionResult:
-    """Execute non-compatible nodes in the semantic plan using existing stage wrappers."""
+    """Execute non-compatible nodes in the semantic plan using existing stage wrappers.
+
+    With ``allow_upstream=False`` the call refuses, before executing anything,
+    when the plan would replace existing outputs of a stage before ``target``
+    (:class:`UpstreamRecomputeRefusedError`); missing upstream stages are still
+    built.
+    """
     from ..cli.helpers import load_experiment_config
 
     config_path = str(config_path)
@@ -443,6 +495,10 @@ def execute_experiment_target(
     if blocked:
         reasons = "; ".join(f"{decision.analysis_id}: {decision.reason}" for decision in blocked)
         raise RuntimeError(f"experiment target is blocked by missing input: {reasons}")
+    if not allow_upstream:
+        replaced = upstream_replacements(context.plan, resolve_experiment_target(cfg, target))
+        if replaced:
+            raise UpstreamRecomputeRefusedError(target, replaced, context.plan)
 
     results: list[tuple[str, Any]] = []
     for decision in context.plan.decisions:

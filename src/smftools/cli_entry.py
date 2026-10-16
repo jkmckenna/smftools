@@ -348,14 +348,30 @@ def load(config_path):
 ##########################################
 
 
+def _run_stage_target(config_path, target: str, allow_upstream: bool):
+    """Run one stage target; refuse (nothing runs) if it would recompute
+    earlier stages with existing outputs, unless ``allow_upstream``."""
+    from .cli.recipes import run_experiment_target
+    from .pipeline.experiment_graph import UpstreamRecomputeRefusedError
+
+    try:
+        run_experiment_target(config_path, target, allow_upstream=allow_upstream)
+    except UpstreamRecomputeRefusedError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
 ####### Preprocessing ###########
 @experiment_group.command()
 @click.argument("config_path", type=click.Path(exists=True))
-def preprocess(config_path):
+@click.option(
+    "--allow-upstream",
+    is_flag=True,
+    help="Also recompute earlier stages whose existing outputs are stale. Without it the "
+    "command refuses (nothing runs) and names them; see `smftools experiment plan`.",
+)
+def preprocess(config_path, allow_upstream):
     """Preprocessing."""
-    from .cli.recipes import run_experiment_target
-
-    run_experiment_target(config_path, "preprocess")
+    _run_stage_target(config_path, "preprocess", allow_upstream)
 
 
 ##########################################
@@ -364,11 +380,15 @@ def preprocess(config_path):
 ####### Spatial ###########
 @experiment_group.command()
 @click.argument("config_path", type=click.Path(exists=True))
-def spatial(config_path):
+@click.option(
+    "--allow-upstream",
+    is_flag=True,
+    help="Also recompute earlier stages whose existing outputs are stale. Without it the "
+    "command refuses (nothing runs) and names them; see `smftools experiment plan`.",
+)
+def spatial(config_path, allow_upstream):
     """Spatial signal analysis"""
-    from .cli.recipes import run_experiment_target
-
-    run_experiment_target(config_path, "spatial")
+    _run_stage_target(config_path, "spatial", allow_upstream)
 
 
 ##########################################
@@ -377,11 +397,15 @@ def spatial(config_path):
 ####### HMM ###########
 @experiment_group.command()
 @click.argument("config_path", type=click.Path(exists=True))
-def hmm(config_path):
+@click.option(
+    "--allow-upstream",
+    is_flag=True,
+    help="Also recompute earlier stages whose existing outputs are stale. Without it the "
+    "command refuses (nothing runs) and names them; see `smftools experiment plan`.",
+)
+def hmm(config_path, allow_upstream):
     """HMM feature annotations and plotting"""
-    from .cli.recipes import run_experiment_target
-
-    run_experiment_target(config_path, "hmm")
+    _run_stage_target(config_path, "hmm", allow_upstream)
 
 
 ##########################################
@@ -390,11 +414,15 @@ def hmm(config_path):
 ####### Latent ###########
 @experiment_group.command()
 @click.argument("config_path", type=click.Path(exists=True))
-def latent(config_path):
+@click.option(
+    "--allow-upstream",
+    is_flag=True,
+    help="Also recompute earlier stages whose existing outputs are stale. Without it the "
+    "command refuses (nothing runs) and names them; see `smftools experiment plan`.",
+)
+def latent(config_path, allow_upstream):
     """Latent representations of signal"""
-    from .cli.recipes import run_experiment_target
-
-    run_experiment_target(config_path, "latent")
+    _run_stage_target(config_path, "latent", allow_upstream)
 
 
 ##########################################
@@ -773,12 +801,19 @@ def experiment_generations_prune_cmd(ctx, stages, keep_last, older_than, as_json
     default=None,
     help="Machine-readable result path (default: beside CONFIG_TABLE).",
 )
+@click.option(
+    "--allow-upstream",
+    is_flag=True,
+    help="preprocess / spatial / hmm / latent: also recompute earlier stages whose existing "
+    "outputs are stale (otherwise each such config fails without running anything).",
+)
 def batch(
     task,
     config_table: Path,
     column: str,
     sep: str | None,
     summary_path: Path | None,
+    allow_upstream: bool,
 ):
     """
     Run a TASK (raw, load, preprocess, spatial, variant, hmm, latent, full) on multiple CONFIG_PATHs
@@ -874,12 +909,12 @@ def batch(
     def _preprocess(cfg_path: str):
         from .cli.recipes import run_experiment_target
 
-        return run_experiment_target(cfg_path, "preprocess")
+        return run_experiment_target(cfg_path, "preprocess", allow_upstream=allow_upstream)
 
     def _spatial(cfg_path: str):
         from .cli.recipes import run_experiment_target
 
-        return run_experiment_target(cfg_path, "spatial")
+        return run_experiment_target(cfg_path, "spatial", allow_upstream=allow_upstream)
 
     def _variant(cfg_path: str):
         from .cli.variant_adata import variant_adata
@@ -889,12 +924,12 @@ def batch(
     def _hmm(cfg_path: str):
         from .cli.recipes import run_experiment_target
 
-        return run_experiment_target(cfg_path, "hmm")
+        return run_experiment_target(cfg_path, "hmm", allow_upstream=allow_upstream)
 
     def _latent(cfg_path: str):
         from .cli.recipes import run_experiment_target
 
-        return run_experiment_target(cfg_path, "latent")
+        return run_experiment_target(cfg_path, "latent", allow_upstream=allow_upstream)
 
     def _full(cfg_path: str):
         from .cli.recipes import full_flow

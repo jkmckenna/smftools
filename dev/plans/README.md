@@ -62,6 +62,7 @@ An active branch, some items merged and others open.
 
 | document | scope |
 |---|---|
+| `stage_upstream_guard_implementation_plan.md` | `SUG-01`–`SUG-02` stage commands (`preprocess`, `spatial`, `hmm`, `latent`, `batch`) refuse to recompute earlier stages with existing stale outputs unless `--allow-upstream`; stage-only refits on stale upstream generations |
 | `alignment_rescue_sequence_implementation_plan.md` | `ARS` rescued reads keep their SEQ (minimap2 omits it on secondaries, so every rescued read was dropped at extraction, `F64`), repair of committed alignments, raw re-extraction |
 | `hmm_context_emissions_implementation_plan.md` | `HCE` (`HCE-01`–`HCE-04`, `HCE-06`, `HCE-08`–`HCE-10` merged; `HCE-05` qualified: default `none`, `learned` opt-in; `HCE-07`, `HCE-11` proposed) sequence-context-aware HMM emissions: per-(state, context) modification probabilities as relative weights on the log-odds scale; `table` (e.g. naked-DNA calibration) or `learned` in EM with shrinkage; CpG kept separate; qualified on a multi-enzyme panel before any default changes |
 | `ml_project_labels_masks_coordinate_maps_plan.md` | `MLX` project-scope (`MLX-01`–`MLX-03`, `MLX-05`–`MLX-07`, `MLX-09`–`MLX-11` merged) ML studies: external label table (`labels.source: table`), multi-window position masks, cross-reference coordinate maps with a leakage guard |

@@ -358,7 +358,7 @@ def test_batch_latent_dispatches_standalone_stage(tmp_path, monkeypatch):
     monkeypatch.setattr(
         recipes_module,
         "run_experiment_target",
-        lambda config_path, target: captured.append((config_path, target)),
+        lambda config_path, target, **kwargs: captured.append((config_path, target, kwargs)),
     )
     config = tmp_path / "experiment.csv"
     config.touch()
@@ -368,7 +368,7 @@ def test_batch_latent_dispatches_standalone_stage(tmp_path, monkeypatch):
     result = CliRunner().invoke(cli, ["experiment", "batch", "latent", str(config_table)])
 
     assert result.exit_code == 0, result.output
-    assert captured == [(str(config), "latent")]
+    assert captured == [(str(config), "latent", {"allow_upstream": False})]
 
 
 def test_fitted_latent_space_transforms_additional_reads():
