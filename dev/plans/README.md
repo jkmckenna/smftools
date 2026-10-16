@@ -85,6 +85,7 @@ A plan with no implementation branch yet.
 | `generation_prune_scope_implementation_plan.md` | `EGL-03c` -- fan the existing read-only, dry-run-only prune planner (`EGL-03a`) out to a project and to an arbitrary directory of run roots; does not touch `EGL-03b` (deletion), still blocked |
 | `ml_model_runs_interpretability_plan.md` | `MLR-01`–`MLR-14` model runs as self-describing records (task, data, molecules per fold, fitted models, evaluation, curves), applying saved runs to new data, interpretability per run (position importance, per-molecule attributions, attribution clustermaps beside the input), run comparison, fold-matrix cache, validation role, detector catalogue for CNNs, detector-scale CNNs (pattern-detector span from sub-nucleosome to full locus; theoretical and effective span), model classes and per-task zoos (additive, tabular non-linear, spatial, global sequence), pretraining (masked reconstruction / AE / VAE encoders) and fine-tuning with a declared leakage policy |
 | `chimera_sensitivity_implementation_plan.md` | `CHS-01`–`CHS-04` detected vs estimated chimera rates: in-silico detector sensitivity, blind (same-allele / same-strand) chimeras, detector overlap |
+| `hmm_parameter_scopes_implementation_plan.md` | `HPS-01`–`HPS-10` transitions per sample x reference x strand with emissions shared per emission group (enzyme x dose) plus a shrunk per-sample efficiency offset (tied EM); named fitting plans, a project HMM model store and per-plan layer sets |
 
 ## `logs/` — not tracked
 
