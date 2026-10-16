@@ -1,6 +1,6 @@
 # Sequence-context-aware HMM emissions (`HCE`)
 
-**Status:** in progress. `HCE-01`–`HCE-04` merged; `HCE-05` qualified (not adopted as the default); `HCE-06`, `HCE-08`, `HCE-09`, `HCE-10` merged (`HCE-10`: #690); `HCE-07`, `HCE-11` proposed. One PR per item, in order. The
+**Status:** in progress. `HCE-01`–`HCE-04` merged; `HCE-05` qualified (not adopted as the default); `HCE-06`, `HCE-08`, `HCE-09`, `HCE-10` merged (`HCE-10`: #690); `HCE-07` implemented (qualification pending); `HCE-11` proposed. One PR per item, in order. The
 default stays `none` unless `HCE-05` qualifies a mode.
 
 ## Question
@@ -85,7 +85,7 @@ hmm_context_weight_bounds: [0.1, 10]
 | `HCE-04` pipeline integration | merged | config, partitioned fit/apply, model artifacts, fingerprint |
 | `HCE-05` qualification | qualified: default stays `none`, `learned` opt-in | on a panel of several enzymes applied to the same cells |
 | `HCE-06` HMM variants | merged | several emission models in one HMM stage: namespaced layers, plots comparing them |
-| `HCE-07` context weights for every state (learned) | proposed | the protected state's background modification follows the enzyme's preference too |
+| `HCE-07` context weights for every state (learned) | implemented; qualification pending | the protected state's background modification follows the enzyme's preference too |
 | `HCE-08` HMM vs raw per-molecule scatter | merged | per read: HMM accessible fraction against the raw modified-site fraction, per barcode, variants overlaid |
 | `HCE-09` HMM fractions at observed sites | merged | per read: the share of the model's observed sites inside each feature, beside the raw modified-site fraction |
 | `HCE-10` per-read fraction backfill | merged (#690) | `HCE-06`/`-08`/`-09` per-read fractions and figures for HMM generations made before them |
@@ -312,6 +312,21 @@ background modification follows the same enzyme chemistry. Learn a weight
 vector per state (shrunk, bounded), so a stray modification inside a
 nucleosome at a favoured context is not read as accessibility. Qualify as
 `HCE-05`, against `learned`.
+
+As built: `hmm_context_model: learned` with `hmm_context_states: all` learns
+a (states, contexts) weight matrix -- per state, each context's emission is
+shrunk toward that state's own level (`hmm_context_shrinkage`) and bounded
+(`hmm_context_weight_bounds`); `modified` keeps the single vector, so
+existing models, checkpoints and tables are unchanged. `set_contexts`
+accepts the matrix (adapting a shared fit hands it back); `weight_table`
+exports one state's row (default the modified state) in the `HCE-01`
+format. On simulated reads whose protected background follows its own
+context preference, both rows are recovered (r 0.98-1.00 over seeds), and
+stray modifications at favoured contexts inside protected stretches drop
+from a 0.92-0.93 accessible posterior (modified-state weights only) to
+0.36-0.56; state-calling error falls from 0.38-0.43 to 0.22-0.29.
+Qualification on real data (the `HCE-05` panel, against `learned`) is the
+remaining step.
 
 ## Out of scope
 
