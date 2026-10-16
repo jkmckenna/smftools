@@ -313,3 +313,29 @@ def test_latent_opt_out_does_not_invalidate_stage_compute_hashes():
         stage: helpers.stage_config_hash(cfg, stage)
         for stage in ("raw", "preprocess", "spatial", "hmm", "latent")
     } == original
+
+
+def test_reference_groups_invalidate_hmm_only_and_unset_changes_nothing():
+    """`HXR-05`: an empty hmm_reference_groups fingerprints as before the key
+    existed; a configured one makes the HMM (and later) stages stale, not
+    preprocess or spatial."""
+    from smftools.config.experiment_config import _parse_hmm_reference_groups
+
+    cfg = SimpleNamespace(output_directory="/run", hmm_methbases=["C"])
+    stages = ("preprocess", "spatial", "hmm")
+    before = {stage: helpers.stage_config_hash(cfg, stage) for stage in stages}
+    cfg.hmm_reference_groups = {}
+    assert {stage: helpers.stage_config_hash(cfg, stage) for stage in stages} == before
+    cfg.hmm_reference_groups = {"alleles": ["6B6", "6B6_enh_del"]}
+    after = {stage: helpers.stage_config_hash(cfg, stage) for stage in stages}
+    assert after["preprocess"] == before["preprocess"]
+    assert after["spatial"] == before["spatial"]
+    assert after["hmm"] != before["hmm"]
+
+    assert _parse_hmm_reference_groups("{alleles: [6B6, 6B6_enh_del]}") == {
+        "alleles": ["6B6", "6B6_enh_del"]
+    }
+    assert _parse_hmm_reference_groups("") == {}
+    assert _parse_hmm_reference_groups({"one": "6B6"}) == {"one": ["6B6"]}
+    with pytest.raises(ValueError):
+        _parse_hmm_reference_groups("[6B6]")

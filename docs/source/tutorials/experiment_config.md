@@ -442,6 +442,37 @@ To compare emission models in one run, add them as `hmm_variants` (each
 writes its own layers), e.g. `{learned_all: {hmm_context_model: learned,
 hmm_context_states: all}}`.
 
+## HMM fits shared across references (alleles)
+
+The HMM is fitted per sample and per reference by default. When one sample
+carries two alleles of a locus as two references (for example an intact and
+an enhancer-deletion allele), separate fits put a difference between two
+models into every allele comparison of HMM states. Declare such references
+as one group to fit them together:
+
+```yaml
+hmm_reference_groups:
+  alleles: [6B6, 6B6_enh_del]
+```
+
+- A member is a reference name (`6B6_top`) or a base name (`6B6`) standing
+  for every strand of it; strands still fit separately (`6B6_top` with
+  `6B6_enh_del_top`).
+- Each sample gets one fit over its reads of the group's references. Reads
+  are drawn in equal shares per reference (`hmm_max_fit_reads` split
+  between them), so the larger allele does not dominate. Every read is then
+  decoded with that fit; layer names do not change.
+- With sequence-context emissions, each read keeps its own reference's
+  contexts and the fit learns one set of weights from both.
+- References not listed fit alone, exactly as before (keep spike-ins and
+  controls out of groups). A sample with reads on only one member gets an
+  ordinary fit.
+- Members must be amplicon-style references (one analysis core each); not
+  combined with `hmm_distance_aware`.
+- `fit_catalog.parquet` lists each fit's `references`, and
+  `fit_selection.parquet` records each training read's `read_reference`.
+  Changing the groups makes only the HMM stage (and later ones) stale.
+
 ## Tips
 
 - Keep paths absolute whenever possible to avoid ambiguity.

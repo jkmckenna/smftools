@@ -165,7 +165,7 @@ def _downstream_config_prefixes(stage: str) -> tuple[str, ...]:
 #: Keys added after outputs already existed, whose unset value means "behave as
 #: before". They join a stage's semantic config only when set, so adding the key
 #: does not invalidate every stored generation that predates it.
-_OMIT_WHEN_UNSET_CONFIG_KEYS = {"barcodes_to_include"}
+_OMIT_WHEN_UNSET_CONFIG_KEYS = {"barcodes_to_include", "hmm_reference_groups"}
 
 
 def _is_unset(value) -> bool:

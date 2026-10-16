@@ -458,6 +458,13 @@ hmm_variants: {}
 # Fitting strategy
 hmm_fit_strategy: "per_group"      # "per_group" | "shared_transitions"
 hmm_shared_scope: ["reference", "methbase"]
+# References sharing one fit per sample (plan HXR), e.g. two alleles of one locus:
+#   {alleles: [6B6, 6B6_enh_del]}
+# A member is a reference name or its base name (every strand; strands still fit
+# apart). Each member needs one analysis core (amplicon references). Reads are
+# drawn in equal shares per reference; every read of each member is decoded with
+# the shared fit. Unlisted references fit alone. Not with hmm_distance_aware.
+hmm_reference_groups: {}
 hmm_groupby: ["sample", "reference", "methbase"]
 # If hmm_fit_strategy == shared_transitions
 hmm_adapt_emissions: true
