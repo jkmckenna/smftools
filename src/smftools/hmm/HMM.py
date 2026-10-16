@@ -408,6 +408,24 @@ class BaseHMM(nn.Module):
       - optional distance-aware transition handling
     """
 
+    # Which steps t -> t+1 count toward the transition re-estimate (`HPS-11`):
+    # "observed_pairs" (default) -- both positions observed, right when every
+    # column is a site; "span" -- every step inside the read's observed span,
+    # the standard Baum-Welch count, needed when unobserved positions are
+    # columns too (a per-bp grid with calls only at modification sites).
+    transition_counting: str = "observed_pairs"
+
+    def _transition_steps(self, mask: torch.Tensor) -> torch.Tensor:
+        """(N, L) positions whose step to the next position counts."""
+        if self.transition_counting == "observed_pairs":
+            return mask
+        if self.transition_counting != "span":
+            raise ValueError("transition_counting must be 'observed_pairs' or 'span'")
+        seen = mask.int()
+        after_first = seen.cumsum(dim=1) > 0
+        before_last = seen.flip(1).cumsum(dim=1).flip(1) > 0
+        return after_first & before_last
+
     def __init__(self, n_states: int = 2, eps: float = 1e-8, dtype: torch.dtype = torch.float64):
         """Initialize the base HMM with shared parameters.
 
@@ -1588,8 +1606,9 @@ class SingleBernoulliHMM(BaseHMM):
             hist.append(ll_proxy)
 
             trans_acc = torch.zeros((K, K), dtype=self.dtype, device=device)
+            steps = self._transition_steps(mask)
             for t in range(L - 1):
-                valid_t = (mask[:, t] & mask[:, t + 1]).float().view(N, 1, 1)
+                valid_t = (steps[:, t] & steps[:, t + 1]).float().view(N, 1, 1)
                 log_xi = (
                     alpha[:, t, :].unsqueeze(2)
                     + logA.unsqueeze(0)
