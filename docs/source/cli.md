@@ -252,8 +252,26 @@ Dispositions: `keep_current`, `keep_pinned`, `keep_referenced` (with the read
 that protects it), `keep_references_unknown` (some generation's references could
 not be read, so nothing non-current is offered), `keep_unreadable`, `keep_last`,
 `keep_recent`, and `prune_candidate` -- nothing live reads it. `--json` emits a
-versioned plan (`dry_run: true`, `deletion_supported: false`); applying a plan
-(archive or confirmed delete) is planned as `SLC-08`.
+versioned plan (`dry_run: true`, `deletion_supported: false`).
+
+Apply a plan with `--archive DIR` (move the candidates to another volume) or
+`--delete --confirm ID[,ID]` (every deleted id must be named), optionally only
+for `--generation ID`:
+
+```shell
+smftools experiment generations OUTPUT_ROOT prune --keep-last 1 \
+  --protect-from PROJECT_DIR --archive /Volumes/archive/smftools
+smftools experiment generations OUTPUT_ROOT restore raw GENERATION_ID
+```
+
+Applying holds the experiment's workflow lock, refuses while a workflow holds
+it or a stage has staging content, re-checks each generation against a fresh
+reference graph just before moving it, and verifies an archive copy (file count
+and bytes) before removing the original. Each pruned generation leaves a stub --
+its manifest and `pruned.json` (action, time, reasons, size, archive path) --
+listed with state `pruned`. An archive on the experiment's own volume frees no
+space and is refused unless `--allow-same-volume`. `restore` copies an archived
+generation back, verifies it and removes the archive copy.
 
 ## Where the disk space went
 
