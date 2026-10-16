@@ -6,7 +6,9 @@ import copy
 import hashlib
 import json
 from dataclasses import asdict, dataclass
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, Mapping, Sequence
+
+import numpy as np
 
 from .model_artifacts import hmm_fit_config_hash, training_selection_metadata
 
@@ -97,6 +99,12 @@ class HMMFitPlan:
     # ``reference`` is that reference. A pooled fit's ``reference`` is its
     # members joined with "+".
     members: tuple[HMMFitMember, ...] = ()
+    # Emission scopes (`HPS-02`): fits with the same emission group share one
+    # emission model, fitted jointly (tied EM); the efficiency key names the
+    # offset group (empty: no offset). Both empty under the default scope.
+    emission_group: str = ""
+    efficiency_key: str = ""
+    efficiency_covariates: tuple[float, ...] = ()  # log values, hmm_efficiency_covariates order
 
     @property
     def references(self) -> tuple[str, ...]:
@@ -293,6 +301,67 @@ def _group_tasks(
     return [grouped[key] for key in sorted(grouped)]
 
 
+def emission_scope(cfg: Any) -> str:
+    """``hmm_emission_scope`` (`HPS-01`)."""
+    scope = str(_cfg_value(cfg, "hmm_emission_scope", "fit_group") or "fit_group").lower()
+    if scope not in ("fit_group", "shared", "shared_efficiency"):
+        raise ValueError(f"unknown hmm_emission_scope {scope!r}")
+    return scope
+
+
+def _emission_keys(
+    plan_barcode: str,
+    label: str,
+    cfg: Any,
+    sample_attributes: Mapping[str, Mapping[str, Any]],
+) -> tuple[str, str]:
+    """The emission group and efficiency key of one fit group's sample."""
+    scope = emission_scope(cfg)
+    emission_columns = [str(c) for c in (_cfg_value(cfg, "hmm_emission_groupby", []) or [])]
+    efficiency_columns, covariate_columns = efficiency_columns_of(cfg)
+    attributes = sample_attributes.get(str(plan_barcode))
+    needed = emission_columns + (
+        efficiency_columns + covariate_columns if scope == "shared_efficiency" else []
+    )
+    if needed and attributes is None:
+        raise ValueError(f"no sample-sheet row for barcode {plan_barcode!r}")
+    missing = [c for c in needed if c not in (attributes or {})]
+    if missing:
+        raise ValueError(f"sample sheet lacks {missing} for barcode {plan_barcode!r}")
+
+    def key(columns: Sequence[str]) -> str:
+        return "|".join(f"{c}={attributes[c]}" for c in columns) if columns else "all"
+
+    group = f"{label}|{key(emission_columns)}"
+    efficiency = (
+        key(efficiency_columns) if scope == "shared_efficiency" and efficiency_columns else ""
+    )
+    covariates: tuple[float, ...] = ()
+    if scope == "shared_efficiency":
+        values = []
+        for column in covariate_columns:
+            try:
+                value = float(attributes[column])
+            except (TypeError, ValueError):
+                value = float("nan")
+            if not value > 0:
+                raise ValueError(
+                    f"efficiency covariate {column!r} must be a positive number for barcode "
+                    f"{plan_barcode!r} (it is used on the log scale), not {attributes[column]!r}"
+                )
+            values.append(float(np.log(value)))
+        covariates = tuple(values)
+    return group, efficiency, covariates
+
+
+def efficiency_columns_of(cfg: Any) -> tuple[list[str], list[str]]:
+    """(categorical, numeric) technical columns an efficiency offset may follow."""
+    return (
+        [str(c) for c in (_cfg_value(cfg, "hmm_efficiency_groupby", []) or [])],
+        [str(c) for c in (_cfg_value(cfg, "hmm_efficiency_covariates", []) or [])],
+    )
+
+
 def _make_plan(
     tasks: Sequence[Any],
     spec: HMMModelSpec,
@@ -302,6 +371,7 @@ def _make_plan(
     strategy: str,
     fields: Sequence[str],
     parent_fit_id: str | None = None,
+    sample_attributes: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> HMMFitPlan:
     by_reference: dict[str, list[Any]] = {}
     for task in tasks:
@@ -372,6 +442,15 @@ def _make_plan(
         identity["members"] = [
             [m.reference, m.core_start, m.core_end, m.load_start, m.load_end] for m in members
         ]
+    emission_group = efficiency_key = ""
+    efficiency_covariates: tuple[float, ...] = ()
+    if sample_attributes is not None:
+        emission_group, efficiency_key, efficiency_covariates = _emission_keys(
+            barcode, spec.label, cfg, sample_attributes
+        )
+        identity["emission_group"] = emission_group
+        identity["efficiency_key"] = efficiency_key
+        identity["efficiency_covariates"] = list(efficiency_covariates)
     return HMMFitPlan(
         fit_id=_stable_fit_id(identity),
         fit_kind=fit_kind,
@@ -393,13 +472,25 @@ def _make_plan(
         apply_task_ids=tuple(sorted(str(task.task_id) for task in tasks)),
         parent_fit_id=parent_fit_id,
         members=members,
+        emission_group=emission_group,
+        efficiency_key=efficiency_key,
+        efficiency_covariates=efficiency_covariates,
     )
 
 
 def build_hmm_fit_plan(
-    tasks: Sequence[Any], model_specs: Sequence[HMMModelSpec], cfg: Any
+    tasks: Sequence[Any],
+    model_specs: Sequence[HMMModelSpec],
+    cfg: Any,
+    *,
+    sample_attributes: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> HMMFitPlanningResult:
-    """Plan deterministic fits and final artifact assignments for apply tasks."""
+    """Plan deterministic fits and final artifact assignments for apply tasks.
+
+    Under a shared emission scope (`HPS-02`) every fit is per sample and
+    carries its emission group and efficiency key, from ``sample_attributes``
+    (barcode -> sample-sheet columns).
+    """
     strategy = str(_cfg_value(cfg, "hmm_fit_strategy", "per_group")).strip().lower()
     if strategy not in {"per_group", "shared_transitions"}:
         raise ValueError(
@@ -416,6 +507,22 @@ def build_hmm_fit_plan(
         ("reference", "methbase"),
     )
     groups = reference_groups(cfg)
+    tied = emission_scope(cfg) != "fit_group"
+    if tied:
+        if sample_attributes is None:
+            raise ValueError("a shared hmm_emission_scope needs a sample sheet (sample_sheet_path)")
+        if strategy != "per_group" or "sample" not in group_fields:
+            raise ValueError(
+                "a shared hmm_emission_scope fits transitions per sample: it needs "
+                "hmm_fit_strategy 'per_group' with 'sample' in hmm_groupby"
+            )
+        if emission_scope(cfg) == "shared_efficiency" and not any(efficiency_columns_of(cfg)):
+            raise ValueError(
+                "hmm_emission_scope 'shared_efficiency' needs hmm_efficiency_covariates and/or "
+                "hmm_efficiency_groupby: the technical sample-sheet columns efficiency may follow"
+            )
+    else:
+        sample_attributes = None
     if groups and bool(_cfg_value(cfg, "hmm_distance_aware", False)):
         raise ValueError("hmm_reference_groups does not combine with hmm_distance_aware")
     base_plans: list[HMMFitPlan] = []
@@ -434,6 +541,7 @@ def build_hmm_fit_plan(
                     fit_kind="PER",
                     strategy=strategy,
                     fields=group_fields,
+                    sample_attributes=sample_attributes,
                 )
                 base_plans.append(plan)
                 for task_id in plan.apply_task_ids:

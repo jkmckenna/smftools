@@ -422,8 +422,11 @@ protected DNA in a favoured context looks accessible.
 | `hmm_context_shrinkage` | default 50 | `learned`: pseudo-observations at the state's overall rate per context, so rare contexts stay near 1 |
 | `hmm_context_weight_bounds` | default `[0.1, 10.0]` | `learned`: weight clamp |
 
-**Recommendation.** The default stays `none`. If you use `learned`, set
-`hmm_context_states: all`. On cells treated with six deaminases (same
+**Defaults.** Deaminase configs (`smf_modality: deaminase`) default to
+`hmm_context_model: learned` with `hmm_context_states: all`; other modalities
+default to `none` (context emissions are qualified on deaminases only). An
+explicit `hmm_context_model: none` turns them off. If you set `learned`
+elsewhere, set `hmm_context_states: all` too. On cells treated with six deaminases (same
 chromatin, different preferences), `learned` with every state weighted gave
 the best agreement between enzymes and between their footprint-length
 distributions, with the same low residual context bias as `learned`;
@@ -442,23 +445,76 @@ To compare emission models in one run, add them as `hmm_variants` (each
 writes its own layers), e.g. `{learned_all: {hmm_context_model: learned,
 hmm_context_states: all}}`.
 
+## HMM emissions shared across samples
+
+The HMM's transitions describe chromatin (how long accessible and protected
+stretches last); its emissions describe the measurement (how often each state
+is modified, and the enzyme's sequence-context preference). By default each
+sample x reference fits both. Then "more modification" can be read either as
+more open chromatin or as a more active enzyme, and comparisons between
+samples inherit that freedom -- on a two-allele run, per-allele fits got the
+allele difference backwards in two thirds of samples.
+
+`hmm_emission_scope` shares the emissions while transitions stay per sample
+x reference x strand:
+
+| scope | emissions |
+|---|---|
+| `auto` (default) | `shared_efficiency` grouped by `enzyme` with offsets from `enzyme_per_cell` when the sample sheet gives every sample those columns; otherwise `fit_group`, with a warning (the fit catalog's `emission_scope` records which) |
+| `fit_group` | each sample x reference its own |
+| `shared` | one model per emission group (`hmm_emission_groupby`, e.g. `[enzyme]`) |
+| `shared_efficiency` | shared, plus an efficiency offset from technical factors only |
+
+The offset (on the log-odds of both states) follows only what you declare
+technical:
+
+- `hmm_efficiency_covariates`: numeric sample-sheet columns, used on the log
+  scale with one slope per emission group -- e.g. enzyme per cell
+  (`enzyme_amount_uL / cell_input`). Samples with the same value get the same
+  offset;
+- `hmm_efficiency_groupby`: categorical technical columns (a processing batch,
+  an enzyme lot).
+
+Everything left out -- cell type, genotype, treatment, mouse / replicate -- is
+read as chromatin. Do not put a biological factor among the efficiency
+columns: an offset per cell type absorbs exactly the chromatin differences
+between cell types (on one run the offsets fitted per sample tracked the
+locus's activity across cell types). Offsets are shrunk toward 0
+(`hmm_efficiency_prior_sd`, log-odds) and written to the fit catalog
+(`efficiency_offset`); a covariate constant within an emission group gives
+no offset.
+
+```yaml
+sample_sheet_path: samples.csv          # matched by sample_sheet_mapping_column
+# defaults: hmm_emission_scope auto, hmm_emission_groupby [enzyme],
+# hmm_efficiency_covariates [enzyme_per_cell] -- so a sheet with columns
+# enzyme and enzyme_per_cell (= enzyme_amount_uL / cell_input) is enough
+```
+
+An explicit `shared` / `shared_efficiency` is strict: a missing sheet or
+column is an error rather than a fallback.
+
+Fitting is tied EM (`hmm_tied_rounds` rounds of `hmm_tied_transition_iters`
+transition iterations per sample, then one pooled emission update); every
+sample still gets its own model artifact, so layers are written as before.
+
 ## HMM position axis
 
-`hmm_axis: sites` (default) fits the HMM on the modification-site columns
-only: one step is "from one site to the next" whatever the gap in bp, so the
+`hmm_axis: sites` fits the HMM on the modification-site columns only: one step is "from one site to the next" whatever the gap in bp, so the
 learned transitions depend on site density -- which differs between references,
 regions and targets (GpC vs all C) -- and bp-level layers are filled in between
 sites afterwards.
 
-`hmm_axis: bp` fits and decodes on the full per-bp grid of each window, with
-no observation where there is no site. Transitions are per bp, footprint and
+`hmm_axis: bp` (the default) fits and decodes on the full per-bp grid of
+each window, with no observation where there is no site. Transitions are per bp, footprint and
 accessible-patch lengths are in bp, and every bp gets its own posterior. Two
 fitting details are handled for you: transition re-estimation counts every
 step inside a read (counting only observed neighbours biases it on a sparse
 grid), and the configured starting transitions are scaled to per bp by the
 observed site spacing. Expect ~4x the columns on C-targeting amplicons. It
-replaces `hmm_distance_aware` (the two are refused together) and combines with
-context emissions and reference groups.
+replaces `hmm_distance_aware`: a config that turns that on is fitted on the
+site axis (with a warning). It combines with context emissions and reference
+groups.
 
 On a six-enzyme panel and a two-allele deaminase run the bp axis gave
 nucleosome-scale protected stretches where the site axis fragmented them,
