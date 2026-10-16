@@ -1,6 +1,6 @@
 # HMM parameter scopes, fitting plans and a project model store
 
-Status: proposed. Items `HPS-01`--`HPS-10`. Builds on `HCE` (context
+Status: proposed. Items `HPS-01`--`HPS-11`. Builds on `HCE` (context
 emissions, `HCE-07` per-state weights), `HXR` (fits shared across
 references), `SUG-02` (stage-only refit) and `SLC` (storage lifecycle).
 
@@ -37,6 +37,19 @@ Separately, a project spans many experiments, and comparing emission models
 or fitting plans currently means regenerating each experiment's HMM stage;
 models live inside each experiment's HMM generation, and variant layers
 (`HCE-06`) exist only within one stage run.
+
+## Position axis
+
+The input builder keeps only modification-site columns, so one HMM step is
+"from one site to the next" whatever the bp gap: transitions depend on site
+density, which differs between references (alleles), regions and targets
+(GpC vs all C); bp-level layers come from filling between sites afterwards.
+An HMM handles unobserved positions natively (emission likelihood 1), so
+fitting on the full per-bp grid -- NaN where there is no site -- makes a
+transition a per-bp probability, state durations bp lengths, and decoding a
+sparse per-bp input give a posterior at every bp. Cost: the grid is ~4x the
+site axis on C-targeting amplicons. This subsumes the distance-binned model
+and composes with context emissions and shared emissions.
 
 ## Model
 
@@ -82,6 +95,7 @@ fit group within an emission group (as `HXR-02`).
 | `HPS-08` | storage: layer sets are generations under `SLC` (reference graph, prune, archive); posteriors optional, features stored compactly | proposed |
 | `HPS-09` | acceptance (below) | proposed |
 | `HPS-10` | docs: choosing scopes for a comparison, config reference | proposed |
+| `HPS-11` | position axis: `hmm_axis: sites` (default, today) \| `bp` -- fit and decode on the full position grid with unobserved positions masked; per-bp posteriors without span filling; transitions comparable across references and targets; supersedes `single_distance_binned` for new configs | proposed |
 
 ## Acceptance (`HPS-09`)
 
@@ -97,4 +111,6 @@ arms `fit_group` / emissions shared per sample (across its references) /
    alleles keep separate transitions.
 
 `shared_efficiency` should match or beat `fit_group` on both; `shared`
-without offsets is expected to fail where efficiency differs.
+without offsets is expected to fail where efficiency differs. The same arms
+on the `bp` axis (`HPS-11`) are compared on footprint lengths in bp and on
+the same agreement metrics.
