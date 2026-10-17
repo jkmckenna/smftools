@@ -258,7 +258,9 @@ def context_model(cfg) -> str:
     return mode
 
 
-def context_setup(adata, reference: str, cfg) -> dict[str, object]:
+def context_setup(
+    adata, reference: str, cfg, *, start: int | None = None, end: int | None = None
+) -> dict[str, object]:
     """Sequence contexts of one fit (`HCE-04`): ContextBernoulliHMM.set_contexts arguments.
 
     Codes cover every position of ``reference`` (strand from its name), read
@@ -274,7 +276,7 @@ def context_setup(adata, reference: str, cfg) -> dict[str, object]:
 
     mode = context_model(cfg)
     k = int(getattr(cfg, "hmm_context_k", 3))
-    codes, cpg_codes = reference_context_codes(adata, reference, cfg)
+    codes, cpg_codes = reference_context_codes(adata, reference, cfg, start=start, end=end)
     kmers = context_kmers(k)
     if mode == "learned":
         log_weights = np.zeros(len(kmers))
@@ -289,11 +291,20 @@ def context_setup(adata, reference: str, cfg) -> dict[str, object]:
         if len(groups) != 1:
             raise ValueError(f"one fit's reads span {column} values {groups}; expected one")
         log_weights = np.log(weights_for(read_weight_table(path), groups[0], k))
-    return {"log_weights": log_weights, "position_codes": codes, "cpg_codes": cpg_codes}
+    return {
+        "log_weights": log_weights,
+        "position_codes": codes,
+        "cpg_codes": cpg_codes,
+        "position_offset": int(start or 0),
+    }
 
 
-def reference_context_codes(adata, reference: str, cfg) -> tuple[np.ndarray, list[int]]:
-    """Context code of every position of ``reference`` and the CpG codes."""
+def reference_context_codes(
+    adata, reference: str, cfg, *, start: int | None = None, end: int | None = None
+) -> tuple[np.ndarray, list[int]]:
+    """Context code of every position of ``reference`` in ``[start, end)``
+    (default: all of it) and the CpG codes. Windows keep a long reference --
+    a chromosome in genome mode (`HPS-12`) -- from being coded whole."""
     from smftools.analysis.compute.site_context_bias import (
         context_index,
         context_kmers,
@@ -307,7 +318,9 @@ def reference_context_codes(adata, reference: str, cfg) -> tuple[np.ndarray, lis
     if base not in sequences:
         raise KeyError(f"no reference sequence for {base!r} to read contexts from")
     sequence = sequences[base]
-    codes, _ = context_index(sequence, strand, np.arange(len(sequence)), k=k)
+    lo = 0 if start is None else max(0, int(start))
+    hi = len(sequence) if end is None else min(len(sequence), int(end))
+    codes, _ = context_index(sequence, strand, np.arange(lo, hi), k=k)
     kmers = context_kmers(k)
     cpg_codes = [code for code, kmer in enumerate(kmers) if k > 1 and kmer[k // 2 + 1] == "G"]
     return codes, cpg_codes
@@ -337,7 +350,15 @@ def _pooled_model_input(spine_path, plan: HMMFitPlan, cfg, variant_cfg):
         values, coordinates, _ = _prepare_model_input(adata, member.reference, plan.model_spec, cfg)
         blocks.append((np.asarray(values, dtype=float), np.asarray(coordinates, dtype=np.int64)))
         if plan.model_spec.architecture == "context_single":
-            setups.append(context_setup(adata, member.reference, variant_cfg))
+            setups.append(
+                context_setup(
+                    adata,
+                    member.reference,
+                    variant_cfg,
+                    start=member.load_start,
+                    end=member.load_end,
+                )
+            )
     width = max(values.shape[1] for values, _ in blocks)
     rows = sum(values.shape[0] for values, _ in blocks)
     stacked = np.full((rows, width, *blocks[0][0].shape[2:]), np.nan)
@@ -350,7 +371,10 @@ def _pooled_model_input(spine_path, plan: HMMFitPlan, cfg, variant_cfg):
     coords = np.full((rows, width), -1, dtype=np.int64)
     row, offset = 0, 0
     for (values, coordinates), setup in zip(blocks, setups, strict=True):
-        coords[row : row + values.shape[0], : coordinates.size] = coordinates + offset
+        # each member's codes cover its window; its reads index them at
+        # (position - window start) + where the window sits in the table
+        shifted = coordinates - int(setup["position_offset"]) + offset
+        coords[row : row + values.shape[0], : coordinates.size] = shifted
         row += values.shape[0]
         offset += len(setup["position_codes"])
     first = setups[0]
@@ -361,6 +385,7 @@ def _pooled_model_input(spine_path, plan: HMMFitPlan, cfg, variant_cfg):
         "log_weights": first["log_weights"],
         "position_codes": np.concatenate([setup["position_codes"] for setup in setups]),
         "cpg_codes": first["cpg_codes"],
+        "position_offset": 0,
     }
     return stacked, coords, pooled
 
@@ -595,15 +620,18 @@ def _annotate_task(
 
         layers_before = set(adata.uns.get(uns_key, []))
         model = trainer.load_artifact(assignment, device=device)
-        fitted_reference = str(dict(assignment.get("model_key") or {}).get("reference", ""))
-        if hasattr(model, "set_contexts") and fitted_reference not in ("", str(task.reference)):
-            # A fit pooled across references (`HXR-04`) decodes each reference
-            # with its own contexts and the shared weights.
-            codes, cpg_codes = reference_context_codes(adata, str(task.reference), cfg)
+        if hasattr(model, "set_contexts"):
+            # Decode with this task's own contexts and the fitted weights: a fit
+            # pooled across references (`HXR-04`) or tiles (`HPS-12`) was fitted
+            # on other windows, and codes cover only the loaded window.
+            codes, cpg_codes = reference_context_codes(
+                adata, str(task.reference), cfg, start=task.load_start, end=task.load_end
+            )
             model.set_contexts(
                 log_weights=model.log_weights.detach().cpu().numpy(),
                 position_codes=codes,
                 cpg_codes=cpg_codes,
+                position_offset=int(task.load_start),
             )
         prefix = spec.label
         if bool(getattr(cfg, "bypass_hmm_apply", False)):
@@ -661,7 +689,7 @@ def _fit_input(spine_path, plan: HMMFitPlan, cfg, variant_cfg):
             adata.obs[column] = adata.obs[column].cat.remove_unused_categories()
     values, coordinates, _ = _prepare_model_input(adata, plan.reference, plan.model_spec, cfg)
     setup = (
-        context_setup(adata, plan.reference, variant_cfg)
+        context_setup(adata, plan.reference, variant_cfg, start=plan.load_start, end=plan.load_end)
         if plan.model_spec.architecture == "context_single"
         else None
     )

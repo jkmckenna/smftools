@@ -184,6 +184,7 @@ def set_emissions(model, theta: np.ndarray, w: np.ndarray, offset: float) -> Non
             log_weights=np.asarray(w),
             position_codes=model.position_codes,
             cpg_codes=model.cpg_codes,
+            position_offset=int(model.context_position_offset),
         )
 
 

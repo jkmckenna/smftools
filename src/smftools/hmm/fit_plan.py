@@ -266,6 +266,14 @@ def _group_barcode(fields: Sequence[str], tasks: Sequence[Any]) -> str:
     return barcodes[0]
 
 
+GENOME_FIT_GROUP = "\0genome"
+GENOME_REFERENCE = "genome"
+
+
+def _is_genome(task: Any) -> bool:
+    return str(getattr(task, "analysis_mode", "") or "").lower() == "genome"
+
+
 def _group_tasks(
     tasks: Sequence[Any],
     *,
@@ -278,7 +286,9 @@ def _group_tasks(
     groups = groups or {}
     grouped: dict[tuple[Any, ...], list[Any]] = {}
     for task in tasks:
-        group = _reference_group(str(task.reference), groups)
+        group = (
+            GENOME_FIT_GROUP if _is_genome(task) else _reference_group(str(task.reference), groups)
+        )
         window = (
             (int(task.core_start), int(task.core_end), int(task.load_start), int(task.load_end))
             if group == str(task.reference)
@@ -287,6 +297,8 @@ def _group_tasks(
         key = (group, *window, str(task.barcode) if include_sample else "ALL")
         grouped.setdefault(key, []).append(task)
     for key, members in grouped.items():
+        if key[0] == GENOME_FIT_GROUP:
+            continue  # one fit over every tile of every chromosome (`HPS-12`)
         windows: dict[str, set[tuple[int, int]]] = {}
         for task in members:
             windows.setdefault(str(task.reference), set()).add(
@@ -388,7 +400,59 @@ def _make_plan(
     memory_bytes = int(_cfg_value(cfg, "target_task_memory_mb", 512)) * 1024**2
     memory_max = max(1, memory_bytes // bytes_per_read)
     members: tuple[HMMFitMember, ...] = ()
-    if len(by_reference) == 1:
+    windows = {
+        (str(t.reference), int(t.core_start), int(t.core_end), int(t.load_start), int(t.load_end))
+        for t in tasks
+    }
+    genome = all(_is_genome(t) for t in tasks) and len(windows) > 1
+    if genome:  # identity from the lowest window, whatever the task order
+        first = min(tasks, key=lambda t: (str(t.reference), int(t.core_start), int(t.load_start)))
+    if genome:
+        # Genome mode (`HPS-12`): one fit per sample from a bounded uniform
+        # subset of its reads across every tile; each selected read is fitted
+        # in the first tile window that owns it.
+        selected = _bounded_selection(
+            candidate_ids,
+            seed=selection_seed,
+            configured_max=configured_max,
+            memory_max=memory_max,
+        )
+        owner: dict[str, tuple] = {}
+        owned: dict[tuple, int] = {}
+        for window in sorted(windows):
+            window_tasks = [
+                t
+                for t in tasks
+                if (
+                    str(t.reference),
+                    int(t.core_start),
+                    int(t.core_end),
+                    int(t.load_start),
+                    int(t.load_end),
+                )
+                == window
+            ]
+            for read_id in sorted({str(r) for t in window_tasks for r in t.read_ids}):
+                if read_id not in owner:
+                    owner[read_id] = window
+                    owned[window] = owned.get(window, 0) + 1
+        by_window: dict[tuple, list[str]] = {}
+        for read_id in selected:
+            by_window.setdefault(owner[read_id], []).append(read_id)
+        members = tuple(
+            HMMFitMember(
+                reference=window[0],
+                core_start=window[1],
+                core_end=window[2],
+                load_start=window[3],
+                load_end=window[4],
+                candidate_n_reads=owned.get(window, 0),
+                selected_read_ids=tuple(sorted(by_window[window])),
+            )
+            for window in sorted(by_window)
+        )
+        selected = tuple(r for m in members for r in m.selected_read_ids)
+    elif len(by_reference) == 1:
         selected = _bounded_selection(
             candidate_ids,
             seed=selection_seed,
@@ -425,7 +489,7 @@ def _make_plan(
         selected = tuple(read_id for member in members for read_id in member.selected_read_ids)
     selection = training_selection_metadata(selected)
     barcode = _group_barcode(fields, tasks)
-    reference = "+".join(sorted(by_reference))
+    reference = GENOME_REFERENCE if genome else "+".join(sorted(by_reference))
     identity = {
         "fit_kind": fit_kind,
         "strategy": strategy,
