@@ -1,6 +1,6 @@
 # Derived layers and lean generations (`DLS`)
 
-Status: in progress. Items `DLS-01`--`DLS-07`; `DLS-01` implemented. Works
+Status: in progress. Items `DLS-01`--`DLS-08`; `DLS-01` implemented. Works
 with `SLC` (`in-progress/storage_lifecycle_implementation_plan.md`), which
 manages generations once written; `DLS` reduces what a generation writes.
 Takes over the compact-feature-storage part of `HPS-08`
@@ -31,6 +31,21 @@ One experiment's current chain (260820, raw -> latent, 2026-10-17) is 37.6 GB:
 
 Together ~20 of 38 GB per experiment of this size.
 
+Raw intermediates add more: 260820 keeps three BAMs (27.7 GB), 102 GB across
+the project's runs:
+
+| intermediate | size | content (verified 2026-10-17) |
+|---|---|---|
+| `fastq-to-unaligned-bam` | 6.8 G | the FASTQ as BAM: 1,753,696 reads, name / SEQ / QUAL / `BC` / `RG` |
+| `alignment-sort-index` | 10 G | every alignment (6.43M records) and alignment tags; 3,301 duplicate primaries (pre-`F64` rescue) |
+| `restore-primary-sequences` | 10 G | the same records with one primary per read (1,753,696, unmapped included): its primaries reproduce the unaligned BAM exactly (name, SEQ, QUAL, `BC`, `RG`; identical checksums over all reads) |
+
+CRAM 3.1 of `restored.bam`: 6.3 GB (-37 %), 98 s to write on 4 threads, full
+decode as fast as BAM (71 s vs 72 s), every record identical (core fields
+and tag values; tag order differs as CRAM rebuilds `MD` / `NM`). A
+BAM-input run (SUP basecalls) keeps every basecall tag (`qs`,
+`mv`, `ns`, `ts`, `ch`, `st`, `du`, barcode tags) on its aligned records.
+
 ## Principle
 
 Store what is expensive or irreplaceable -- raw calls, `X`, dedup clusters,
@@ -53,6 +68,7 @@ before.
 | `DLS-05` | one read table per experiment: stage spines store only the columns they add and point at the experiment's table; `materialize` and `load_spine` join them; old spines (full obs) read unchanged | proposed |
 | `DLS-06` | exports and external readers: bundles and `export-*` write derived layers out (an external tool reading the zarr does not see derivations) | proposed |
 | `DLS-07` | `experiment full CONFIG --through hmm` as a CLI form of `full_run_latent: false` | proposed |
+| `DLS-08` | raw intermediates: keep one copy of each expensive step. FASTQ input: the FASTQ (source) + one aligned file; the unaligned BAM is deleted once alignment is committed (rebuilt from the FASTQ in minutes). POD5 / basecall-BAM input: the basecall BAM (GPU hours, model-version dependent) + one aligned file. Legacy runs with `restored.bam`: it is the aligned copy and `aligned_sorted.bam` goes. The kept aligned file is CRAM 3.1 (lossless, -37 %); intermediate caching resolves it like a BAM; a deleted intermediate is recomputed on demand. Each deletion is checked first (record counts; for the unaligned BAM, read content against the aligned primaries). 260820: 27.7 -> ~6.3 GB; ~100 -> ~25 GB across the project. POD5 retention (archive after basecalling; needed by selective re-basecalling) is a separate decision | proposed |
 
 ## Order and acceptance
 
