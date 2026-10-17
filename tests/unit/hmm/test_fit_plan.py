@@ -269,3 +269,52 @@ def test_reference_group_refuses_references_with_several_cores():
     ]
     with pytest.raises(ValueError, match="several analysis cores"):
         build_hmm_fit_plan(tasks, [_spec()], _cfg(hmm_reference_groups={"a": ["wt", "del"]}))
+
+
+# --- HPS-12: genome mode -- one fit per sample from a genome-wide read subset ----
+
+
+def _genome_task(reference, barcode, core, read_ids, *, width=100, halo=10):
+    return PreprocessTask(
+        task_id=f"{reference}|{barcode}|{core}-{core + width}|00000",
+        reference=reference,
+        barcode=barcode,
+        analysis_mode="genome",
+        chunk_index=0,
+        core_start=core,
+        core_end=core + width,
+        load_start=max(0, core - halo),
+        load_end=core + width + halo,
+        n_reads=len(read_ids),
+        estimated_memory_bytes=len(read_ids) * width * 8,
+        read_ids=tuple(read_ids),
+    )
+
+
+def _genome_tasks():
+    tasks = []
+    for barcode in ("bc1", "bc2"):
+        for reference in ("chr1_top", "chr2_top"):
+            for core in (0, 100):
+                ids = [f"{barcode}-{reference}-{core}-{i}" for i in range(6)]
+                if core == 100:  # a read spanning both tiles is listed in both
+                    ids.append(f"{barcode}-{reference}-0-0")
+                tasks.append(_genome_task(reference, barcode, core, ids))
+    return tasks
+
+
+def test_genome_mode_fits_one_model_per_sample_from_a_read_subset():
+    tasks = _genome_tasks()
+    planning = build_hmm_fit_plan(tasks, [_spec()], _cfg(hmm_max_fit_reads=10))
+    assert len(planning.base_plans) == 2  # one per sample, not per tile
+    for plan in planning.base_plans:
+        assert plan.reference == "genome"
+        assert len(plan.selected_read_ids) == 10  # bounded subset of 24 reads
+        in_members = [r for m in plan.members for r in m.selected_read_ids]
+        assert sorted(in_members) == sorted(plan.selected_read_ids)
+        assert len(set(in_members)) == len(in_members)  # each read in one tile slice
+        sample_tasks = {t.task_id for t in tasks if t.barcode == plan.barcode}
+        assert set(plan.apply_task_ids) == sample_tasks
+        assert {planning.apply_assignments[t]["GpC"] for t in sample_tasks} == {plan.fit_id}
+    again = build_hmm_fit_plan(list(reversed(tasks)), [_spec()], _cfg(hmm_max_fit_reads=10))
+    assert {p.fit_id for p in again.base_plans} == {p.fit_id for p in planning.base_plans}

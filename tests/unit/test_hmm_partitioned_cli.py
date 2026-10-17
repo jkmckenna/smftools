@@ -2098,3 +2098,50 @@ def test_default_plan_and_unknown_plans(tmp_path, monkeypatch):
     assert list(plan_fit_hashes(plan_config(cfg, "bp"))) == ["C_bp"]
     with pytest.raises(LayerSetError, match="unknown HMM plan"):
         plan_config(cfg, "missing")
+
+
+def test_genome_mode_fits_once_and_decodes_every_tile(tmp_path, monkeypatch):
+    """`HPS-12`: a genome-mode run tiled into three windows fits one model per
+    sample (here one sample) and applies it to every tile, with contexts coded
+    per window."""
+    from smftools.tools import partitioned_hmm
+
+    for name in (
+        "_plot_feature_fractions",
+        "_plot_feature_count_size_histograms",
+        "_plot_molecule_fractions",
+        "_plot_hmm_vs_raw_scatter",
+        "_plot_hmm_parameters_across_barcodes",
+        "_plot_hmm_fit_history",
+        "_plot_feature_clustermaps",
+    ):
+        monkeypatch.setattr(partitioned_hmm, name, lambda *args, **kwargs: None)
+    raw = write_raw_store(
+        _frame(),
+        tmp_path / "raw_outputs",
+        reference_lengths={"ref_top": 12},
+        analysis_mode="genome",
+        genome_tile_size=4,
+        genome_tile_halo=1,
+        extra_uns={"References": {"ref_FASTA_sequence": "ACGCGTACGTAC"}},
+    )
+    preprocess = execute_partitioned_preprocessing(
+        raw["spine"], _preprocess_cfg(), tmp_path / "preprocess_outputs"
+    )
+    cfg = _hmm_cfg(
+        hmm_methbases=["C"],
+        hmm_max_iter=2,
+        target_task_memory_mb=1,
+        hmm_context_model="learned",
+        hmm_context_states="all",
+    )
+    outputs = execute_partitioned_hmm(preprocess["spine"], cfg, tmp_path / "hmm_outputs")
+    fits = pd.read_parquet(outputs["fit_catalog"])
+    assert list(fits["reference"]) == ["genome"]
+    assert fits["fit_state"].iloc[0] == "complete"
+    tasks = pd.read_parquet(outputs["task_catalog"])
+    assert tasks["core_start"].nunique() > 1  # several tiles ...
+    assert len({ids[0] for ids in tasks["hmm_model_ids"]}) == 1  # ... one model
+    artifact = json.loads(tasks.iloc[0]["hmm_model_artifacts_json"])[0]
+    model = _load_model(cfg, outputs, artifact)
+    assert model.position_codes.size < 12 * 3  # windows, not the reference per member
