@@ -148,3 +148,29 @@ def test_genome_without_spatial_bed_has_portable_empty_dense_region_catalog(tmp_
         "name": "string",
         "source": "string",
     }
+
+
+def test_a_stage_with_heavier_positions_gets_smaller_chunks():
+    """`bytes_per_position` sizes chunks for the stage that runs them: the HMM
+    holds ~40 layers per read-position, preprocess one working matrix."""
+    spine = _spine()
+    repeated = pd.concat([spine.obs.iloc[[0]]] * 4000)
+    repeated.index = [f"read{i}" for i in range(len(repeated))]
+    spine = ad.AnnData(obs=repeated)
+    spine.uns["reference_plans"] = {
+        "locus_top": {
+            "reference_length": 40,
+            "analysis_mode": "locus",
+            "tile_size": 10,
+            "tile_halo": 2,
+        }
+    }
+
+    light = plan_preprocess_tasks(spine, target_task_memory_mb=1)
+    heavy = plan_preprocess_tasks(spine, target_task_memory_mb=1, bytes_per_position=520)
+
+    assert sum(task.n_reads for task in heavy) == 4000
+    assert len(heavy) > len(light)
+    assert max(task.estimated_memory_bytes for task in heavy) <= 1024**2
+    widths = {task.load_end - task.load_start for task in heavy}
+    assert max(task.n_reads for task in heavy) <= 1024**2 // (520 * min(widths))

@@ -101,12 +101,14 @@ def plan_preprocess_tasks(
     filter_mask: str | None = None,
     spine_path: str | Path | None = None,
     minimum_halo: int = 0,
+    bytes_per_position: int = BYTES_PER_WORKING_POSITION,
 ) -> list[PreprocessTask]:
     """Plan bounded tasks by reference, genomic window, barcode, and read chunk.
 
     Genome tasks load a haloed interval but own only their non-overlapping core.
     Read chunks are sized from the loaded width so no task intentionally exceeds
-    the configured dense working-memory target.
+    the configured dense working-memory target; ``bytes_per_position`` is the
+    working memory of one read-position for the stage that runs the tasks.
     """
     if target_task_memory_mb <= 0:
         raise ValueError("target_task_memory_mb must be positive")
@@ -156,7 +158,7 @@ def plan_preprocess_tasks(
                 groups = [("*", overlapping)]
             loaded_width = load_end - load_start
             reads_per_chunk = max(
-                1, memory_budget // max(1, loaded_width * BYTES_PER_WORKING_POSITION)
+                1, memory_budget // max(1, loaded_width * int(bytes_per_position))
             )
             for barcode, barcode_obs in groups:
                 read_ids = sorted(map(str, barcode_obs.index))
@@ -175,7 +177,7 @@ def plan_preprocess_tasks(
                             load_end=load_end,
                             n_reads=len(chunk_read_ids),
                             estimated_memory_bytes=(
-                                len(chunk_read_ids) * loaded_width * BYTES_PER_WORKING_POSITION
+                                len(chunk_read_ids) * loaded_width * int(bytes_per_position)
                             ),
                             read_ids=tuple(chunk_read_ids),
                             analysis_core_id=core.analysis_core_id,
