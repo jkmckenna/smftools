@@ -498,6 +498,28 @@ Fitting is tied EM (`hmm_tied_rounds` rounds of `hmm_tied_transition_iters`
 transition iterations per sample, then one pooled emission update); every
 sample still gets its own model artifact, so layers are written as before.
 
+## Comparing HMM fitting plans in one run
+
+`hmm_variants` names extra fitting plans fitted and decoded beside the default
+one in the same HMM stage; each writes its own layers
+(`<label>_<variant>_...`, e.g. `C_shared_bp_all_footprint_features`). A
+variant may change emissions (`hmm_context_*`) and how the model is fitted:
+the position axis, emission scope and groupings, efficiency covariates,
+reference groups, fit strategy and grouping, distance-aware transitions,
+starting probabilities, iteration limits and read selection. Settings that
+name layers or features (`hmm_feature_sets`, methbases) stay global.
+
+```yaml
+hmm_variants:
+  legacy:                       # the pre-2026-10 setup, for comparison
+    hmm_axis: sites
+    hmm_context_model: none
+    hmm_emission_scope: fit_group
+```
+
+Each plan is planned and fitted under its own settings; the fit catalog
+records every fit's resolved `emission_scope` and `fit_config_hash`.
+
 ## HMM position axis
 
 `hmm_axis: sites` fits the HMM on the modification-site columns only: one step is "from one site to the next" whatever the gap in bp, so the

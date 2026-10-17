@@ -1,6 +1,6 @@
 # HMM parameter scopes, fitting plans and a project model store
 
-Status: in progress. Items `HPS-01`--`HPS-11`; `HPS-01`--`HPS-04`, `HPS-11` implemented. Builds on `HCE` (context
+Status: in progress. Items `HPS-01`--`HPS-11`; `HPS-01`--`HPS-05`, `HPS-11` implemented. Builds on `HCE` (context
 emissions, `HCE-07` per-state weights), `HXR` (fits shared across
 references), `SUG-02` (stage-only refit) and `SLC` (storage lifecycle).
 
@@ -89,7 +89,7 @@ fit group within an emission group (as `HXR-02`).
 | `HPS-02` | planner: under a shared scope every fit is per sample (needs `per_group` with `sample` in `hmm_groupby`) and carries its emission group, efficiency key and log covariate values (in its fit id); missing sheet rows / columns and non-positive covariates refused | implemented |
 | `HPS-03` | tied EM (`hmm/tied_fit.py`): per member, transitions re-estimated with emissions fixed (the model's own EM, axis-aware); posterior hits / trials per state x context pooled; one penalised binomial fit of state levels, context weights (learned: ridge from `hmm_context_shrinkage`, bounded; table: fixed), covariate slopes (centred within the group) and categorical offsets (Gaussian prior). Simulation: shared levels within 0.25 log-odds, dose slope and per-member transitions recovered | implemented |
 | `HPS-04` | artifacts: one tied job per model x emission group publishes an ordinary model per member (shared emissions + its offset + its transitions), so apply, layers, `HXR` pooling and caching are unchanged; the fit catalog records `emission_group` and `efficiency_offset`, artifacts the slopes and any constant covariate | implemented |
-| `HPS-05` | named fitting plans: a versioned spec (architecture, emission / transition scopes, context model, reference groups, read selection) with a hash; config `hmm_plans: {name: spec}` generalising `hmm_variants` | proposed |
+| `HPS-05` | named fitting plans: `hmm_variants` entries are full plans -- besides `hmm_context_*` they may set the axis, emission scope / groupings / efficiency covariates, reference groups, fit strategy and grouping, distance-aware transitions, starting probabilities, iteration limits and read selection (layer-naming settings stay global). Every spec is planned, fitted and given input under its own settings; `auto` scope resolves per plan; the fit catalog records each fit's `emission_scope` and `fit_config_hash` | implemented |
 | `HPS-06` | project HMM model store: content-addressed models with manifests (plan hash, training selection, source generations, samples and experiments spanned), so one emission model can serve several experiments of the same chemistry | proposed |
 | `HPS-07` | layer sets: decoding a plan writes a per-experiment layer-set generation (lineage: model ids, the spatial / preprocess generations read) beside the HMM stage; readers select `(layer, plan)`; fitting a new plan does not regenerate the HMM stage (`SUG-02`) | proposed |
 | `HPS-08` | storage: layer sets are generations under `SLC` (reference graph, prune, archive); posteriors optional, features stored compactly | proposed |
