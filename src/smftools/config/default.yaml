@@ -663,6 +663,7 @@ spatial_execution_mode: auto # auto, legacy, or partitioned; auto partitions a p
 hmm_execution_mode: auto # auto, legacy, or partitioned; auto partitions a spatial/preprocess spine
 latent_execution_mode: auto # auto, legacy, or partitioned; auto partitions an hmm/spatial/preprocess spine
 full_run_latent: True # Run latent after HMM in the experiment full workflow
+write_csv_exports: False # obs / var / keys CSV copies beside each written spine (csvs/); the spine holds the same tables
 latent_n_pcs: 10 # PCA components per latent analysis unit
 latent_nmf_components: 2 # NMF components per latent analysis unit
 latent_nmf_max_iter: 500 # Maximum NMF iterations

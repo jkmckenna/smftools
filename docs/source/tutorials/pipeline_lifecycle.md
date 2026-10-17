@@ -9,7 +9,8 @@ pipeline schemas.
 
 `smftools experiment latent` is an independently invokable experiment stage.
 `smftools experiment full` also runs it after HMM by default; set
-`full_run_latent: false` to stop the full workflow after HMM. A partitioned
+`full_run_latent: false` to stop the full workflow after HMM. `write_csv_exports: true` adds CSV copies
+of each written spine's obs / var under `csvs/` (off by default). A partitioned
 latent run fits one independent coordinate system for each experiment,
 reference, and analysis core. PCA,
 UMAP, NMF, or CP axes from different owners are not aligned merely because

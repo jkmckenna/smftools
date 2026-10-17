@@ -1534,6 +1534,7 @@ class ExperimentConfig:
     hmm_execution_mode: str = "auto"
     latent_execution_mode: str = "auto"
     full_run_latent: bool = True
+    write_csv_exports: bool = False
     latent_n_pcs: int = 10
     latent_nmf_components: int = 2
     latent_nmf_max_iter: int = 500
@@ -3070,6 +3071,7 @@ class ExperimentConfig:
             hmm_execution_mode=str(merged.get("hmm_execution_mode", "auto")),
             latent_execution_mode=str(merged.get("latent_execution_mode", "auto")),
             full_run_latent=_parse_bool(merged.get("full_run_latent", True)),
+            write_csv_exports=_parse_bool(merged.get("write_csv_exports", False)),
             latent_n_pcs=int(_parse_numeric(merged.get("latent_n_pcs", 10), 10)),
             latent_nmf_components=int(_parse_numeric(merged.get("latent_nmf_components", 2), 2)),
             latent_nmf_max_iter=int(_parse_numeric(merged.get("latent_nmf_max_iter", 500), 500)),
