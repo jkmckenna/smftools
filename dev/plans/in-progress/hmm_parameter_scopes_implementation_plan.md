@@ -1,6 +1,6 @@
 # HMM parameter scopes, fitting plans and a project model store
 
-Status: in progress. Items `HPS-01`--`HPS-11`; `HPS-01`--`HPS-05`, `HPS-07`, `HPS-11` implemented. Builds on `HCE` (context
+Status: in progress. Items `HPS-01`--`HPS-12`; `HPS-01`--`HPS-05`, `HPS-07`, `HPS-11`, `HPS-12` implemented. Builds on `HCE` (context
 emissions, `HCE-07` per-state weights), `HXR` (fits shared across
 references), `SUG-02` (stage-only refit) and `SLC` (storage lifecycle).
 
@@ -96,6 +96,7 @@ fit group within an emission group (as `HXR-02`).
 | `HPS-09` | acceptance (below) | direct-fit comparison done; pipeline acceptance after `HPS-01`--`HPS-04` |
 | `HPS-10` | docs: choosing scopes for a comparison, config reference | proposed |
 | `HPS-11` | position axis: `hmm_axis: sites` (default) \| `bp`. `bp` places the site calls on the window's full per-bp grid (single and multi-channel; NaN elsewhere; coverage masking unchanged), decodes every position, sets `transition_counting = "span"` for fits and adaptations, and scales a new model's configured per-site starting transitions by the observed site spacing (stay `s ** (1 / spacing)`); refused with `hmm_distance_aware`; fingerprints and fit ids unchanged at `sites` | implemented |
+| `HPS-12` | genome mode: a sample's genome-mode tasks form one fit group (all chromosomes and tiles) -- one model per sample, fitted on a bounded uniform subset of its reads (hash-ranked as before; each read fitted in the first tile window that owns it) and applied to every tile; no per-region fits for now. Context codes are built per loaded window (`ContextBernoulliHMM` position offset), at fit, pooled fit and apply, so a chromosome is never coded whole; locus references are unchanged (their window is the reference). Shared emission scopes tie the per-sample genome fits as usual | implemented |
 
 ### `HPS-07` design: layer sets
 

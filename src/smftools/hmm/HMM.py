@@ -1754,6 +1754,9 @@ class ContextBernoulliHMM(SingleBernoulliHMM):
         self.register_buffer("context_log_weights", torch.zeros(1, dtype=self.dtype))
         self.register_buffer("context_position_codes", torch.zeros(0, dtype=torch.int64))
         self.register_buffer("context_cpg_codes", torch.zeros(0, dtype=torch.int64))
+        # Position of position_codes[0] (`HPS-12`): codes may cover one window
+        # of a long reference rather than all of it.
+        self.register_buffer("context_position_offset", torch.zeros((), dtype=torch.int64))
         self.cpg_codes = cpg_codes if cpg_codes is not None else []
         self.log_weights = log_weights if log_weights is not None else [0.0]
         self.position_codes = position_codes if position_codes is not None else []
@@ -1793,7 +1796,12 @@ class ContextBernoulliHMM(SingleBernoulliHMM):
     def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs):
         # A checkpoint's context buffers have the shapes of its reference and
         # k: resize ours to match before torch copies them in.
-        for name in ("context_log_weights", "context_position_codes", "context_cpg_codes"):
+        for name in (
+            "context_log_weights",
+            "context_position_codes",
+            "context_cpg_codes",
+            "context_position_offset",
+        ):
             key = prefix + name
             if key in state_dict:
                 setattr(self, name, torch.empty_like(state_dict[key]))
@@ -1839,8 +1847,10 @@ class ContextBernoulliHMM(SingleBernoulliHMM):
         log_weights: Sequence[float],
         position_codes: Sequence[int],
         cpg_codes: Optional[Sequence[int]] = None,
+        position_offset: int = 0,
     ) -> None:
-        """Weights per context code and the context code of every reference position."""
+        """Weights per context code and the context code of every reference
+        position from ``position_offset`` on (0: the whole reference)."""
         log_weights = np.asarray(log_weights, dtype=float)
         if not np.isfinite(log_weights).all():
             raise ValueError("log weights must be finite")
@@ -1853,6 +1863,9 @@ class ContextBernoulliHMM(SingleBernoulliHMM):
             raise ValueError("a position code has no weight")
         self.log_weights = log_weights
         self.position_codes = codes
+        self.context_position_offset = torch.as_tensor(
+            int(position_offset), dtype=torch.int64, device=self.emission.device
+        )
         if cpg_codes is not None:
             self.cpg_codes = cpg_codes
 
@@ -1874,7 +1887,7 @@ class ContextBernoulliHMM(SingleBernoulliHMM):
             if active is not None and np.shape(active)[-1] == n_columns
             else np.arange(n_columns)
         )
-        coords = np.asarray(coords, dtype=np.int64)
+        coords = np.asarray(coords, dtype=np.int64) - int(self.context_position_offset)
         codes = np.full(coords.shape, -1, dtype=np.int64)
         inside = (coords >= 0) & (coords < self.position_codes.size)
         codes[inside] = self.position_codes[coords[inside]]
@@ -2072,6 +2085,7 @@ class ContextBernoulliHMM(SingleBernoulliHMM):
             {
                 "log_weights": self.log_weights.detach().cpu(),
                 "position_codes": torch.as_tensor(self.position_codes),
+                "position_offset": int(self.context_position_offset),
                 "context_states": self.context_states,
                 "learn": self.learn,
                 "shrinkage": self.shrinkage,
@@ -2087,6 +2101,9 @@ class ContextBernoulliHMM(SingleBernoulliHMM):
         self.context_states = payload.get("context_states", "modified")
         self.log_weights = payload["log_weights"].to(device=device, dtype=self.dtype)
         self.position_codes = np.asarray(payload["position_codes"], dtype=np.int64)
+        self.context_position_offset = torch.as_tensor(
+            int(payload.get("position_offset", 0)), dtype=torch.int64, device=device
+        )
         self.learn = bool(payload.get("learn", False))
         self.shrinkage = float(payload.get("shrinkage", 50.0))
         self.weight_bounds = tuple(payload.get("weight_bounds", (0.1, 10.0)))

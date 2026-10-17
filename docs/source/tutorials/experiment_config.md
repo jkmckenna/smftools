@@ -541,6 +541,15 @@ touched, so a new plan can be added to the config and tried on its own.
   spines named `hmm_layer_set:<plan>`; generation listing, the reference graph
   and `generations ... prune` treat them like stage generations.
 
+## HMM fitting in genome mode
+
+In genome mode (references tiled into `genome_tile_size` windows) the HMM is
+fitted once per sample, not per tile: a bounded uniform subset of the
+sample's reads (`hmm_max_fit_reads`, drawn across every chromosome and tile)
+trains one model, which then decodes every tile. Per-region models are not
+fitted. Sequence contexts are coded per loaded window, so a context model
+never codes a whole chromosome.
+
 ## HMM position axis
 
 `hmm_axis: sites` fits the HMM on the modification-site columns only: one step is "from one site to the next" whatever the gap in bp, so the
