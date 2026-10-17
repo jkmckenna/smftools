@@ -2221,3 +2221,35 @@ def test_parameter_comparison_loads_context_models_by_their_architecture(tmp_pat
 
     catalog = pd.read_parquet(layout.catalog)
     assert (catalog["plot_type"] == "hmm_parameters_across_barcodes").sum() == 1
+
+
+def test_decode_memory_counts_every_output_layer():
+    """Per model: states and the posterior; per feature group, each size class
+    and the aggregate with their lengths, doubled when the aggregate is merged
+    (260820's configuration holds 42)."""
+    from smftools.hmm.fit_plan import HMMModelSpec
+    from smftools.tools.partitioned_hmm import (
+        hmm_bytes_per_position,
+        hmm_output_layers_per_position,
+    )
+
+    cfg = _hmm_cfg(
+        hmm_feature_sets={
+            "footprints": {"state": "Non-Modified", "features": {"a": [0, 10], "b": [10, 99]}},
+            "accessible": {"state": "Modified", "features": {"c": [0, 10]}},
+        },
+        hmm_merge_layer_features=[["all_footprints_features", 10]],
+        hmm_write_posterior=True,
+    )
+    spec = HMMModelSpec(
+        name="C",
+        label="C",
+        signals=("C",),
+        feature_groups=("footprints", "accessible"),
+        architecture="single",
+    )
+    # 2 (states, posterior) + footprints 2*2+2=6 merged -> 12 + accessible 2*1+2=4
+    assert hmm_output_layers_per_position(cfg, [spec]) == 18
+    cfg.hmm_write_posterior = False
+    assert hmm_output_layers_per_position(cfg, [spec]) == 17
+    assert hmm_bytes_per_position(cfg, [spec]) == 16 + 12 * 17

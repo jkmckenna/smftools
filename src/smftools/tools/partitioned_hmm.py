@@ -80,6 +80,41 @@ def _task_path(output_dir: Path, task) -> Path:
     )
 
 
+#: Decode working memory, measured on three 260820 tasks (bp axis, 42 output
+#: layers per position; 1.0M / 1.6M / 10.4M read-positions -> +1.82 / 1.85 /
+#: 5.93 GB, 2026-10-17): ~1.4 GB per task plus ~440 bytes per read-position,
+#: i.e. ~10 bytes per output layer. Set slightly above. The preprocess figure
+#: (8 bytes per position) made the largest HMM task ~70x its estimate.
+HMM_INPUT_BYTES_PER_POSITION = 16
+HMM_BYTES_PER_LAYER_POSITION = 12
+HMM_TASK_BASE_BYTES = int(1.5 * 1024**3)
+
+
+def hmm_output_layers_per_position(cfg, model_specs) -> int:
+    """Dense layers one decode task holds per read-position: per model, the
+    states and (optionally) the posterior, and per feature group each size
+    class and the aggregate with their lengths -- doubled when merged."""
+    total = 0
+    for spec in model_specs:
+        spec_cfg = spec.config(cfg)
+        feature_sets = normalize_hmm_feature_sets(getattr(spec_cfg, "hmm_feature_sets", None))
+        merged = {
+            str(core) for core, _ in (getattr(spec_cfg, "hmm_merge_layer_features", []) or [])
+        }
+        total += 1 + int(bool(getattr(spec_cfg, "hmm_write_posterior", True)))
+        for group in spec.feature_groups:
+            classes = (feature_sets.get(group) or {}).get("features", {}) or {}
+            layers = 2 * len(classes) + 2
+            total += 2 * layers if f"all_{group}_features" in merged else layers
+    return total
+
+
+def hmm_bytes_per_position(cfg, model_specs) -> int:
+    return HMM_INPUT_BYTES_PER_POSITION + HMM_BYTES_PER_LAYER_POSITION * (
+        hmm_output_layers_per_position(cfg, model_specs)
+    )
+
+
 def _apply_merges(adata, model, prefix: str, feature_sets: dict, cfg) -> None:
     merged_suffix = str(getattr(cfg, "hmm_merged_suffix", "_merged"))
     for core_layer, distance in getattr(cfg, "hmm_merge_layer_features", []) or []:
@@ -2360,6 +2395,7 @@ def execute_partitioned_hmm(spine_path, cfg, output_dir) -> dict[str, Path]:
         partition_by_barcode=True,
         filter_mask=filter_mask,
         spine_path=spine_path,
+        bytes_per_position=hmm_bytes_per_position(cfg, _configured_model_specs(cfg)),
     )
     if not tasks:
         raise RuntimeError("partitioned HMM has no non-empty tasks")
@@ -2495,7 +2531,10 @@ def execute_partitioned_hmm(spine_path, cfg, output_dir) -> dict[str, Path]:
         cfg=cfg,
         force_sequential=str(device) != "cpu",
         pool_label=f"hmm task pool ({len(tasks)} tasks, device={device})",
-        per_item_memory_mb=max(task.estimated_memory_bytes for task in tasks) / (1024**2),
+        per_item_memory_mb=(
+            max(task.estimated_memory_bytes for task in tasks) + HMM_TASK_BASE_BYTES
+        )
+        / (1024**2),
         estimator="hmm_task_plan_peak",
     )
     catalog_path = output_dir / HMM_TASK_CATALOG
