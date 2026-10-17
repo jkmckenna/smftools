@@ -91,11 +91,92 @@ fit group within an emission group (as `HXR-02`).
 | `HPS-04` | artifacts: one tied job per model x emission group publishes an ordinary model per member (shared emissions + its offset + its transitions), so apply, layers, `HXR` pooling and caching are unchanged; the fit catalog records `emission_group` and `efficiency_offset`, artifacts the slopes and any constant covariate | implemented |
 | `HPS-05` | named fitting plans: `hmm_variants` entries are full plans -- besides `hmm_context_*` they may set the axis, emission scope / groupings / efficiency covariates, reference groups, fit strategy and grouping, distance-aware transitions, starting probabilities, iteration limits and read selection (layer-naming settings stay global). Every spec is planned, fitted and given input under its own settings; `auto` scope resolves per plan; the fit catalog records each fit's `emission_scope` and `fit_config_hash` | implemented |
 | `HPS-06` | project HMM model store: content-addressed models with manifests (plan hash, training selection, source generations, samples and experiments spanned), so one emission model can serve several experiments of the same chemistry | proposed |
-| `HPS-07` | layer sets: decoding a plan writes a per-experiment layer-set generation (lineage: model ids, the spatial / preprocess generations read) beside the HMM stage; readers select `(layer, plan)`; fitting a new plan does not regenerate the HMM stage (`SUG-02`) | proposed |
+| `HPS-07` | layer sets: one named fitting plan's layers for one experiment, published as its own generation (`hmm_adata_outputs/layer_sets/<plan>/`) from the current spatial generation, without regenerating the HMM stage; `smftools experiment hmm-plan CONFIG --plan NAME [--list]`; registry spines per plan; staleness against the spatial generation it was decoded from; absorbs `SUG-02` (design below) | designed |
 | `HPS-08` | storage: layer sets are generations under `SLC` (reference graph, prune, archive); posteriors optional, features stored compactly | proposed |
 | `HPS-09` | acceptance (below) | direct-fit comparison done; pipeline acceptance after `HPS-01`--`HPS-04` |
 | `HPS-10` | docs: choosing scopes for a comparison, config reference | proposed |
 | `HPS-11` | position axis: `hmm_axis: sites` (default) \| `bp`. `bp` places the site calls on the window's full per-bp grid (single and multi-channel; NaN elsewhere; coverage masking unchanged), decodes every position, sets `transition_counting = "span"` for fits and adaptations, and scales a new model's configured per-site starting transitions by the observed site spacing (stay `s ** (1 / spacing)`); refused with `hmm_distance_aware`; fingerprints and fit ids unchanged at `sites` | implemented |
+
+### `HPS-07` design: layer sets
+
+**What a layer set is.** The decoded layers of one named fitting plan
+(`HPS-05`: the default plan or an `hmm_variants` entry) for one experiment,
+published as its own generation -- an HMM generation that holds one plan,
+beside the HMM stage rather than inside it. Fitting and decoding a plan never
+regenerates the HMM stage, and the HMM stage's current generation is never
+touched.
+
+**Layout and lifecycle -- the HMM stage's own machinery.**
+
+    hmm_adata_outputs/
+      generations/<id>/            the HMM stage (unchanged)
+      layer_sets/<plan>/
+        current.json
+        retention.json             (pins, as any stage container)
+        generations/<id>/          spine.h5ad, store/, models/, fit_catalog,
+                                   generation_manifest.json
+
+A layer-set generation is staged and published with `staged_generation`
+exactly as the HMM stage is: built under `.staging/`, `current.json` moved
+only on success, earlier generations kept. Its manifest records `stage:
+hmm_layer_set`, the plan name, the plan's settings and `fit_config_hash`, the
+smftools version, and the input it was decoded from.
+
+**Input and lineage.** A layer set is decoded from the experiment's current
+spatial generation -- the HMM stage's own input -- so its spine carries the
+same pointers into the raw / preprocess / spatial stores as an HMM spine
+does. Consequences, all free:
+
+- `materialize(<layer-set spine>)` returns the molecules with the upstream
+  layers plus that plan's HMM layers -- readers take a spine path as now;
+- the `SLC` reference graph sees the pointers, so a current layer set keeps
+  the generations it reads alive, and pruning treats old layer-set
+  generations like any other (`generations ... prune`, listing kind
+  `hmm_layer_set:<plan>`);
+- the manifest names the spatial generation it was built from; when that is
+  no longer current, `experiment plan` and the listing report the layer set
+  as stale (built on superseded input) rather than silently mixing.
+
+Running a plan while upstream stages are stale is allowed and recorded
+("decoded from spatial `<id>`, stale at the time") -- this is `SUG-02`'s
+stage-only refit, for the HMM.
+
+**Command.**
+
+    smftools experiment hmm-plan CONFIG --plan NAME [--list]
+
+- `NAME` is `default` or an `hmm_variants` key of the config; the run fits
+  and decodes only that plan (the stage executor restricted to one spec), so
+  a plan can be added to the config and run without touching the HMM stage;
+- `--list` shows each plan's current layer set, its `fit_config_hash`, the
+  spatial generation it was decoded from and whether that is still current.
+
+Layer names are the plan's (`C_<variant>_...`, or `C_...` for `default`), so
+a layer set and the HMM stage can be read side by side and joined on
+`molecule_uid` / position without renaming.
+
+**Projects.** The project registry gains, per experiment, the current layer
+sets (`spines["hmm_layer_set:<plan>"]`), refreshed with the other spines; a
+project analysis names the plan it reads, e.g. a latent set channel
+`("hmm", layer, plan)`. Registry pointers protect the layer sets they name
+(`--protect-from`).
+
+**Storage.** A layer set costs roughly one HMM generation (layers for every
+molecule). The plan's own `hmm_write_posterior` decides whether the float
+posterior is written; `SLC` prunes superseded layer-set generations.
+
+**Not in v1.** A merged view (one `materialize` call returning the HMM stage's
+layers and several layer sets' layers) -- callers join on `molecule_uid`;
+making the HMM stage itself a layer set of the default plan; a project-wide
+emission model across experiments (`HPS-06`).
+
+**Tests.** A layer set of a variant publishes beside an unchanged HMM stage
+(its current generation id and files untouched); its spine materializes the
+plan's layers with the upstream layers; a second run with the same settings
+reuses the models (fit ids); a changed plan publishes a new generation; the
+reference graph protects the spatial generation a current layer set reads;
+`--list` reports a layer set built on a superseded spatial generation as
+stale; an unknown plan name is refused.
 
 ## Acceptance (`HPS-09`)
 
