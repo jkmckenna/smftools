@@ -121,15 +121,17 @@ def _configured_model_specs(cfg) -> list[HMMModelSpec]:
             continue
         multichannel = len(task.signals) > 1
         label = str(task.output_prefix or ("Combined" if multichannel else task.signals[0]))
-        architecture = (
-            "multi"
-            if multichannel
-            else (
+
+        def base_architecture(settings) -> str:
+            if multichannel:
+                return "multi"
+            return (
                 "single_distance_binned"
-                if bool(getattr(cfg, "hmm_distance_aware", False))
+                if bool(getattr(settings, "hmm_distance_aware", False))
                 else "single"
             )
-        )
+
+        architecture = base_architecture(cfg)
         base = HMMModelSpec(
             name=str(task.name),
             label=label,
@@ -140,7 +142,7 @@ def _configured_model_specs(cfg) -> list[HMMModelSpec]:
         )
         specs.append(base)
         for variant, settings in hmm_variants(cfg).items():
-            if multichannel:
+            if multichannel and any(key.startswith(VARIANT_SETTINGS_PREFIX) for key in settings):
                 continue  # context emissions are single-channel
             overrides = tuple(
                 (key, tuple(value) if isinstance(value, list) else value)
@@ -160,7 +162,9 @@ def _configured_model_specs(cfg) -> list[HMMModelSpec]:
                 dataclasses.replace(
                     variant_spec,
                     architecture=_context_architecture(
-                        variant_spec.config(cfg), architecture, multichannel
+                        variant_spec.config(cfg),
+                        base_architecture(variant_spec.config(cfg)),
+                        multichannel,
                     ),
                 )
             )
@@ -168,10 +172,42 @@ def _configured_model_specs(cfg) -> list[HMMModelSpec]:
 
 
 VARIANT_SETTINGS_PREFIX = "hmm_context_"
+# A variant is a named fitting plan (`HPS-05`): besides emissions it may set
+# how the model is fitted. Keys that name layers or features stay global.
+VARIANT_PLAN_SETTINGS = frozenset(
+    {
+        "hmm_axis",
+        "hmm_emission_scope",
+        "hmm_emission_groupby",
+        "hmm_efficiency_groupby",
+        "hmm_efficiency_covariates",
+        "hmm_efficiency_prior_sd",
+        "hmm_tied_rounds",
+        "hmm_tied_transition_iters",
+        "hmm_reference_groups",
+        "hmm_fit_strategy",
+        "hmm_groupby",
+        "hmm_shared_scope",
+        "hmm_distance_aware",
+        "hmm_distance_bins",
+        "hmm_init_emission_probs",
+        "hmm_init_transition_probs",
+        "hmm_init_start_probs",
+        "hmm_max_iter",
+        "hmm_tol",
+        "hmm_max_fit_reads",
+        "hmm_fit_selection_seed",
+        "hmm_adapt_emissions",
+        "hmm_adapt_startprobs",
+        "hmm_emission_adapt_iters",
+    }
+)
 
 
 def hmm_variants(cfg) -> dict[str, dict]:
-    """Configured emission variants (`HCE-06`), validated: name -> hmm_context_* settings."""
+    """Configured variants, validated: name -> settings. A variant is a named
+    fitting plan (`HCE-06` emissions, `HPS-05` fitting): ``hmm_context_*``
+    and :data:`VARIANT_PLAN_SETTINGS` keys."""
     variants = getattr(cfg, "hmm_variants", None) or {}
     feature_sets = normalize_hmm_feature_sets(getattr(cfg, "hmm_feature_sets", None))
     # A variant's layers are <label>_<variant>_<feature>: a name that is the
@@ -186,11 +222,15 @@ def hmm_variants(cfg) -> dict[str, dict]:
             raise ValueError(f"hmm variant name {name!r} must be a plain identifier")
         if str(name) in reserved:
             raise ValueError(f"hmm variant name {name!r} clashes with HMM feature layer names")
-        unknown = [key for key in (settings or {}) if not key.startswith(VARIANT_SETTINGS_PREFIX)]
+        unknown = [
+            key
+            for key in (settings or {})
+            if not key.startswith(VARIANT_SETTINGS_PREFIX) and key not in VARIANT_PLAN_SETTINGS
+        ]
         if unknown:
             raise ValueError(
-                f"hmm variant {name!r} may only set {VARIANT_SETTINGS_PREFIX}* settings, "
-                f"not {unknown}"
+                f"hmm variant {name!r} may set {VARIANT_SETTINGS_PREFIX}* and fitting settings "
+                f"({', '.join(sorted(VARIANT_PLAN_SETTINGS))}), not {unknown}"
             )
     return dict(variants)
 
@@ -356,6 +396,7 @@ def _on_bp_grid(adata, values: np.ndarray, coordinates: np.ndarray):
 def _prepare_model_input(adata, reference: str, spec: HMMModelSpec, cfg):
     """Materialize one configured HMM signal matrix and its position mask
     (on the per-bp grid under ``hmm_axis: bp``)."""
+    cfg = spec.config(cfg)  # a fitting plan's own axis (`HPS-05`)
     values, coordinates, position_mask = _prepare_site_input(adata, reference, spec, cfg)
     if hmm_axis(cfg) == "bp":
         values, coordinates, position_mask = _on_bp_grid(adata, values, coordinates)
@@ -684,6 +725,43 @@ def resolve_emission_scope(spine, cfg):
         )
         resolved.hmm_emission_scope = "fit_group"
     return resolved
+
+
+def _resolve_spec_scopes(spine, specs, cfg):
+    """Specs with each one's ``auto`` emission scope made concrete (an
+    override), and the sample attributes when any plan shares emissions."""
+    resolved, shared_cfg = [], None
+    for spec in specs:
+        spec_cfg = spec.config(cfg)
+        concrete = resolve_emission_scope(spine, spec_cfg)
+        scope = str(getattr(concrete, "hmm_emission_scope", "fit_group") or "fit_group")
+        if concrete is not spec_cfg:
+            overrides = tuple(
+                (key, value) for key, value in spec.overrides if key != "hmm_emission_scope"
+            ) + (("hmm_emission_scope", scope),)
+            spec = dataclasses.replace(spec, overrides=tuple(sorted(overrides)))
+        if scope != "fit_group" and shared_cfg is None:
+            shared_cfg = spec.config(cfg)
+        resolved.append(spec)
+    attributes = hmm_sample_attributes(spine, shared_cfg) if shared_cfg is not None else None
+    return resolved, attributes
+
+
+def _plan_settings_columns(frame, specs, cfg):
+    """Each fit's resolved emission scope and fitting-settings hash."""
+    from ..hmm.model_artifacts import hmm_fit_config_hash
+
+    by_label = {spec.label: spec.config(cfg) for spec in specs}
+    if "model_label" not in frame:
+        return frame
+    return frame.assign(
+        emission_scope=frame["model_label"].map(
+            lambda label: str(getattr(by_label[label], "hmm_emission_scope", "fit_group"))
+        ),
+        fit_config_hash=frame["model_label"].map(
+            lambda label: hmm_fit_config_hash(by_label[label])
+        ),
+    )
 
 
 def hmm_sample_attributes(spine, cfg) -> dict[str, dict[str, str]] | None:
@@ -2228,10 +2306,9 @@ def execute_partitioned_hmm(spine_path, cfg, output_dir) -> dict[str, Path]:
     )
 
     model_specs = _configured_model_specs(cfg)
-    cfg = resolve_emission_scope(spine, cfg)
-    fit_planning = build_hmm_fit_plan(
-        tasks, model_specs, cfg, sample_attributes=hmm_sample_attributes(spine, cfg)
-    )
+    # Each fitting plan resolves its own `auto` emission scope (`HPS-05`).
+    model_specs, sample_attributes = _resolve_spec_scopes(spine, model_specs, cfg)
+    fit_planning = build_hmm_fit_plan(tasks, model_specs, cfg, sample_attributes=sample_attributes)
     fit_catalog_path = output_dir / HMM_FIT_CATALOG
     fit_selection_path = output_dir / HMM_FIT_SELECTION_CATALOG
     _fit_catalog_frame(fit_planning.all_plans).to_parquet(fit_catalog_path, index=False)
@@ -2308,8 +2385,8 @@ def execute_partitioned_hmm(spine_path, cfg, output_dir) -> dict[str, Path]:
             )
         }
     )
-    _fit_catalog_frame(fit_planning.all_plans, artifacts_by_fit).assign(
-        emission_scope=str(getattr(cfg, "hmm_emission_scope", "fit_group"))
+    _plan_settings_columns(
+        _fit_catalog_frame(fit_planning.all_plans, artifacts_by_fit), model_specs, cfg
     ).to_parquet(fit_catalog_path, index=False)
 
     apply_artifacts = {

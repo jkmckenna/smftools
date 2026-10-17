@@ -487,10 +487,43 @@ def build_hmm_fit_plan(
 ) -> HMMFitPlanningResult:
     """Plan deterministic fits and final artifact assignments for apply tasks.
 
+    Every model spec is planned under its own settings (``spec.config(cfg)``):
+    a variant is a named fitting plan (`HPS-05`) that may change grouping,
+    strategy, reference groups, emission scope or axis, not only emissions.
     Under a shared emission scope (`HPS-02`) every fit is per sample and
     carries its emission group and efficiency key, from ``sample_attributes``
     (barcode -> sample-sheet columns).
     """
+    base_plans: list[HMMFitPlan] = []
+    adaptations: list[HMMFitPlan] = []
+    assignments: dict[str, dict[str, str]] = {str(task.task_id): {} for task in tasks}
+    for spec in model_specs:
+        _plan_spec(
+            tasks,
+            spec,
+            spec.config(cfg),
+            sample_attributes,
+            base_plans,
+            adaptations,
+            assignments,
+        )
+    return HMMFitPlanningResult(
+        base_plans=tuple(sorted(base_plans, key=lambda plan: plan.fit_id)),
+        adaptation_plans=tuple(sorted(adaptations, key=lambda plan: plan.fit_id)),
+        apply_assignments=assignments,
+    )
+
+
+def _plan_spec(
+    tasks: Sequence[Any],
+    spec: HMMModelSpec,
+    cfg: Any,
+    sample_attributes: Mapping[str, Mapping[str, Any]] | None,
+    base_plans: list[HMMFitPlan],
+    adaptations: list[HMMFitPlan],
+    assignments: dict[str, dict[str, str]],
+) -> None:
+    """Plan one model spec's fits under its own settings ``cfg``."""
     strategy = str(_cfg_value(cfg, "hmm_fit_strategy", "per_group")).strip().lower()
     if strategy not in {"per_group", "shared_transitions"}:
         raise ValueError(
@@ -525,65 +558,52 @@ def build_hmm_fit_plan(
         sample_attributes = None
     if groups and bool(_cfg_value(cfg, "hmm_distance_aware", False)):
         raise ValueError("hmm_reference_groups does not combine with hmm_distance_aware")
-    base_plans: list[HMMFitPlan] = []
-    adaptations: list[HMMFitPlan] = []
-    assignments: dict[str, dict[str, str]] = {str(task.task_id): {} for task in tasks}
-
-    for spec in model_specs:
-        if strategy == "per_group":
-            for group in _group_tasks(
-                tasks, include_sample="sample" in group_fields, groups=groups
-            ):
-                plan = _make_plan(
-                    group,
-                    spec,
-                    cfg,
-                    fit_kind="PER",
-                    strategy=strategy,
-                    fields=group_fields,
-                    sample_attributes=sample_attributes,
-                )
-                base_plans.append(plan)
-                for task_id in plan.apply_task_ids:
-                    assignments[task_id][spec.label] = plan.fit_id
-            continue
-
-        shared_groups = _group_tasks(tasks, include_sample="sample" in shared_fields, groups=groups)
-        adapt_enabled = bool(_cfg_value(cfg, "hmm_adapt_emissions", True)) or bool(
-            _cfg_value(cfg, "hmm_adapt_startprobs", True)
-        )
-        for shared_group in shared_groups:
-            base = _make_plan(
-                shared_group,
+    if strategy == "per_group":
+        for group in _group_tasks(tasks, include_sample="sample" in group_fields, groups=groups):
+            plan = _make_plan(
+                group,
                 spec,
                 cfg,
-                fit_kind="GLOBAL",
+                fit_kind="PER",
                 strategy=strategy,
-                fields=shared_fields,
+                fields=group_fields,
+                sample_attributes=sample_attributes,
             )
-            base_plans.append(base)
-            if not adapt_enabled:
-                for task_id in base.apply_task_ids:
-                    assignments[task_id][spec.label] = base.fit_id
-                continue
-            for adapt_group in _group_tasks(
-                shared_group, include_sample="sample" in group_fields, groups=groups
-            ):
-                adapted = _make_plan(
-                    adapt_group,
-                    spec,
-                    cfg,
-                    fit_kind="ADAPT",
-                    strategy=strategy,
-                    fields=group_fields,
-                    parent_fit_id=base.fit_id,
-                )
-                adaptations.append(adapted)
-                for task_id in adapted.apply_task_ids:
-                    assignments[task_id][spec.label] = adapted.fit_id
+            base_plans.append(plan)
+            for task_id in plan.apply_task_ids:
+                assignments[task_id][spec.label] = plan.fit_id
+        return
 
-    return HMMFitPlanningResult(
-        base_plans=tuple(sorted(base_plans, key=lambda plan: plan.fit_id)),
-        adaptation_plans=tuple(sorted(adaptations, key=lambda plan: plan.fit_id)),
-        apply_assignments=assignments,
+    shared_groups = _group_tasks(tasks, include_sample="sample" in shared_fields, groups=groups)
+    adapt_enabled = bool(_cfg_value(cfg, "hmm_adapt_emissions", True)) or bool(
+        _cfg_value(cfg, "hmm_adapt_startprobs", True)
     )
+    for shared_group in shared_groups:
+        base = _make_plan(
+            shared_group,
+            spec,
+            cfg,
+            fit_kind="GLOBAL",
+            strategy=strategy,
+            fields=shared_fields,
+        )
+        base_plans.append(base)
+        if not adapt_enabled:
+            for task_id in base.apply_task_ids:
+                assignments[task_id][spec.label] = base.fit_id
+            return
+        for adapt_group in _group_tasks(
+            shared_group, include_sample="sample" in group_fields, groups=groups
+        ):
+            adapted = _make_plan(
+                adapt_group,
+                spec,
+                cfg,
+                fit_kind="ADAPT",
+                strategy=strategy,
+                fields=group_fields,
+                parent_fit_id=base.fit_id,
+            )
+            adaptations.append(adapted)
+            for task_id in adapted.apply_task_ids:
+                assignments[task_id][spec.label] = adapted.fit_id

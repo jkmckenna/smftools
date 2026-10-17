@@ -1330,7 +1330,7 @@ def test_variant_config_parses_and_validates():
         ({"all": {}}, "clashes"),
         ({"small": {}}, "clashes"),  # leading word of small_bound_stretch
         ({"bad-name": {}}, "identifier"),
-        ({"v": {"hmm_max_iter": 3}}, "may only set"),
+        ({"v": {"hmm_feature_sets": {}}}, "fitting settings"),
     ):
         with pytest.raises(ValueError, match=message):
             hmm_variants(_hmm_cfg(hmm_variants=variants))
@@ -1979,3 +1979,44 @@ def test_shared_scope_needs_a_sample_sheet_and_technical_columns():
             ),
             sample_attributes={"bc1": {"dose": "0"}},
         )
+
+
+# --- HPS-05: variants as named fitting plans -------------------------------------
+
+
+def test_variants_are_full_fitting_plans(tmp_path, monkeypatch):
+    """One stage run fits the default plan (site axis, per-sample emissions)
+    and a variant on the bp axis with emissions shared by enzyme; each keeps
+    its own layers, scope and fit-settings hash."""
+    cfg, outputs = _two_sample_run(
+        tmp_path,
+        monkeypatch,
+        hmm_axis="sites",
+        hmm_emission_scope="fit_group",
+        hmm_variants={
+            "shared_bp": {
+                "hmm_axis": "bp",
+                "hmm_emission_scope": "shared",
+                "hmm_emission_groupby": ["enzyme"],
+            }
+        },
+    )
+    fits = pd.read_parquet(outputs["fit_catalog"])
+    scopes = dict(zip(fits["model_label"], fits["emission_scope"]))
+    assert scopes == {"C": "fit_group", "C_shared_bp": "shared"}
+    assert fits.groupby("model_label")["fit_config_hash"].nunique().eq(1).all()
+    assert fits["fit_config_hash"].nunique() == 2
+    tasks = pd.read_parquet(outputs["task_catalog"])
+    layers = set().union(*map(set, tasks["layers"]))
+    assert any(layer.startswith("C_shared_bp_") for layer in layers)
+    assert any(layer.startswith("C_all_") for layer in layers)
+
+
+def test_variant_settings_are_validated():
+    from smftools.tools.partitioned_hmm import hmm_variants
+
+    ok = SimpleNamespace(hmm_variants={"bp": {"hmm_axis": "bp", "hmm_context_model": "learned"}})
+    assert hmm_variants(ok) == ok.hmm_variants
+    bad = SimpleNamespace(hmm_variants={"x": {"hmm_feature_sets": {}}})
+    with pytest.raises(ValueError, match="not \\['hmm_feature_sets'\\]"):
+        hmm_variants(bad)
