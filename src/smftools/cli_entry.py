@@ -408,6 +408,38 @@ def hmm(config_path, allow_upstream):
     _run_stage_target(config_path, "hmm", allow_upstream)
 
 
+@experiment_group.command("hmm-plan")
+@click.argument("config_path", type=click.Path(exists=True))
+@click.option("--plan", "plan", default=None, help="'default' or an hmm_variants plan name.")
+@click.option("--list", "list_only", is_flag=True, help="Show each plan's current layer set.")
+@click.option("--force", is_flag=True, help="Refit even when the current layer set matches.")
+def hmm_plan(config_path, plan, list_only, force):
+    """Fit and decode one HMM fitting plan into its own layer set (`HPS-07`).
+
+    The layer set is published under hmm_adata_outputs/layer_sets/<plan>/ from
+    the current spatial stage; the HMM stage itself is not regenerated.
+    """
+    from .cli.hmm_layer_sets import LayerSetError, list_from_config, run_from_config
+
+    if list_only:
+        rows = list_from_config(config_path)
+        click.echo("PLAN  GENERATION  SETTINGS  INPUT")
+        for row in rows:
+            settings = {True: "current", False: "changed", None: "-"}[row["settings_current"]]
+            source = {True: "current", False: "superseded", None: "-"}[row["input_current"]]
+            note = "" if row["configured"] else "  (not in config)"
+            click.echo(f"{row['plan']}  {row['generation_id'] or '-'}  {settings}  {source}{note}")
+        return
+    if not plan:
+        raise click.UsageError("give --plan NAME (or --list)")
+    try:
+        result = run_from_config(config_path, plan, force=force)
+    except LayerSetError as exc:
+        raise click.ClickException(str(exc)) from exc
+    verb = "reused" if result["reused"] else "published"
+    click.echo(f"HMM plan {plan}: {verb} layer set {result['generation_id']} ({result['spine']})")
+
+
 ##########################################
 
 

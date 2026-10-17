@@ -2020,3 +2020,81 @@ def test_variant_settings_are_validated():
     bad = SimpleNamespace(hmm_variants={"x": {"hmm_feature_sets": {}}})
     with pytest.raises(ValueError, match="not \\['hmm_feature_sets'\\]"):
         hmm_variants(bad)
+
+
+# --- HPS-07: layer sets -------------------------------------------------------------
+
+
+def _layer_set_inputs(tmp_path, monkeypatch):
+    from smftools.tools import partitioned_hmm
+
+    for name in (
+        "_plot_feature_fractions",
+        "_plot_feature_count_size_histograms",
+        "_plot_molecule_fractions",
+        "_plot_hmm_vs_raw_scatter",
+        "_plot_hmm_parameters_across_barcodes",
+        "_plot_hmm_fit_history",
+        "_plot_feature_clustermaps",
+    ):
+        monkeypatch.setattr(partitioned_hmm, name, lambda *args, **kwargs: None)
+    raw = write_raw_store(
+        _frame(),
+        tmp_path / "raw_outputs",
+        reference_lengths={"ref_top": 12},
+        analysis_mode="locus",
+        extra_uns={"References": {"ref_FASTA_sequence": "ACGCGTACGTAC"}},
+    )
+    preprocess = execute_partitioned_preprocessing(
+        raw["spine"], _preprocess_cfg(), tmp_path / "preprocess_outputs"
+    )
+    cfg = _hmm_cfg(
+        hmm_methbases=["C"],
+        hmm_max_iter=2,
+        target_task_memory_mb=1,
+        hmm_variants={"bp": {"hmm_axis": "bp"}},
+    )
+    return preprocess["spine"], cfg
+
+
+def test_layer_set_publishes_one_plan_beside_the_hmm_stage(tmp_path, monkeypatch):
+    from smftools.cli.hmm_layer_sets import list_layer_sets, publish_layer_set
+    from smftools.informatics.generation_listing import list_experiment_generations
+
+    spine, cfg = _layer_set_inputs(tmp_path, monkeypatch)
+    result = publish_layer_set(tmp_path, spine, cfg, "bp", source_generation="spatial-1")
+    assert not result["reused"]
+    assert not (tmp_path / "hmm_adata_outputs" / "generations").exists()  # stage untouched
+    adata = materialize(result["spine"], references="ref_top", start=0, end=12)
+    assert any(name.startswith("C_bp_") for name in adata.layers)
+    assert not any(name.startswith("C_all_") for name in adata.layers)  # only the plan
+    kinds = {record.kind for record in list_experiment_generations(tmp_path)}
+    assert "hmm_layer_set:bp" in kinds
+
+    again = publish_layer_set(tmp_path, spine, cfg, "bp", source_generation="spatial-1")
+    assert again["reused"] and again["generation_id"] == result["generation_id"]
+    forced = publish_layer_set(
+        tmp_path, spine, cfg, "bp", source_generation="spatial-1", force=True
+    )
+    assert forced["generation_id"] != result["generation_id"]
+
+    from smftools.project.registry import _layer_set_spines
+
+    assert _layer_set_spines(tmp_path)["hmm_layer_set:bp"] == forced["spine"]
+
+    changed = SimpleNamespace(
+        **{**vars(cfg), "hmm_variants": {"bp": {"hmm_axis": "bp", "hmm_max_iter": 3}}}
+    )
+    (row,) = [r for r in list_layer_sets(tmp_path, changed) if r["plan"] == "bp"]
+    assert row["settings_current"] is False
+    assert row["input_current"] is False  # no current spatial generation matches "spatial-1"
+
+
+def test_default_plan_and_unknown_plans(tmp_path, monkeypatch):
+    from smftools.cli.hmm_layer_sets import LayerSetError, plan_config, plan_fit_hashes
+
+    _, cfg = _layer_set_inputs(tmp_path, monkeypatch)
+    assert list(plan_fit_hashes(plan_config(cfg, "default"))) == ["C"]
+    assert list(plan_fit_hashes(plan_config(cfg, "bp"))) == ["C_bp"]
+    with pytest.raises(LayerSetError, match="unknown HMM plan"):
+        plan_config(cfg, "missing")

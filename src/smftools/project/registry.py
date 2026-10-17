@@ -197,6 +197,7 @@ def discover_stage_spines(experiment_dir: Path) -> tuple[Path, dict[str, Path]]:
                     # staging. Registry refresh must continue to expose only
                     # the previously published complete stage.
                     found.pop(stage)
+    found.update(_layer_set_spines(run_root))
     if not found:
         raise FileNotFoundError(
             f"no complete stage spine found under {experiment_dir} (looked for "
@@ -204,6 +205,34 @@ def discover_stage_spines(experiment_dir: Path) -> tuple[Path, dict[str, Path]]:
             f"{sorted(STAGE_DIRS.values())})"
         )
     return run_root, found
+
+
+def _layer_set_spines(run_root: Path) -> dict[str, Path]:
+    """The current spine of every HMM layer set (`HPS-07`), keyed
+    ``hmm_layer_set:<plan>``; a generation is published only once complete."""
+    import json as _json
+
+    from ..informatics.generation_listing import (
+        HMM_LAYER_SETS_SUBDIR,
+        LAYER_SET_KIND_PREFIX,
+    )
+
+    root = run_root / STAGE_DIRS["hmm"] / HMM_LAYER_SETS_SUBDIR
+    found: dict[str, Path] = {}
+    if not root.is_dir():
+        return found
+    for container in sorted(root.iterdir()):
+        pointer = container / "current.json"
+        if not pointer.is_file():
+            continue
+        try:
+            generation_id = _json.loads(pointer.read_text(encoding="utf-8"))["generation_id"]
+        except (OSError, ValueError, KeyError):
+            continue
+        spine = container / "generations" / str(generation_id) / SPINE_FILENAME
+        if spine.exists():
+            found[f"{LAYER_SET_KIND_PREFIX}{container.name}"] = spine
+    return found
 
 
 def _relative_registry_path(path: Path, anchor: Path) -> str:

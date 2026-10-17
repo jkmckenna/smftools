@@ -45,7 +45,6 @@ _NON_DEPENDENCY_KEYS = frozenset({"generation_id", "current_generation_id"})
 _JSON_MAX_BYTES = 4 * 1024 * 1024
 _JSON_MAX_DEPTH = 2
 _SPINE_FILENAME = "spine.h5ad"
-_DIR_KINDS = {directory: kind for kind, directory in STAGE_GENERATION_DIRS.items()}
 
 
 class GenerationReferenceError(RuntimeError):
@@ -99,9 +98,11 @@ class ReferenceGraph:
 
 
 def _experiment_generations(output_root: Path) -> dict[tuple[str, str], Path]:
+    from .generation_listing import experiment_generation_containers
+
     found = {}
-    for kind, directory in STAGE_GENERATION_DIRS.items():
-        container = output_root / directory / GENERATIONS_SUBDIR
+    for kind, stage_container in experiment_generation_containers(output_root).items():
+        container = stage_container / GENERATIONS_SUBDIR
         if not container.is_dir():
             continue
         for path in sorted(container.iterdir()):
@@ -167,10 +168,12 @@ def _spine_strings(spine: Path) -> Iterator[tuple[str, str]]:
 
 
 def _pointer_targets(text: str, known: dict[tuple[str, str], Path]) -> Iterator[tuple[str, str]]:
+    # A pointer names the container directory and the generation id; a
+    # generation is matched by both (layer-set containers are named by plan).
     for directory, generation_id in _POINTER.findall(text):
-        kind = _DIR_KINDS.get(directory)
-        if kind is not None and (kind, generation_id) in known:
-            yield kind, generation_id
+        for kind, gid in known:
+            if gid == generation_id and known[(kind, gid)].parent.parent.name == directory:
+                yield kind, gid
 
 
 def _lineage_targets(

@@ -32,6 +32,7 @@ from smftools.readwrite import atomic_write_json
 from .generation_listing import (
     GENERATION_MANIFEST,
     GENERATIONS_SUBDIR,
+    LAYER_SET_KIND_PREFIX,
     PRUNED_RECORD,
     STAGE_GENERATION_DIRS,
     STAGING_SUBDIR,
@@ -67,7 +68,12 @@ class PruneAction:
 
 
 def _container(output_root: Path, kind: str) -> Path:
-    return output_root / STAGE_GENERATION_DIRS[kind]
+    from .generation_listing import experiment_generation_containers
+
+    containers = experiment_generation_containers(output_root)
+    if kind not in containers:
+        raise PruneApplyError(f"no generation container for {kind!r}")
+    return containers[kind]
 
 
 def _busy(output_root: Path) -> list[str]:
@@ -225,7 +231,7 @@ def _prune_one(output_root: Path, decision, archive_root: Path | None) -> PruneA
     if archive_root is not None:
         destination = (
             archive_root
-            / STAGE_GENERATION_DIRS[decision.kind]
+            / container.relative_to(output_root)
             / GENERATIONS_SUBDIR
             / decision.generation_id
         )
@@ -278,7 +284,7 @@ def restore_generation(output_root: str | Path, kind: str, generation_id: str) -
     """Bring an archived generation back into place (verified copy, then the
     archive copy is removed)."""
     output_root = Path(output_root)
-    if kind not in STAGE_GENERATION_DIRS:
+    if kind not in STAGE_GENERATION_DIRS and not kind.startswith(LAYER_SET_KIND_PREFIX):
         raise PruneApplyError(f"unknown stage {kind!r}")
     container = _container(output_root, kind)
     generation = container / GENERATIONS_SUBDIR / generation_id
