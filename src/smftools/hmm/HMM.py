@@ -1805,6 +1805,11 @@ class ContextBernoulliHMM(SingleBernoulliHMM):
             key = prefix + name
             if key in state_dict:
                 setattr(self, name, torch.empty_like(state_dict[key]))
+        # Checkpoints from before the offset existed (`HPS-12`) index contexts
+        # from position 0: that is offset 0, not a missing parameter.
+        offset_key = prefix + "context_position_offset"
+        if offset_key not in state_dict:
+            state_dict[offset_key] = torch.zeros((), dtype=torch.int64)
         super()._load_from_state_dict(state_dict, prefix, *args, **kwargs)
 
     @classmethod
