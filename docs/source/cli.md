@@ -295,6 +295,17 @@ Projects under `DIR` (a `registry.json` beside `project_outputs`) are found
 automatically; their registries protect the generations they name. On a large
 drive the walk takes minutes.
 
+## Compacting stored ML models
+
+`smftools project ml-storage compact PROJECT_DIR` lists model payloads still
+stored uncompressed (models published before payloads were written deflated);
+`--apply` rewrites them with every zip member deflated -- lossless: each
+member's bytes are checked against the original before the swap -- using
+`--workers N` processes (`--limit N` for a trial). A random forest's payload
+shrinks several-fold. Model identities and manifests stay as published; the
+workspace's `index/compacted_models.json` records each payload's new digest,
+which bundle validation accepts. An interrupted run is safe to repeat.
+
 ## Project analysis cache inventory
 
 Use `smftools project analyses list PROJECT_DIR` to inspect periodicity and

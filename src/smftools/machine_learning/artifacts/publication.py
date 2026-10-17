@@ -162,12 +162,21 @@ def _load_manifest(path: Path, kind: str) -> RunManifest | ModelManifest:
         raise MLArtifactPublicationError(f"invalid {kind} manifest at {path}: {exc}") from exc
 
 
-def _validate_payload(path: Path, reference: ArtifactReference) -> None:
+def _validate_payload(
+    path: Path,
+    reference: ArtifactReference,
+    accepted: tuple[tuple[str, int], ...] = (),
+) -> None:
+    """The payload matches its reference -- or, for a compacted model payload
+    (`SLC-02`), the stored encoding the workspace recorded for it."""
     if not path.is_file() or path.is_symlink():
         raise MLArtifactPublicationError(
             f"artifact payload is missing or not a regular file: {path}"
         )
     size = path.stat().st_size
+    for stored_sha256, stored_size in accepted:
+        if size == stored_size and file_sha256(path) == stored_sha256:
+            return
     if size != reference.size_bytes:
         raise MLArtifactPublicationError(
             f"artifact size mismatch for {reference.relative_path!r}: "
@@ -214,8 +223,13 @@ def validate_published_bundle(
         raise MLArtifactPublicationError(
             f"{kind} bundle inventory mismatch; missing={missing}, unexpected={unexpected}"
         )
+    accepted: tuple[tuple[str, int], ...] = ()
+    if kind == "model":
+        from .compaction import accepted_digests
+
+        accepted = tuple(accepted_digests(workspace, artifact_id))
     for relative, reference in inventory.values():
-        _validate_payload(path / relative, reference)
+        _validate_payload(path / relative, reference, accepted if reference.role == "model" else ())
     return PublishedBundle(
         kind=kind,
         artifact_id=artifact_id,

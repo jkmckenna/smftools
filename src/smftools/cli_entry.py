@@ -1565,6 +1565,51 @@ def project_rebasecall_plan_cmd(
     click.echo(format_project_rebasecall_plan(plan))
 
 
+@project_group.command("ml-storage")
+@click.argument("action", type=click.Choice(["compact"]))
+@click.argument("project_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.option("--apply", "apply_plan", is_flag=True, help="Compact (default: plan only).")
+@click.option("--limit", type=click.IntRange(min=1), default=None, help="At most N models.")
+@click.option("--workers", type=click.IntRange(min=1), default=1, show_default=True)
+@click.option("--json", "as_json", is_flag=True, help="Emit the plan as JSON.")
+def project_ml_storage_cmd(
+    action: str, project_dir: Path, apply_plan: bool, limit, workers: int, as_json: bool
+):
+    """Compact stored model payloads losslessly (`SLC-02`).
+
+    Rewrites each uncompressed skops payload with its zip members deflated,
+    after checking every member is byte-identical; model identities and
+    manifests stay as published, and the workspace's
+    index/compacted_models.json records each new encoding.
+    """
+    import json
+
+    from .machine_learning.artifacts.compaction import apply_compaction, plan_compaction
+    from .machine_learning.workspace import resolve_ml_workspace
+
+    workspace = resolve_ml_workspace(project_dir=project_dir)
+    plan = plan_compaction(workspace)
+    if as_json:
+        click.echo(json.dumps(plan.to_dict(), indent=2))
+    else:
+        click.echo(
+            f"{len(plan.candidates)} uncompressed model payloads "
+            f"({plan.candidate_bytes / 1e9:.1f} GB); already compressed: "
+            f"{plan.already_compacted}; not zip: {plan.not_zip}; unreadable: {len(plan.unreadable)}"
+        )
+    if not apply_plan:
+        return
+    before = sum(c.original_size for c in plan.candidates[: limit if limit else None])
+
+    def progress(done, total):
+        if done == total or done % 100 == 0:
+            click.echo(f"  compacted {done}/{total}")
+
+    records = apply_compaction(workspace, plan, limit=limit, workers=workers, progress=progress)
+    after = sum(int(r["stored_size"]) for r in records)
+    click.echo(f"Compacted {len(records)} payloads: {before / 1e9:.2f} GB -> {after / 1e9:.2f} GB")
+
+
 @project_group.command("ml-retention")
 @click.argument("project_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
 @click.option(
