@@ -2178,3 +2178,46 @@ def test_tied_fit_spreads_members_over_worker_processes(tmp_path, monkeypatch):
     assert shards == [2]  # only the two-thread run sharded
     for sharded, local in zip(emissions[2], emissions[1], strict=True):
         np.testing.assert_allclose(sharded, local, rtol=0, atol=1e-10)
+
+
+def test_parameter_comparison_loads_context_models_by_their_architecture(tmp_path):
+    """The comparison plot loads each model with its artifact's architecture:
+    a context model loaded as the plain architecture fails, and the plot was
+    silently skipped for every context-model run."""
+    import torch
+
+    from smftools.cli.hmm_adata import HMMTrainer
+    from smftools.cli.stage_artifacts import prepare_analysis_plot_layout
+    from smftools.hmm.HMM import create_hmm
+    from smftools.tools.partitioned_hmm import _plot_hmm_parameters_across_barcodes
+
+    cfg = _hmm_cfg()
+    models_dir = tmp_path / "models"
+    trainer = HMMTrainer(cfg=cfg, models_dir=models_dir)
+    records = []
+    for barcode, emission_prob in (("bc1", 0.2), ("bc2", 0.8)):
+        model = create_hmm(cfg, arch="context_single", device="cpu")
+        model.set_contexts(log_weights=np.zeros(16), position_codes=np.zeros(100, dtype=np.int64))
+        with torch.no_grad():
+            model.emission.data = torch.tensor([1.0 - emission_prob, emission_prob])
+        path = models_dir / f"{barcode}.pt"
+        trainer._save(model, path)
+        artifact = {
+            "checkpoint": str(path.relative_to(models_dir.parent)),
+            "model_key": {"fit_kind": "PER", "label": "GpC", "architecture": "context_single"},
+        }
+        records.append(
+            {
+                "reference": "ref_top",
+                "barcode": barcode,
+                "core_start": 0,
+                "core_end": 100,
+                "hmm_model_artifacts_json": json.dumps([artifact]),
+            }
+        )
+    layout = prepare_analysis_plot_layout(tmp_path / "hmm_outputs", stage="hmm")
+
+    _plot_hmm_parameters_across_barcodes(records, models_dir, cfg, layout)
+
+    catalog = pd.read_parquet(layout.catalog)
+    assert (catalog["plot_type"] == "hmm_parameters_across_barcodes").sum() == 1

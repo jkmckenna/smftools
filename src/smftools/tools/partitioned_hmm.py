@@ -1839,6 +1839,7 @@ def _plot_hmm_parameters_across_barcodes(records, models_dir: Path, cfg, layout)
             loaded = {}
             for barcode in sorted(barcodes):
                 path = None
+                model_arch = arch
                 for record in records:
                     if (
                         str(record.get("reference")) != reference
@@ -1857,6 +1858,11 @@ def _plot_hmm_parameters_across_barcodes(records, models_dir: Path, cfg, layout)
                     ]
                     if matching:
                         path = models_dir.parent / str(matching[0]["checkpoint"])
+                        # The artifact's own architecture: a context model is
+                        # not what ``choose_arch`` would pick.
+                        model_arch = str(
+                            matching[0].get("model_key", {}).get("architecture") or arch
+                        )
                         break
                 if path is None:
                     # Backward-compatible discovery for checkpoints written before
@@ -1865,7 +1871,7 @@ def _plot_hmm_parameters_across_barcodes(records, models_dir: Path, cfg, layout)
                 if not path.exists():
                     continue
                 try:
-                    loaded[barcode] = trainer._load(path, arch=arch, device=device)
+                    loaded[barcode] = trainer._load(path, arch=model_arch, device=device)
                 except Exception:
                     logger.warning(
                         "Could not load HMM model %s for parameter comparison plot",
