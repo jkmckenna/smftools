@@ -1001,7 +1001,24 @@ def normalize_uns_string_lists(adata, keys: Sequence[str] = UNS_STRING_LIST_KEYS
             adata.uns[key] = uns_string_list(adata.uns[key])
 
 
-def safe_write_h5ad(adata, path, compression=None, backup=False, backup_dir=None, verbose=True):
+#: Set from ``write_csv_exports`` when an experiment config is loaded; worker
+#: processes inherit it. Unset means off.
+CSV_EXPORTS_ENV = "SMFTOOLS_WRITE_CSV_EXPORTS"
+
+
+def csv_exports_enabled() -> bool:
+    return os.environ.get(CSV_EXPORTS_ENV, "0") == "1"
+
+
+def safe_write_h5ad(
+    adata,
+    path,
+    compression=None,
+    backup=False,
+    backup_dir=None,
+    verbose=True,
+    write_csvs: bool | None = None,
+):
     """
     Save an AnnData safely by sanitizing .obs, .var, .uns, .layers, and .obsm.
 
@@ -1018,6 +1035,10 @@ def safe_write_h5ad(adata, path, compression=None, backup=False, backup_dir=None
     back by this pipeline -- and prefer compressing the finished uncompressed
     file with a real outer `gzip` afterward instead, so the archived copy
     isn't confusingly opened directly by anndata/h5py as if it were live data.
+
+    `write_csvs` writes obs / var / keys CSV copies under ``csvs/`` beside the
+    file; ``None`` follows the loaded experiment config's ``write_csv_exports``
+    (off by default -- the file holds the same tables).
     """
     import json
     import os
@@ -1225,7 +1246,9 @@ def safe_write_h5ad(adata, path, compression=None, backup=False, backup_dir=None
 
     logger.info("=== end report ===\n")
 
-    # ---------- create CSV output directory ----------
+    # ---------- CSV copies of obs / var / keys (``write_csv_exports``) ----------
+    if not (csv_exports_enabled() if write_csvs is None else bool(write_csvs)):
+        return report
     try:
         csv_dir = path.parent / "csvs"
         csv_dir.mkdir(exist_ok=True)

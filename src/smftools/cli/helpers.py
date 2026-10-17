@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -997,6 +998,10 @@ def load_experiment_config(config_path: str):
         # the loader has to say where it read from.
         config_source=str(config_path),
     )
+    # Read by safe_write_h5ad, here and in worker processes (inherited).
+    from ..readwrite import CSV_EXPORTS_ENV
+
+    os.environ[CSV_EXPORTS_ENV] = "1" if bool(getattr(cfg, "write_csv_exports", False)) else "0"
     envelope_key = (
         str(Path(config_path).resolve()),
         cfg.threads,

@@ -1,3 +1,5 @@
+import os
+
 import anndata as ad
 import numpy as np
 
@@ -31,7 +33,7 @@ def test_safe_write_h5ad_keys_csv_includes_varm(tmp_path):
     adata.varm["components"] = np.ones((3, 2))
 
     path = tmp_path / "keys_varm.h5ad"
-    safe_write_h5ad(adata, path, backup=False, verbose=False)
+    safe_write_h5ad(adata, path, backup=False, verbose=False, write_csvs=True)
 
     keys_csv = tmp_path / "csvs" / "keys_varm.keys.csv"
     keys_df = np.loadtxt(keys_csv, delimiter=",", dtype=str, skiprows=1)
@@ -39,6 +41,38 @@ def test_safe_write_h5ad_keys_csv_includes_varm(tmp_path):
         keys_df = np.array([keys_df])
 
     assert any(row[0] == "varm" and row[1] == "components" for row in keys_df)
+
+
+def test_csv_exports_are_off_unless_the_config_turns_them_on(tmp_path, monkeypatch):
+    """``write_csv_exports`` (default off) decides whether ``csvs/`` is written;
+    it reaches the writer through the environment, so worker processes follow
+    the config too."""
+    from smftools.readwrite import CSV_EXPORTS_ENV
+
+    adata = ad.AnnData(X=np.zeros((2, 3)))
+    monkeypatch.delenv(CSV_EXPORTS_ENV, raising=False)
+    safe_write_h5ad(adata, tmp_path / "off.h5ad", backup=False, verbose=False)
+    assert not (tmp_path / "csvs").exists()
+
+    monkeypatch.setenv(CSV_EXPORTS_ENV, "1")
+    safe_write_h5ad(adata, tmp_path / "on.h5ad", backup=False, verbose=False)
+    assert (tmp_path / "csvs" / "on.obs.csv").is_file()
+
+
+def test_loading_a_config_sets_the_csv_export_switch(tmp_path, monkeypatch):
+    from smftools.cli.helpers import load_experiment_config
+    from smftools.readwrite import CSV_EXPORTS_ENV
+
+    monkeypatch.setenv(CSV_EXPORTS_ENV, "1")
+    config = tmp_path / "experiment_config.csv"
+    config.write_text(
+        "variable,value,help,options,type\n"
+        "smf_modality,deaminase,,,str\n"
+        "experiment_name,e,,,str\n"
+        f"output_directory,{tmp_path / 'out'},,,str\n"
+    )
+    load_experiment_config(config)
+    assert os.environ[CSV_EXPORTS_ENV] == "0"
 
 
 def test_uns_string_list_accepts_every_degraded_form():

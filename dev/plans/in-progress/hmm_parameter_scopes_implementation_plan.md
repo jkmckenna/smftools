@@ -1,6 +1,6 @@
 # HMM parameter scopes, fitting plans and a project model store
 
-Status: in progress. Items `HPS-01`--`HPS-13`; `HPS-01`--`HPS-05`, `HPS-07`, `HPS-11`--`HPS-13` implemented. Builds on `HCE` (context
+Status: in progress. Items `HPS-01`--`HPS-13`; `HPS-01`--`HPS-05`, `HPS-07`, `HPS-08`, `HPS-11`--`HPS-13` implemented. Builds on `HCE` (context
 emissions, `HCE-07` per-state weights), `HXR` (fits shared across
 references), `SUG-02` (stage-only refit) and `SLC` (storage lifecycle).
 
@@ -92,7 +92,7 @@ fit group within an emission group (as `HXR-02`).
 | `HPS-05` | named fitting plans: `hmm_variants` entries are full plans -- besides `hmm_context_*` they may set the axis, emission scope / groupings / efficiency covariates, reference groups, fit strategy and grouping, distance-aware transitions, starting probabilities, iteration limits and read selection (layer-naming settings stay global). Every spec is planned, fitted and given input under its own settings; `auto` scope resolves per plan; the fit catalog records each fit's `emission_scope` and `fit_config_hash` | implemented |
 | `HPS-06` | project HMM model store: content-addressed models with manifests (plan hash, training selection, source generations, samples and experiments spanned), so one emission model can serve several experiments of the same chemistry | proposed |
 | `HPS-07` | layer sets (`cli/hmm_layer_sets.py`): `smftools experiment hmm-plan CONFIG --plan NAME [--list] [--force]` fits and decodes one plan (`default` or an `hmm_variants` entry) from the current spatial spine into `hmm_adata_outputs/layer_sets/<plan>/generations/<id>/` via `staged_generation`; manifest records the plan, per-model `fit_config_hash` and the source spatial generation; unchanged settings and input reuse the current layer set; `--list` flags changed settings / superseded input. Run-root inference, generation listing, the reference graph, prune / archive and project registry discovery (`hmm_layer_set:<plan>` spines) know layer-set containers. Not in v1: a merged multi-plan reader view | implemented |
-| `HPS-08` | storage: layer sets are generations under `SLC` (reference graph, prune, archive); posteriors optional, features stored compactly | proposed |
+| `HPS-08` | storage: layer sets are generations under `SLC` (reference graph, prune, archive) -- done with `HPS-07`; posteriors optional (`hmm_write_posterior`); compact feature storage moved to `DLS-02` / `DLS-03` (`derived_layers_storage_implementation_plan.md`) | implemented |
 | `HPS-09` | acceptance (below) | direct-fit comparison done; pipeline acceptance after `HPS-01`--`HPS-04` |
 | `HPS-10` | docs: choosing scopes for a comparison, config reference | proposed |
 | `HPS-11` | position axis: `hmm_axis: sites` (default) \| `bp`. `bp` places the site calls on the window's full per-bp grid (single and multi-channel; NaN elsewhere; coverage masking unchanged), decodes every position, sets `transition_counting = "span"` for fits and adaptations, and scales a new model's configured per-site starting transitions by the observed site spacing (stay `s ** (1 / spacing)`); refused with `hmm_distance_aware`; fingerprints and fit ids unchanged at `sites` | implemented |
