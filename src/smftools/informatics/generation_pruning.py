@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .generation_listing import (
+    LAYER_SET_KIND_PREFIX,
     STAGE_GENERATION_DIRS,
     STATE_OK,
     STATE_PRUNED,
@@ -145,11 +146,16 @@ def _record_timestamp(record: GenerationRecord) -> tuple[datetime | None, str]:
     return parsed, raw
 
 
-def _selected_stages(stages: Iterable[str] | None) -> tuple[str, ...]:
+def _selected_stages(stages: Iterable[str] | None) -> tuple[str, ...] | None:
+    """Selected kinds, or None for every kind (stages and HMM layer sets)."""
     if stages is None:
-        return tuple(STAGE_GENERATION_DIRS)
+        return None
     selected = tuple(dict.fromkeys(str(stage).strip().lower() for stage in stages))
-    unknown = sorted(set(selected).difference(STAGE_GENERATION_DIRS))
+    unknown = sorted(
+        stage
+        for stage in set(selected).difference(STAGE_GENERATION_DIRS)
+        if not stage.startswith(LAYER_SET_KIND_PREFIX)
+    )
     if unknown:
         raise GenerationPruneError(f"unknown generation stage(s): {unknown}")
     if not selected:
@@ -177,12 +183,17 @@ def plan_experiment_generation_prune(
     if keep_last is not None and keep_last < 0:
         raise GenerationPruneError("keep-last must be zero or greater")
     cutoff = parse_older_than(older_than)
-    selected_stages = _selected_stages(stages)
+    requested = _selected_stages(stages)
     records = [
         record
         for record in list_experiment_generations(output_root, include_size=True)
-        if record.kind in selected_stages
+        if requested is None or record.kind in requested
     ]
+    selected_stages = (
+        requested
+        if requested is not None
+        else tuple(dict.fromkeys(record.kind for record in records))
+    )
 
     graph = build_reference_graph(output_root)
     try:

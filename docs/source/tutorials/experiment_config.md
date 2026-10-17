@@ -520,6 +520,27 @@ hmm_variants:
 Each plan is planned and fitted under its own settings; the fit catalog
 records every fit's resolved `emission_scope` and `fit_config_hash`.
 
+## HMM layer sets: one plan without regenerating the stage
+
+`smftools experiment hmm-plan CONFIG --plan NAME` fits and decodes one fitting
+plan -- `default` or an `hmm_variants` entry -- into its own generation under
+`hmm_adata_outputs/layer_sets/<NAME>/`, from the experiment's current spatial
+stage. The HMM stage is not regenerated and its current generation is not
+touched, so a new plan can be added to the config and tried on its own.
+
+- The layer set's `spine.h5ad` reads like an HMM spine (`materialize`), with
+  the upstream layers and that plan's HMM layers (`<label>_<plan>_...`, or
+  `<label>_...` for `default`); join with the stage's layers on
+  `molecule_uid` and position.
+- Rerunning with unchanged settings and input reuses the current layer set;
+  `--force` refits.
+- `--list` shows each plan's current layer set, whether its settings still
+  match the config, and whether the spatial generation it was decoded from is
+  still current.
+- A project registry refresh records each experiment's current layer sets as
+  spines named `hmm_layer_set:<plan>`; generation listing, the reference graph
+  and `generations ... prune` treat them like stage generations.
+
 ## HMM position axis
 
 `hmm_axis: sites` fits the HMM on the modification-site columns only: one step is "from one site to the next" whatever the gap in bp, so the

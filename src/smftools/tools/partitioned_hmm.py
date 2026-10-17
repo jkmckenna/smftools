@@ -168,6 +168,9 @@ def _configured_model_specs(cfg) -> list[HMMModelSpec]:
                     ),
                 )
             )
+    only = getattr(cfg, "_hmm_only_variant", None)
+    if only:  # a layer set of one plan (`HPS-07`)
+        specs = [spec for spec in specs if spec.variant == only]
     return specs
 
 

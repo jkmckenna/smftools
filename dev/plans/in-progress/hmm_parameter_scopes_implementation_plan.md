@@ -1,6 +1,6 @@
 # HMM parameter scopes, fitting plans and a project model store
 
-Status: in progress. Items `HPS-01`--`HPS-11`; `HPS-01`--`HPS-05`, `HPS-11` implemented. Builds on `HCE` (context
+Status: in progress. Items `HPS-01`--`HPS-11`; `HPS-01`--`HPS-05`, `HPS-07`, `HPS-11` implemented. Builds on `HCE` (context
 emissions, `HCE-07` per-state weights), `HXR` (fits shared across
 references), `SUG-02` (stage-only refit) and `SLC` (storage lifecycle).
 
@@ -91,7 +91,7 @@ fit group within an emission group (as `HXR-02`).
 | `HPS-04` | artifacts: one tied job per model x emission group publishes an ordinary model per member (shared emissions + its offset + its transitions), so apply, layers, `HXR` pooling and caching are unchanged; the fit catalog records `emission_group` and `efficiency_offset`, artifacts the slopes and any constant covariate | implemented |
 | `HPS-05` | named fitting plans: `hmm_variants` entries are full plans -- besides `hmm_context_*` they may set the axis, emission scope / groupings / efficiency covariates, reference groups, fit strategy and grouping, distance-aware transitions, starting probabilities, iteration limits and read selection (layer-naming settings stay global). Every spec is planned, fitted and given input under its own settings; `auto` scope resolves per plan; the fit catalog records each fit's `emission_scope` and `fit_config_hash` | implemented |
 | `HPS-06` | project HMM model store: content-addressed models with manifests (plan hash, training selection, source generations, samples and experiments spanned), so one emission model can serve several experiments of the same chemistry | proposed |
-| `HPS-07` | layer sets: one named fitting plan's layers for one experiment, published as its own generation (`hmm_adata_outputs/layer_sets/<plan>/`) from the current spatial generation, without regenerating the HMM stage; `smftools experiment hmm-plan CONFIG --plan NAME [--list]`; registry spines per plan; staleness against the spatial generation it was decoded from; absorbs `SUG-02` (design below) | designed |
+| `HPS-07` | layer sets (`cli/hmm_layer_sets.py`): `smftools experiment hmm-plan CONFIG --plan NAME [--list] [--force]` fits and decodes one plan (`default` or an `hmm_variants` entry) from the current spatial spine into `hmm_adata_outputs/layer_sets/<plan>/generations/<id>/` via `staged_generation`; manifest records the plan, per-model `fit_config_hash` and the source spatial generation; unchanged settings and input reuse the current layer set; `--list` flags changed settings / superseded input. Run-root inference, generation listing, the reference graph, prune / archive and project registry discovery (`hmm_layer_set:<plan>` spines) know layer-set containers. Not in v1: a merged multi-plan reader view | implemented |
 | `HPS-08` | storage: layer sets are generations under `SLC` (reference graph, prune, archive); posteriors optional, features stored compactly | proposed |
 | `HPS-09` | acceptance (below) | direct-fit comparison done; pipeline acceptance after `HPS-01`--`HPS-04` |
 | `HPS-10` | docs: choosing scopes for a comparison, config reference | proposed |

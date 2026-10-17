@@ -144,24 +144,37 @@ def resolve_relative_path(value: object, anchor: Path | None) -> Path | None:
     return resolve_artifact_path(value, anchor)
 
 
+# HMM layer sets (`HPS-07`) are containers one level further down:
+# <run>/hmm_adata_outputs/layer_sets/<plan>/[generations/<id>/]
+_LAYER_SETS_DIRNAME = "layer_sets"
+
+
+def _run_root_from_container(container: Path) -> Path:
+    """The run root above a stage container (or an HMM layer-set container)."""
+    if container.parent.name == _LAYER_SETS_DIRNAME:
+        return container.parent.parent.parent
+    return container.parent
+
+
 def _run_root_from_spine_path(spine_path: Path) -> Path:
     """Recover the run's ``output_directory`` from a canonical stage spine path.
 
     Canonical stage spines live at ``output_directory/<STAGE_DIR>/spine.h5ad``.
     Immutable generation spines add ``generations/<id>`` (or
     ``.staging/<id>`` while being validated) beneath the stage directory. Both
-    layouts resolve to the same stable run-root anchor shared by sibling stages.
+    layouts resolve to the same stable run-root anchor shared by sibling stages;
+    so do HMM layer sets, one level deeper (``<HMM_DIR>/layer_sets/<plan>/``).
     """
     if spine_path.parent.parent.name in {"generations", ".staging"}:
-        return spine_path.parent.parent.parent.parent
-    return spine_path.parent.parent
+        return _run_root_from_container(spine_path.parent.parent.parent)
+    return _run_root_from_container(spine_path.parent)
 
 
 def _run_root_from_source_base(base: Path) -> Path:
     """Recover the run root from a raw-store base, including generations."""
     if base.parent.name in {"generations", ".staging"}:
-        return base.parent.parent.parent
-    return base.parent
+        return _run_root_from_container(base.parent.parent)
+    return _run_root_from_container(base)
 
 
 def run_root_from_stage_dir(stage_dir: str | Path) -> Path:

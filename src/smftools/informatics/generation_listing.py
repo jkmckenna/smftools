@@ -319,11 +319,29 @@ def _records_for_container(
     return records
 
 
+HMM_LAYER_SETS_SUBDIR = "layer_sets"
+LAYER_SET_KIND_PREFIX = "hmm_layer_set:"
+
+
+def experiment_generation_containers(run_root: str | Path) -> dict[str, Path]:
+    """Every generation container of one experiment, by kind: the stage
+    directories and each HMM layer set (`HPS-07`), kind ``hmm_layer_set:<plan>``."""
+    run_root = Path(run_root)
+    found = {
+        kind: run_root / stage_dir
+        for kind, stage_dir in STAGE_GENERATION_DIRS.items()
+        if (run_root / stage_dir).is_dir()
+    }
+    layer_sets = run_root / STAGE_GENERATION_DIRS["hmm"] / HMM_LAYER_SETS_SUBDIR
+    if layer_sets.is_dir():
+        for container in sorted(layer_sets.iterdir()):
+            if container.is_dir() and not container.name.startswith("."):
+                found[f"{LAYER_SET_KIND_PREFIX}{container.name}"] = container
+    return found
+
+
 def _iter_experiment_containers(run_root: Path) -> Iterator[tuple[str, Path]]:
-    for kind, stage_dir in STAGE_GENERATION_DIRS.items():
-        container = run_root / stage_dir
-        if container.is_dir():
-            yield kind, container
+    yield from experiment_generation_containers(run_root).items()
 
 
 def list_experiment_generations(
