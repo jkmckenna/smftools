@@ -420,3 +420,18 @@ def test_transition_counting_is_validated():
     model.transition_counting = "everything"
     with pytest.raises(ValueError, match="transition_counting"):
         model.fit(np.array([[1.0, 0.0, np.nan, 1.0]]), np.arange(4), max_iter=1, device="cpu")
+
+
+def test_checkpoint_from_before_the_position_offset_loads_with_offset_zero():
+    """Context checkpoints saved before `HPS-12` have no
+    ``context_position_offset``; they load, indexing contexts from 0."""
+    saved = ContextBernoulliHMM(
+        init_emission=[0.05, 0.5], log_weights=np.zeros(4), position_codes=np.arange(10) % 4
+    )
+    state = saved.state_dict()
+    del state["context_position_offset"]  # the pre-HPS-12 layout
+
+    loaded = ContextBernoulliHMM(init_emission=[0.05, 0.5])
+    loaded.load_state_dict(state)
+    assert int(loaded.context_position_offset) == 0
+    torch.testing.assert_close(loaded.context_position_codes, saved.context_position_codes)
