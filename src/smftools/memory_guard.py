@@ -1256,6 +1256,7 @@ def run_tasks_parallel(
                     future_to_index = {}
                     submitted_at: dict = {}
                     broke = False
+                    recycle = False
                     still_pending: list[int] = []
                     while next_task is not None or future_to_index:
                         refill_budget = resolve_pool_budget(
@@ -1275,6 +1276,18 @@ def run_tasks_parallel(
                             args_in_flight[index] = args
                             submitted_at[future] = time.monotonic()
                             next_task = _next_wanted()
+                        if not future_to_index and completed_in_attempt > 0:
+                            # Nothing in flight, yet no room: the idle workers
+                            # of this pool keep the memory their tasks used
+                            # (freed Python memory is not returned to the OS),
+                            # and waiting does not shrink them. Recycle the
+                            # pool -- its workers exit -- and continue the
+                            # remaining tasks in a fresh one.
+                            recycle = True
+                            still_pending = [
+                                index for index in wanted if index not in completed_indices
+                            ]
+                            break
                         if not future_to_index:
                             # `F26a`: headroom is live, so poll with backoff
                             # before treating this as fatal. On success, loop
@@ -1334,6 +1347,15 @@ def run_tasks_parallel(
                     pending_indices = sorted(still_pending)
                 finally:
                     stop_watchdog()
+            if recycle and pending_indices:
+                # Not a failure: same worker count, no retry counted.
+                logger.info(
+                    "%srun_tasks_parallel: recycling the worker pool to release idle "
+                    "workers' memory; %d task(s) continue in a fresh pool",
+                    f"[{pool_label}] " if pool_label else "",
+                    len(pending_indices),
+                )
+                continue
             if pending_indices:
                 for index in pending_indices:
                     retry_counts[index] += 1

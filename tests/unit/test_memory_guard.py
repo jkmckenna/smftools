@@ -586,3 +586,46 @@ def test_run_tasks_parallel_retries_with_fewer_workers_after_pool_breaks(monkeyp
     )
     results = run_tasks_parallel(_hog_and_return, [(300, 6.0, 1), (300, 6.0, 2)], cfg=cfg)
     assert results == [1, 2]
+
+
+def test_idle_workers_holding_memory_are_recycled_not_fatal(monkeypatch) -> None:
+    """A pool whose workers finished their tasks keeps their memory (freed
+    Python memory is not returned to the OS), so with nothing in flight the
+    budget can show no room; waiting never helps. On a real run this aborted a
+    preprocess stage at task 131 of 352 with every worker idle. The pool is now
+    recycled -- its workers exit -- and the remaining tasks continue in a fresh
+    one, at the same worker count."""
+    import concurrent.futures
+
+    gib = 1024**3
+    state = {"pools": 0, "dirty": False}
+    real_executor = concurrent.futures.ProcessPoolExecutor
+
+    class CountingExecutor(real_executor):
+        def __init__(self, *args, **kwargs):
+            state["pools"] += 1
+            super().__init__(*args, **kwargs)
+
+        def shutdown(self, *args, **kwargs):
+            super().shutdown(*args, **kwargs)
+            state["dirty"] = False  # its workers have exited: memory released
+
+    monkeypatch.setattr(concurrent.futures, "ProcessPoolExecutor", CountingExecutor)
+    monkeypatch.setattr(memory_guard_module, "total_system_memory_bytes", lambda: 8 * gib)
+    # Full whenever the current pool has completed a task, free otherwise.
+    monkeypatch.setattr(
+        memory_guard_module,
+        "process_tree_private_bytes",
+        lambda: 8 * gib if state["dirty"] else 100 * 1024**2,
+    )
+    results: dict[int, int] = {}
+
+    def on_result(index, value):
+        state["dirty"] = True
+        results[index] = value
+
+    cfg = _cfg(threads=2, max_memory_percent=None, max_memory_gb=4.0, target_task_memory_mb=1)
+    run_tasks_parallel(_square, [(n,) for n in range(6)], cfg=cfg, on_result=on_result)
+
+    assert results == {n: n * n for n in range(6)}
+    assert state["pools"] >= 2  # recycled at least once instead of raising
