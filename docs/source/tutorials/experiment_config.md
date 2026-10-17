@@ -497,6 +497,11 @@ column is an error rather than a fallback.
 Fitting is tied EM (`hmm_tied_rounds` rounds of `hmm_tied_transition_iters`
 transition iterations per sample, then one pooled emission update); every
 sample still gets its own model artifact, so layers are written as before.
+Emission groups are fitted one at a time, each spread over the run's
+`threads`: worker processes load and hold a share of the group's members and
+re-estimate them in parallel each round, and only the pooled emission update
+runs in the main process (the result is the same as a one-thread fit). Each
+round is logged with its elapsed time.
 
 ## Comparing HMM fitting plans in one run
 

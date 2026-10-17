@@ -138,3 +138,67 @@ def test_tied_em_needs_members():
             bound=1.0,
             prior_sd=1.0,
         )
+
+
+def _build_member(index):
+    """A deterministic member, built where it is fitted (a shard worker)."""
+    doses = np.log([1.0, 2.0, 4.0, 1.5, 3.0])
+    stays = [(0.95, 0.90), (0.97, 0.85), (0.92, 0.95), (0.96, 0.88), (0.94, 0.92)]
+    if index == 3:
+        raise ValueError("no reads for this member")
+    X = _simulate(stays[index], 0.5 * (doses[index] - doses.mean()), n_reads=60, seed=index)
+    return TiedMember(_single(), X, np.arange(X.shape[1]), covariates=np.array([doses[index]]))
+
+
+def test_sharded_members_match_the_in_process_fit():
+    """Members built and fitted by worker processes give the in-process
+    result exactly: same shared levels, offsets, transitions and history;
+    a member whose input is unusable is reported as skipped."""
+    from smftools.hmm.tied_fit import LocalMembers, ShardedMembers, tied_em_backend
+
+    settings = dict(
+        free_w=np.zeros((2, 0), bool),
+        fixed_w=np.zeros((2, 0)),
+        rounds=3,
+        transition_iters=3,
+        shrinkage=50.0,
+        bound=float(np.log(10)),
+        prior_sd=1.0,
+    )
+    kept = [0, 1, 2, 4]
+    local = [_build_member(i) for i in kept]
+    expected, local_models = tied_em_backend(
+        LocalMembers(local),
+        covariates=[m.covariates for m in local],
+        categories=[None] * len(local),
+        **settings,
+    )
+    backend = ShardedMembers(_build_member, [(i,) for i in range(5)], workers=2)
+    try:
+        assert backend.skipped == {3: "no reads for this member"}
+        assert backend.indices == kept
+        result, models = tied_em_backend(
+            backend,
+            covariates=[m.covariates for m in local],
+            categories=[None] * len(local),
+            **settings,
+        )
+    finally:
+        backend.close()
+    np.testing.assert_allclose(result.theta, expected.theta, rtol=0, atol=1e-10)
+    np.testing.assert_allclose(result.offsets, expected.offsets, rtol=0, atol=1e-10)
+    np.testing.assert_allclose(result.history, expected.history, rtol=1e-12)
+    for model, reference in zip(models, local_models, strict=True):
+        torch.testing.assert_close(model.trans, reference.trans, rtol=0, atol=1e-10)
+        torch.testing.assert_close(model.emission, reference.emission, rtol=0, atol=1e-10)
+
+
+def test_a_failing_shard_worker_is_reported():
+    from smftools.hmm.tied_fit import ShardedMembers
+
+    with pytest.raises(RuntimeError, match="tied-fit worker failed"):
+        ShardedMembers(_explode, [(0,), (1,)], workers=2)
+
+
+def _explode(index):
+    raise RuntimeError(f"cannot build member {index}")

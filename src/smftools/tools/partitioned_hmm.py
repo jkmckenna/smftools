@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import dataclasses
+import functools
 import json
 import uuid
 from pathlib import Path
@@ -824,13 +825,39 @@ def hmm_sample_attributes(spine, cfg) -> dict[str, dict[str, str]] | None:
     return attributes
 
 
-def execute_tied_fit_task(spine_path, plans, cfg, models_dir) -> list[dict[str, object]]:
+def build_tied_member(spine_path, plan: HMMFitPlan, cfg, variant_cfg, device):
+    """One emission-group member: its configured model and training reads.
+    Raises KeyError / ValueError when the plan's input is unusable."""
+    from ..hmm.HMM import create_hmm
+    from ..hmm.tied_fit import TiedMember
+
+    trainer = HMMTrainer(cfg=variant_cfg, models_dir=Path("."))
+    values, coordinates, trainer.context_setup = _fit_input(spine_path, plan, cfg, variant_cfg)
+    model = create_hmm(variant_cfg, arch=plan.model_spec.architecture, device=device)
+    trainer._apply_contexts(model)
+    trainer._configure_axis(model, values)
+    trainer._per_bp_start(model, values)
+    return TiedMember(
+        model,
+        values,
+        coordinates,
+        covariates=np.asarray(plan.efficiency_covariates, dtype=float),
+        category=plan.efficiency_key or None,
+    )
+
+
+def execute_tied_fit_task(
+    spine_path, plans, cfg, models_dir, workers: int = 1
+) -> list[dict[str, object]]:
     """Fit one emission group jointly (`HPS-03`): shared emissions and
     efficiency offsets, each member's own transitions; publish one ordinary
-    model per member, so apply is unchanged."""
-    from ..hmm.HMM import create_hmm
+    model per member, so apply is unchanged.
+
+    With ``workers > 1`` (CPU) the members are built and fitted by that many
+    persistent worker processes, each holding its share; only the pooled
+    emission solve runs here. Results match the in-process fit."""
     from ..hmm.model_artifacts import checkpoint_path, metadata_path
-    from ..hmm.tied_fit import TiedMember, tied_em
+    from ..hmm.tied_fit import LocalMembers, ShardedMembers, tied_em_backend
 
     variant_cfg = plans[0].model_spec.config(cfg)
     device = resolve_torch_device(
@@ -855,60 +882,70 @@ def execute_tied_fit_task(spine_path, plans, cfg, models_dir) -> list[dict[str, 
         and metadata_path(checkpoint_path(Path(models_dir), key)).exists()
         for key in keys
     )
-    members, member_plans = [], []
+    member_plans, models = [], []
     result = None
     if not published:
-        for plan, trainer in zip(plans, trainers, strict=True):
-            try:
-                values, coordinates, setup = _fit_input(spine_path, plan, cfg, variant_cfg)
-            except (KeyError, ValueError) as exc:
-                artifacts[plan.fit_id] = {
-                    "fit_id": plan.fit_id,
-                    "skipped": True,
-                    "reason": str(exc),
-                }
-                continue
-            trainer.context_setup = setup
-            model = create_hmm(variant_cfg, arch=plan.model_spec.architecture, device=device)
-            trainer._apply_contexts(model)
-            trainer._configure_axis(model, values)
-            trainer._per_bp_start(model, values)
-            members.append(
-                TiedMember(
-                    model,
-                    values,
-                    coordinates,
-                    covariates=np.asarray(plan.efficiency_covariates, dtype=float),
-                    category=plan.efficiency_key or None,
-                )
-            )
-            member_plans.append(plan)
-        if members:
-            free_w, fixed_w = _tied_weight_masks(members[0].model, variant_cfg)
-            bounds = getattr(variant_cfg, "hmm_context_weight_bounds", None) or (0.1, 10.0)
-            result = tied_em(
-                members,
-                free_w=free_w,
-                fixed_w=fixed_w,
-                rounds=int(getattr(cfg, "hmm_tied_rounds", 8)),
-                transition_iters=int(getattr(cfg, "hmm_tied_transition_iters", 3)),
-                shrinkage=float(getattr(variant_cfg, "hmm_context_shrinkage", 50.0)),
-                bound=float(np.log(float(bounds[1]))),
-                prior_sd=float(getattr(cfg, "hmm_efficiency_prior_sd", 1.0)),
+        build_args = [(spine_path, plan, cfg, variant_cfg, device) for plan in plans]
+        sharded = str(device) == "cpu" and int(workers) > 1 and len(plans) > 1
+        if sharded:
+            backend = ShardedMembers(
+                build_tied_member,
+                build_args,
+                workers=workers,
                 device=device,
+                probe=functools.partial(_member_weight_masks, variant_cfg),
             )
-    fitted = {
-        plan.fit_id: (member, i) for i, (plan, member) in enumerate(zip(member_plans, members))
-    }
+            skipped, kept = backend.skipped, backend.indices
+            masks = backend.probes.get(kept[0]) if kept else None
+        else:
+            built, skipped = [], {}
+            for index, args in enumerate(build_args):
+                try:
+                    built.append(build_tied_member(*args))
+                except (KeyError, ValueError) as exc:
+                    skipped[index] = str(exc)
+            backend = LocalMembers(built)
+            kept = [i for i in range(len(plans)) if i not in skipped]
+            masks = _member_weight_masks(variant_cfg, built[0]) if built else None
+        try:
+            for index, reason in skipped.items():
+                artifacts[plans[index].fit_id] = {
+                    "fit_id": plans[index].fit_id,
+                    "skipped": True,
+                    "reason": reason,
+                }
+            member_plans = [plans[i] for i in kept]
+            if member_plans:
+                free_w, fixed_w = masks
+                bounds = getattr(variant_cfg, "hmm_context_weight_bounds", None) or (0.1, 10.0)
+                result, models = tied_em_backend(
+                    backend,
+                    covariates=[
+                        np.asarray(p.efficiency_covariates, dtype=float) for p in member_plans
+                    ],
+                    categories=[p.efficiency_key or None for p in member_plans],
+                    free_w=free_w,
+                    fixed_w=fixed_w,
+                    rounds=int(getattr(cfg, "hmm_tied_rounds", 8)),
+                    transition_iters=int(getattr(cfg, "hmm_tied_transition_iters", 3)),
+                    shrinkage=float(getattr(variant_cfg, "hmm_context_shrinkage", 50.0)),
+                    bound=float(np.log(float(bounds[1]))),
+                    prior_sd=float(getattr(cfg, "hmm_efficiency_prior_sd", 1.0)),
+                    device=device,
+                    label=f"{plans[0].emission_group} ({len(member_plans)} members)",
+                )
+        finally:
+            backend.close()
+    fitted = {plan.fit_id: (model, i) for i, (plan, model) in enumerate(zip(member_plans, models))}
     for plan, trainer, key in zip(plans, trainers, keys, strict=True):
         if plan.fit_id in artifacts:
             continue
-        member, index = fitted.get(plan.fit_id, (None, None))
+        model, index = fitted.get(plan.fit_id, (None, None))
 
-        def fit_model(member=member):
-            if member is None:
+        def fit_model(model=model):
+            if model is None:
                 raise RuntimeError("tied HMM member was not fitted")
-            return member.model, list(result.history)
+            return model, list(result.history)
 
         trainer._load_or_fit_artifact(
             key=key,
@@ -937,6 +974,10 @@ def execute_tied_fit_task(spine_path, plans, cfg, models_dir) -> list[dict[str, 
             )
         artifacts[plan.fit_id] = artifact
     return [artifacts[plan.fit_id] for plan in plans]
+
+
+def _member_weight_masks(variant_cfg, member) -> tuple[np.ndarray, np.ndarray]:
+    return _tied_weight_masks(member.model, variant_cfg)
 
 
 def _tied_weight_masks(model, cfg) -> tuple[np.ndarray, np.ndarray]:
@@ -2321,7 +2362,11 @@ def execute_partitioned_hmm(spine_path, cfg, output_dir) -> dict[str, Path]:
         # One revision per stage invocation: every worker resolves the same new
         # immutable IDs, while a later forced invocation receives fresh IDs.
         setattr(cfg, "_hmm_fit_revision", uuid.uuid4().hex)
-    from ..memory_guard import require_memory_headroom, run_tasks_parallel
+    from ..memory_guard import (
+        require_memory_headroom,
+        resource_envelope_for_config,
+        run_tasks_parallel,
+    )
 
     # A GPU device (MPS on Apple Silicon, confirmed via real-data testing;
     # CUDA not verified here but not assumed safe either) isn't something
@@ -2368,11 +2413,15 @@ def execute_partitioned_hmm(spine_path, cfg, output_dir) -> dict[str, Path]:
         if plan.emission_group:
             tied_groups.setdefault((plan.model_spec.label, plan.emission_group), []).append(plan)
     tied_jobs = [tied_groups[key] for key in sorted(tied_groups)]
+    # One group at a time, its members spread over every thread: a group's
+    # rounds are synchronised, so one large group in one worker would leave
+    # the others idle (and members of different groups never share work).
+    tied_workers = max(1, int(resource_envelope_for_config(cfg).resolved_threads))
     tied_results = run_tasks_parallel(
         execute_tied_fit_task,
-        [(spine_path, group, cfg, models_dir) for group in tied_jobs],
+        [(spine_path, group, cfg, models_dir, tied_workers) for group in tied_jobs],
         cfg=cfg,
-        force_sequential=str(device) != "cpu",
+        force_sequential=True,
         pool_label=f"hmm tied fit pool ({len(tied_jobs)} emission groups, device={device})",
         per_item_memory_mb=max(
             (sum(plan.estimated_memory_bytes for plan in group) for group in tied_jobs),

@@ -2145,3 +2145,36 @@ def test_genome_mode_fits_once_and_decodes_every_tile(tmp_path, monkeypatch):
     artifact = json.loads(tasks.iloc[0]["hmm_model_artifacts_json"])[0]
     model = _load_model(cfg, outputs, artifact)
     assert model.position_codes.size < 12 * 3  # windows, not the reference per member
+
+
+def test_tied_fit_spreads_members_over_worker_processes(tmp_path, monkeypatch):
+    """With more than one thread the stage builds and fits an emission
+    group's members in worker processes; the published models equal the
+    single-thread (in-process) fit's."""
+    import smftools.hmm.tied_fit as tied_fit
+
+    shards = []
+    real = tied_fit.ShardedMembers.__init__
+
+    def counting(self, *args, **kwargs):
+        shards.append(kwargs.get("workers"))
+        real(self, *args, **kwargs)
+
+    monkeypatch.setattr(tied_fit.ShardedMembers, "__init__", counting)
+    emissions = {}
+    for threads in (1, 2):
+        cfg, outputs = _two_sample_run(
+            tmp_path / f"t{threads}",
+            monkeypatch,
+            hmm_emission_groupby=["enzyme"],
+            hmm_emission_scope="shared",
+            threads=threads,
+        )
+        tasks = pd.read_parquet(outputs["task_catalog"])
+        artifacts = [json.loads(a)[0] for a in tasks["hmm_model_artifacts_json"]]
+        emissions[threads] = [
+            _load_model(cfg, outputs, a).emission.detach().numpy() for a in artifacts
+        ]
+    assert shards == [2]  # only the two-thread run sharded
+    for sharded, local in zip(emissions[2], emissions[1], strict=True):
+        np.testing.assert_allclose(sharded, local, rtol=0, atol=1e-10)

@@ -26,10 +26,15 @@ shared emissions and the offsets.
 
 from __future__ import annotations
 
+import pickle
 from dataclasses import dataclass, field
 from typing import Any, Sequence
 
 import numpy as np
+
+from ..logging_utils import get_logger
+
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -188,6 +193,180 @@ def set_emissions(model, theta: np.ndarray, w: np.ndarray, offset: float) -> Non
         )
 
 
+class LocalMembers:
+    """Members held in this process; the rounds run one member at a time."""
+
+    def __init__(self, members: Sequence[TiedMember]):
+        self.members = list(members)
+
+    def initial_logits(self, transition_iters: int, device) -> list[np.ndarray]:
+        return [_initial_logit(m, transition_iters, device) for m in self.members]
+
+    def round(self, theta, w, offsets, *, refit, transition_iters, device):
+        return [
+            _member_round(m, theta, w, offset, refit, transition_iters, device)
+            for m, offset in zip(self.members, offsets, strict=True)
+        ]
+
+    def finalize(self, theta, w, offsets) -> list[Any]:
+        for member, offset in zip(self.members, offsets, strict=True):
+            set_emissions(member.model, theta, w, offset)
+        return [m.model for m in self.members]
+
+    def close(self) -> None:
+        pass
+
+
+def _initial_logit(member: TiedMember, transition_iters: int, device) -> np.ndarray:
+    member.model.fit(
+        member.X, member.coords, device=device, max_iter=transition_iters, update_emission=True
+    )
+    return _logit(member.model.emission.detach().cpu().numpy())
+
+
+def _member_round(member, theta, w, offset, refit, transition_iters, device):
+    """(hits, trials, last log-likelihood or 0) for one member and round."""
+    loglik = 0.0
+    if refit:
+        set_emissions(member.model, theta, w, offset)
+        hist = member.model.fit(
+            member.X,
+            member.coords,
+            device=device,
+            max_iter=transition_iters,
+            update_emission=False,
+        )
+        loglik = float(hist[-1]) if hist else 0.0
+    hits, trials = emission_tables(member.model, member.X, member.coords, device=device)
+    return hits, trials, loglik
+
+
+def _shard_worker(conn, build, jobs, device, probe=None) -> None:
+    """A persistent worker owning some members: builds them, then serves
+    rounds until told to stop. ``jobs`` is [(index, build args)]; ``probe``
+    (optional) is reported for every built member."""
+    import traceback
+
+    from ..parallel_utils import configure_worker_threads
+
+    configure_worker_threads(1)
+    try:
+        members: dict[int, TiedMember] = {}
+        skipped: dict[int, str] = {}
+        for index, args in jobs:
+            try:
+                members[index] = build(*args)
+            except (KeyError, ValueError) as exc:
+                skipped[index] = str(exc)
+        probes = {i: probe(m) for i, m in members.items()} if probe is not None else {}
+        conn.send(("ok", (skipped, probes)))
+        while True:
+            command, payload = conn.recv()
+            if command == "stop":
+                break
+            if command == "init":
+                result = {i: _initial_logit(m, payload, device) for i, m in members.items()}
+            elif command == "round":
+                theta, w, offsets, refit, iters = payload
+                result = {
+                    i: _member_round(m, theta, w, offsets[i], refit, iters, device)
+                    for i, m in members.items()
+                }
+            elif command == "finalize":
+                theta, w, offsets = payload
+                for i, m in members.items():
+                    set_emissions(m.model, theta, w, offsets[i])
+                # Plain pickle bytes: a tensor sent through a multiprocessing
+                # pipe goes by torch's shared-memory hand-off, which keeps
+                # this process alive at exit until it times out.
+                result = {i: pickle.dumps(m.model) for i, m in members.items()}
+            else:
+                raise ValueError(f"unknown command {command!r}")
+            conn.send(("ok", result))
+    except BaseException:
+        conn.send(("error", traceback.format_exc()))
+    finally:
+        conn.close()
+
+
+class ShardedMembers:
+    """Members built and held by persistent worker processes (one shard
+    each); a round runs every shard at once. Member order -- and so every
+    pooled quantity -- is the same as :class:`LocalMembers`'."""
+
+    def __init__(
+        self, build, build_args: Sequence[tuple], *, workers: int, device="cpu", probe=None
+    ):
+        import multiprocessing
+
+        context = multiprocessing.get_context()
+        n = len(build_args)
+        workers = max(1, min(int(workers), n))
+        self._procs, self._conns = [], []
+        for shard in range(workers):
+            jobs = [(i, build_args[i]) for i in range(shard, n, workers)]
+            parent, child = context.Pipe()
+            proc = context.Process(target=_shard_worker, args=(child, build, jobs, device, probe))
+            proc.start()
+            child.close()
+            self._procs.append(proc)
+            self._conns.append(parent)
+        self.skipped: dict[int, str] = {}
+        self.probes: dict[int, Any] = {}
+        for skipped, probes in self._gather():
+            self.skipped.update(skipped)
+            self.probes.update(probes)
+        self.indices = [i for i in range(n) if i not in self.skipped]
+
+    def _gather(self) -> list:
+        replies = []
+        for conn in self._conns:
+            try:
+                status, payload = conn.recv()
+            except EOFError as exc:
+                self.close()
+                raise RuntimeError("a tied-fit worker exited unexpectedly") from exc
+            if status != "ok":
+                self.close()
+                raise RuntimeError(f"tied-fit worker failed:\n{payload}")
+            replies.append(payload)
+        return replies
+
+    def _call(self, command, payload) -> dict[int, Any]:
+        for conn in self._conns:
+            conn.send((command, payload))
+        merged: dict[int, Any] = {}
+        for reply in self._gather():
+            merged.update(reply)
+        return merged
+
+    def initial_logits(self, transition_iters: int, device) -> list[np.ndarray]:
+        result = self._call("init", transition_iters)
+        return [result[i] for i in self.indices]
+
+    def round(self, theta, w, offsets, *, refit, transition_iters, device):
+        by_index = dict(zip(self.indices, offsets, strict=True))
+        result = self._call("round", (theta, w, by_index, refit, transition_iters))
+        return [result[i] for i in self.indices]
+
+    def finalize(self, theta, w, offsets) -> list[Any]:
+        by_index = dict(zip(self.indices, offsets, strict=True))
+        result = self._call("finalize", (theta, w, by_index))
+        return [pickle.loads(result[i]) for i in self.indices]
+
+    def close(self) -> None:
+        for conn in self._conns:
+            try:
+                conn.send(("stop", None))
+            except (BrokenPipeError, OSError):
+                pass
+        for proc in self._procs:
+            proc.join(timeout=30)
+            if proc.is_alive():
+                proc.terminate()
+        self._conns, self._procs = [], []
+
+
 def tied_em(
     members: Sequence[TiedMember],
     *,
@@ -200,48 +379,74 @@ def tied_em(
     prior_sd: float,
     device="cpu",
 ) -> TiedResult:
-    """Fit the members' shared emissions, offsets and own transitions."""
+    """Fit the members' shared emissions, offsets and own transitions (in
+    this process; the members' models are updated in place)."""
     if not members:
         raise ValueError("tied EM needs at least one member")
-    raw = np.array([np.atleast_1d(m.covariates).astype(float) for m in members])
+    result, _ = tied_em_backend(
+        LocalMembers(members),
+        covariates=[m.covariates for m in members],
+        categories=[m.category for m in members],
+        free_w=free_w,
+        fixed_w=fixed_w,
+        rounds=rounds,
+        transition_iters=transition_iters,
+        shrinkage=shrinkage,
+        bound=bound,
+        prior_sd=prior_sd,
+        device=device,
+    )
+    return result
+
+
+def tied_em_backend(
+    backend,
+    *,
+    covariates: Sequence[np.ndarray],
+    categories: Sequence[str | None],
+    free_w: np.ndarray,
+    fixed_w: np.ndarray,
+    rounds: int,
+    transition_iters: int,
+    shrinkage: float,
+    bound: float,
+    prior_sd: float,
+    device="cpu",
+    label: str = "",
+) -> tuple[TiedResult, list[Any]]:
+    """Tied EM over a members backend (:class:`LocalMembers` or
+    :class:`ShardedMembers`); returns the result and the fitted models in
+    member order."""
+    import time
+
+    if not len(covariates):
+        raise ValueError("tied EM needs at least one member")
+    raw = np.array([np.atleast_1d(c).astype(float) for c in covariates])
     if raw.ndim == 1:
         raw = raw[:, None]
-    covariates = raw - raw.mean(axis=0, keepdims=True) if raw.size else np.zeros((len(members), 0))
-    constant = [j for j in range(covariates.shape[1]) if np.allclose(covariates[:, j], 0.0)]
-    names = sorted({m.category for m in members if m.category is not None})
-    categories = [names.index(m.category) if m.category is not None else None for m in members]
+    centred = raw - raw.mean(axis=0, keepdims=True) if raw.size else np.zeros((len(raw), 0))
+    constant = [j for j in range(centred.shape[1]) if np.allclose(centred[:, j], 0.0)]
+    names = sorted({c for c in categories if c is not None})
+    category_index = [names.index(c) if c is not None else None for c in categories]
+    started = time.monotonic()
+    tag = f"tied fit {label}: " if label else "tied fit: "
 
     # Round 0: each member's own quick fit orients the states and starts the
     # shared levels at their mean.
     history: list[float] = []
-    for member in members:
-        member.model.fit(
-            member.X, member.coords, device=device, max_iter=transition_iters, update_emission=True
-        )
-    theta = np.mean([_logit(m.model.emission.detach().cpu().numpy()) for m in members], axis=0)
+    theta = np.mean(backend.initial_logits(transition_iters, device), axis=0)
     w = np.array(fixed_w, dtype=float)
-    beta = np.zeros(covariates.shape[1])
+    beta = np.zeros(centred.shape[1])
     gamma = np.zeros(len(names))
-    offsets = [0.0] * len(members)
+    offsets = [0.0] * len(centred)
     for round_ in range(rounds + 1):
-        tables = []
-        total = 0.0
-        for member, offset in zip(members, offsets, strict=True):
-            if round_ > 0:
-                set_emissions(member.model, theta, w, offset)
-                hist = member.model.fit(
-                    member.X,
-                    member.coords,
-                    device=device,
-                    max_iter=transition_iters,
-                    update_emission=False,
-                )
-                total += float(hist[-1]) if hist else 0.0
-            tables.append(emission_tables(member.model, member.X, member.coords, device=device))
+        rows = backend.round(
+            theta, w, offsets, refit=round_ > 0, transition_iters=transition_iters, device=device
+        )
         if round_ > 0:
-            history.append(total)
-        hits = np.stack([t[0] for t in tables])
-        trials = np.stack([t[1] for t in tables])
+            history.append(float(sum(row[2] for row in rows)))
+        hits = np.stack([row[0] for row in rows])
+        trials = np.stack([row[1] for row in rows])
         level = _sigmoid(theta)
         ridge = shrinkage * level * (1.0 - level)
         theta, w, beta, gamma_vec, delta = fit_emission_table(
@@ -249,8 +454,8 @@ def tied_em(
             trials,
             free_w=free_w,
             fixed_w=w,
-            covariates=covariates,
-            categories=categories,
+            covariates=centred,
+            categories=category_index,
             n_categories=len(names),
             ridge=ridge,
             bound=bound,
@@ -260,14 +465,25 @@ def tied_em(
         )
         gamma = gamma_vec
         offsets = [float(d) for d in delta]
-    for member, offset in zip(members, offsets, strict=True):
-        set_emissions(member.model, theta, w, offset)
-    return TiedResult(
-        theta=theta,
-        w=w,
-        beta=beta,
-        gamma={name: float(gamma[i]) for i, name in enumerate(names)},
-        offsets=offsets,
-        history=history,
-        constant_covariates=constant,
+        logger.info(
+            "%sround %d/%d over %d members (%.0fs)%s",
+            tag,
+            round_,
+            rounds,
+            len(rows),
+            time.monotonic() - started,
+            f"; log-likelihood {history[-1]:.1f}" if round_ > 0 else "",
+        )
+    models = backend.finalize(theta, w, offsets)
+    return (
+        TiedResult(
+            theta=theta,
+            w=w,
+            beta=beta,
+            gamma={name: float(gamma[i]) for i, name in enumerate(names)},
+            offsets=offsets,
+            history=history,
+            constant_covariates=constant,
+        ),
+        models,
     )
