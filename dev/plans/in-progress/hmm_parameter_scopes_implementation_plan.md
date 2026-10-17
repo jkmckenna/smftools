@@ -1,6 +1,6 @@
 # HMM parameter scopes, fitting plans and a project model store
 
-Status: in progress. Items `HPS-01`--`HPS-12`; `HPS-01`--`HPS-05`, `HPS-07`, `HPS-11`, `HPS-12` implemented. Builds on `HCE` (context
+Status: in progress. Items `HPS-01`--`HPS-13`; `HPS-01`--`HPS-05`, `HPS-07`, `HPS-11`--`HPS-13` implemented. Builds on `HCE` (context
 emissions, `HCE-07` per-state weights), `HXR` (fits shared across
 references), `SUG-02` (stage-only refit) and `SLC` (storage lifecycle).
 
@@ -97,6 +97,7 @@ fit group within an emission group (as `HXR-02`).
 | `HPS-10` | docs: choosing scopes for a comparison, config reference | proposed |
 | `HPS-11` | position axis: `hmm_axis: sites` (default) \| `bp`. `bp` places the site calls on the window's full per-bp grid (single and multi-channel; NaN elsewhere; coverage masking unchanged), decodes every position, sets `transition_counting = "span"` for fits and adaptations, and scales a new model's configured per-site starting transitions by the observed site spacing (stay `s ** (1 / spacing)`); refused with `hmm_distance_aware`; fingerprints and fit ids unchanged at `sites` | implemented |
 | `HPS-12` | genome mode: a sample's genome-mode tasks form one fit group (all chromosomes and tiles) -- one model per sample, fitted on a bounded uniform subset of its reads (hash-ranked as before; each read fitted in the first tile window that owns it) and applied to every tile; no per-region fits for now. Context codes are built per loaded window (`ContextBernoulliHMM` position offset), at fit, pooled fit and apply, so a chromosome is never coded whole; locus references are unchanged (their window is the reference). Shared emission scopes tie the per-sample genome fits as usual | implemented |
+| `HPS-13` | tied-fit throughput: an emission group's members built, held and re-estimated by persistent worker processes (one share each), the pooled emission solve in the parent -- identical results; groups run one at a time over all threads; per-round progress log. Found on the 260820 regeneration: 161 members fitted serially in one worker took ~80 min with eleven threads idle | implemented |
 
 ### `HPS-07` design: layer sets
 
