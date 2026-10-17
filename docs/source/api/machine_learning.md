@@ -134,6 +134,7 @@ Immutable run, model, and result publication.
    :recursive:
 
    smftools.machine_learning.artifacts.common
+   smftools.machine_learning.artifacts.compaction
    smftools.machine_learning.artifacts.indexing
    smftools.machine_learning.artifacts.model
    smftools.machine_learning.artifacts.publication
