@@ -1,7 +1,8 @@
 # Sequence-context-aware HMM emissions (`HCE`)
 
-**Status:** in progress. `HCE-01`–`HCE-04` merged; `HCE-05` qualified (not adopted as the default); `HCE-06`, `HCE-08`, `HCE-09`, `HCE-10` merged (`HCE-10`: #690); `HCE-07` qualified (with `learned`, prefer `hmm_context_states: all`); `HCE-11` proposed. One PR per item, in order. The
-default stays `none` unless `HCE-05` qualifies a mode.
+**Status:** in progress. `HCE-01`–`HCE-04` merged; `HCE-05` qualified (not adopted as the default); `HCE-06`, `HCE-08`, `HCE-09`, `HCE-10` merged (`HCE-10`: #690); `HCE-07` qualified (with `learned`, prefer `hmm_context_states: all`); `HCE-11` proposed. One PR per item, in order.
+Defaults (`HPS`): deaminase configs use `learned` with `hmm_context_states: all`
+(`deaminase.yaml`); other modalities keep `none` until qualified.
 
 ## Question
 

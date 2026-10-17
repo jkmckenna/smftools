@@ -55,6 +55,9 @@ Every tracked item merged to `main` and verified against the code.
 | `generation_lifecycle_and_naming_implementation_plan.md` | `EGL` generation lifecycle and experiment naming; the `NKG` rollout continues as a log in `logs/` |
 | `portable_storage_roots_implementation_plan.md` | `PSR-01`–`PSR-20`; one tracked exception -- `PSR-19`'s in-band catalog updates on publish, `data scan` is the substitute |
 | `basecall_stage_and_source_selection_implementation_plan.md` | `BCS-01`–`BCS-11`; two tracked exceptions -- `BCS-06` is a `full`-only pre-step rather than a semantic-DAG node, `BCS-09` ships as same-volume reporting rather than scheduling enforcement (no batch orchestrator exists yet to enforce within) |
+| `stage_upstream_guard_implementation_plan.md` | `SUG-01` stage commands refuse to recompute stale upstream stages unless `--allow-upstream` (merged); `SUG-02` stage-only refit folded into `HPS-07` |
+| `hmm_cross_reference_fit_implementation_plan.md` | `HXR-01`–`HXR-06` HMM fits shared across a declared group of references (`hmm_reference_groups`), accepted on a two-allele run; shared emissions (`HPS`) now cover the allele artefact by default |
+| `generation_prune_scope_implementation_plan.md` | `EGL-03c` project / directory-wide prune planning -- superseded, folded into `SLC-09` |
 
 ## `in-progress/`
 
@@ -62,18 +65,16 @@ An active branch, some items merged and others open.
 
 | document | scope |
 |---|---|
-| `stage_upstream_guard_implementation_plan.md` | `SUG-01`–`SUG-02` stage commands (`preprocess`, `spatial`, `hmm`, `latent`, `batch`) refuse to recompute earlier stages with existing stale outputs unless `--allow-upstream`; stage-only refits on stale upstream generations |
 | `alignment_rescue_sequence_implementation_plan.md` | `ARS` rescued reads keep their SEQ (minimap2 omits it on secondaries, so every rescued read was dropped at extraction, `F64`), repair of committed alignments, raw re-extraction |
-| `hmm_context_emissions_implementation_plan.md` | `HCE` (`HCE-01`–`HCE-04`, `HCE-06`, `HCE-08`–`HCE-10` merged; `HCE-05` qualified: default `none`, `learned` opt-in; `HCE-07` qualified, preferred with `learned`; `HCE-11` proposed) sequence-context-aware HMM emissions: per-(state, context) modification probabilities as relative weights on the log-odds scale; `table` (e.g. naked-DNA calibration) or `learned` in EM with shrinkage; CpG kept separate; qualified on a multi-enzyme panel before any default changes |
+| `hmm_context_emissions_implementation_plan.md` | `HCE` sequence-context-aware HMM emissions: `HCE-01`–`HCE-10` merged, `HCE-05` / `HCE-07` qualified; defaults `learned` + every-state weights for deaminase configs (`HPS`); `HCE-11` proposed |
 | `ml_project_labels_masks_coordinate_maps_plan.md` | `MLX` project-scope (`MLX-01`–`MLX-03`, `MLX-05`–`MLX-07`, `MLX-09`–`MLX-11` merged) ML studies: external label table (`labels.source: table`), multi-window position masks, cross-reference coordinate maps with a leakage guard |
 | `selective_pod5_rebasecalling_implementation_plan.md` | `SRB` selective POD5 re-basecalling and processing lineages; `SRB-01`–`SRB-09` merged, one open item: basecalls onto the shared generation layout |
 | `duplicate_detection_span_agnostic_implementation_plan.md` | `DSA` span-agnostic duplicate detection; `DSA-01`–`DSA-04`, `DSA-06` merged, `DSA-05` measured (hierarchical-cap revisit open) |
 | `transfer_time_analysis_bundling_plan.md` | `TAB` bundle a run's analysis-tree generations into few large files before moving them between drives; `TAB-01`, `TAB-02` merged, `TAB-03` blocked (no tested configuration beat plain rsync); zarr v3 sharding and coarser source-side partitioning both ruled out first, on real data |
 | `motif_scanning_occupancy_implementation_plan.md` | `MOT-01`–`MOT-06` (`MOT-01`–`MOT-04` merged; `MOT-05`, `MOT-06` proposed) motif scanning (user-supplied motif file; built-in numpy engine, optional FIMO), bulk HMM-class tracks with motif lanes, and per-molecule motif occupancy from HMM classes (TF-sized, medium, nucleosome, accessible, uninformative), co-occupancy and group comparisons; an analysis + CLI, not a stage |
 | `barcode_qc_end_identity_implementation_plan.md` | `BQC-01`–`BQC-05` (`BQC-01`–`BQC-03b` merged; `BQC-01b`, `BQC-04`, `BQC-05` proposed) per-end barcode evidence (names, edit distances, boundaries, clips) for every read; a ligation / detection / tagging model separating miscalls, unbarcoded rear ends and free-adapter tagging; extract-then-trim before alignment; with / without a spike-in; extends `EGL-31` |
-| `hmm_cross_reference_fit_implementation_plan.md` | `HXR-01`–`HXR-06` HMM fits shared across a declared group of references (`hmm_reference_groups`; e.g. two alleles of one locus in one sample), so allele comparisons of HMM states are not fit artefacts (`HXR-01`–`HXR-06` implemented and accepted on real data; open until a store is regenerated with it) |
 | `storage_lifecycle_implementation_plan.md` | `SLC-01`–`SLC-12` disk-space lifecycle: compressed model payloads and compaction, model persistence policy and unread-model retirement (extends `MLR-16`), reference-aware generation pruning with archive / confirmed delete (replaces the `EGL-03b` blocker, folds in `EGL-03c`), pre-stage space check, one `data usage` report (`SLC-01`, `SLC-06`–`SLC-08`, `SLC-11` implemented) |
-| `hmm_parameter_scopes_implementation_plan.md` | `HPS-01`–`HPS-10` transitions per sample x reference x strand with emissions shared per emission group (enzyme x dose) plus a shrunk per-sample efficiency offset (tied EM); named fitting plans, a project HMM model store and per-plan layer sets (`HPS-01`–`HPS-04` shared emissions with technical efficiency offsets and `HPS-11` per-bp axis implemented) |
+| `hmm_parameter_scopes_implementation_plan.md` | `HPS` transitions per sample x reference x strand, emissions shared per emission group with technical efficiency offsets (tied EM), per-bp axis, new HMM defaults (`HPS-01`–`HPS-04`, `HPS-11` merged); next `HPS-05`–`HPS-08` named fitting plans, project HMM model store, per-plan layer sets (absorbs `SUG-02`) |
 
 ## `proposed/`
 
@@ -83,7 +84,6 @@ A plan with no implementation branch yet.
 |---|---|
 | `agent_files_plan.md` | restructuring the repo's `AGENTS.md`/`CLAUDE.md` files; explicitly not deployed |
 | `pipeline_throughput_implementation_plan.md` | `THR-01`–`THR-06` -- single-threaded, pool-collapse and redundant-scan bottlenecks found running `experiment batch full` (`F53`–`F57`, `F59`): alignment rescue, duplicate-detection group sizing, latent, raw extraction |
-| `generation_prune_scope_implementation_plan.md` | `EGL-03c` -- fan the existing read-only, dry-run-only prune planner (`EGL-03a`) out to a project and to an arbitrary directory of run roots; does not touch `EGL-03b` (deletion), still blocked |
 | `ml_model_runs_interpretability_plan.md` | `MLR-01`–`MLR-14` model runs as self-describing records (task, data, molecules per fold, fitted models, evaluation, curves), applying saved runs to new data, interpretability per run (position importance, per-molecule attributions, attribution clustermaps beside the input), run comparison, fold-matrix cache, validation role, detector catalogue for CNNs, detector-scale CNNs (pattern-detector span from sub-nucleosome to full locus; theoretical and effective span), model classes and per-task zoos (additive, tabular non-linear, spatial, global sequence), pretraining (masked reconstruction / AE / VAE encoders) and fine-tuning with a declared leakage policy |
 | `chimera_sensitivity_implementation_plan.md` | `CHS-01`–`CHS-04` detected vs estimated chimera rates: in-silico detector sensitivity, blind (same-allele / same-strand) chimeras, detector overlap |
 
