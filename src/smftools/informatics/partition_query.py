@@ -190,7 +190,73 @@ def _position_selector(var_names, start: int | None, end: int | None):
     return np.flatnonzero((positions >= int(start)) & (positions < int(end)))
 
 
+#: zarr array attribute naming a stored layer's encoding (`DLS-02`).
+LAYER_ENCODING_ATTR = "smftools_encoding"
+#: A probability stored as uint8: 0..254 = floor(p * 254), 255 = missing.
+#: Rounding down keeps every threshold on the 1/254 grid (0.5 included)
+#: exact: p >= t exactly when the stored value >= t, so features re-derived
+#: from a stored posterior equal those called from the full-precision one.
+PROBABILITY_U8 = "probability_u8"
+_U8_MISSING = 255
+_U8_SCALE = 254.0
+
+
+def encode_probability_u8(values: np.ndarray) -> np.ndarray:
+    """Probabilities in [0, 1] (NaN = missing) as uint8, rounded down (error
+    in [0, 1/254)); 0 and 1 are exact."""
+    values = np.asarray(values, dtype=np.float64)
+    encoded = np.full(values.shape, _U8_MISSING, dtype=np.uint8)
+    finite = np.isfinite(values)
+    scaled = np.clip(values[finite], 0.0, 1.0) * _U8_SCALE
+    # The epsilon absorbs float error at exact grid points (e.g. 0.5 * 254).
+    encoded[finite] = np.floor(scaled + 1e-9).astype(np.uint8)
+    return encoded
+
+
+def decode_probability_u8(values: np.ndarray) -> np.ndarray:
+    values = np.asarray(values)
+    decoded = values.astype(np.float32) / np.float32(_U8_SCALE)
+    decoded[values == _U8_MISSING] = np.nan
+    return decoded
+
+
+def layer_encodings(path: str | Path) -> dict[str, str]:
+    """Stored layers of a zarr store that carry an encoding, by name."""
+    import zarr
+
+    try:
+        group = zarr.open_group(str(path), mode="r")
+        layers = group["layers"]
+    except (KeyError, FileNotFoundError, ValueError, TypeError):
+        return {}
+    encodings = {}
+    for name in layers.keys():
+        encoding = dict(layers[name].attrs).get(LAYER_ENCODING_ATTR)
+        if encoding:
+            encodings[str(name)] = str(encoding)
+    return encodings
+
+
+def _decode_layers(adata, path: str | Path):
+    for name, encoding in layer_encodings(path).items():
+        if name not in adata.layers:
+            continue
+        if encoding != PROBABILITY_U8:
+            raise ValueError(f"{path}: layer {name!r} has unknown encoding {encoding!r}")
+        adata.layers[name] = decode_probability_u8(adata.layers[name])
+    return adata
+
+
 def read_zarr_subset(
+    path: str | Path,
+    **kwargs,
+):
+    """Read bounded rows and positions (see ``_read_zarr_subset``); layers
+    stored with an encoding (`DLS-02`) come back decoded."""
+    return _decode_layers(_read_zarr_subset(path, **kwargs), path)
+
+
+def _read_zarr_subset(
     path: str | Path,
     *,
     row_indices: Iterable[int] | None = None,

@@ -1,6 +1,6 @@
 # Derived layers and lean generations (`DLS`)
 
-Status: in progress. Items `DLS-01`--`DLS-08`; `DLS-01` implemented. Works
+Status: in progress. Items `DLS-01`--`DLS-08`; `DLS-01`, `DLS-02` implemented. Works
 with `SLC` (`in-progress/storage_lifecycle_implementation_plan.md`), which
 manages generations once written; `DLS` reduces what a generation writes.
 Takes over the compact-feature-storage part of `HPS-08`
@@ -62,7 +62,7 @@ before.
 | id | item | status |
 |---|---|---|
 | `DLS-01` | `write_csv_exports` (default off): obs / var / keys CSV copies beside a written spine only when enabled; set when the experiment config loads, inherited by worker processes; not a semantic key (no stage becomes stale) | implemented |
-| `DLS-02` | posterior provenance and encoding: the posterior layer records the model id, `fit_config_hash`, checksum, axis and encoding per task; stored as 8-bit (0-254 = p x 254, 255 = no call), decoded to float on read; float generations still read | proposed |
+| `DLS-02` | posterior provenance and encoding: posterior layers stored as uint8 (0-254 = floor(p x 254), so thresholds on the 1/254 grid such as 0.5 stay exact; 255 = no call; tagged `smftools_encoding: probability_u8` on the zarr array), decoded to float32 by `read_zarr_subset` -- so by every reader -- and untagged float layers of older generations read unchanged; `hmm_posterior_encoding: float` opts out; not a semantic key (features are called before encoding). Provenance already existed per read in the derived read index (`model_id`, checksum); `smftools.hmm.provenance.hmm_read_models` joins it with the fit catalog (label, `fit_config_hash`, emission scope / group, efficiency offset) | implemented |
 | `DLS-03` | HMM features derived from the posterior: one versioned function builds states, size classes, aggregates, lengths and merged layers from the posterior and the feature settings (`hmm_feature_sets`, `hmm_merge_layer_features`, posterior threshold); the HMM stage uses it for plots and summaries without storing the layers; `materialize(..., derived=...)` builds them on request with the generation's recorded settings or overrides, and records what it used | proposed |
 | `DLS-04` | preprocess transforms derived from `X` (`nan_half`, `nan0_0minus1`, and any other fixed transform found by the same audit) | proposed |
 | `DLS-05` | one read table per experiment: stage spines store only the columns they add and point at the experiment's table; `materialize` and `load_spine` join them; old spines (full obs) read unchanged | proposed |
