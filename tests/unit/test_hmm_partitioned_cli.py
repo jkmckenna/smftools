@@ -2607,3 +2607,57 @@ def test_the_cpg_model_runs_per_site_with_one_emission_model_and_no_sample_sheet
     decoded = np.flatnonzero(np.isfinite(slice_.layers["CpG_posterior_modified"]).any(axis=0))
     assert set(decoded) <= {1, 3, 7}  # CpG cytosines of ACGCGTACGTAC: per site
     assert np.isfinite(slice_.layers["CpG_cpg_patch"]).any()
+
+
+def test_a_single_window_genome_reference_derives_its_features(tmp_path, monkeypatch):
+    """A genome-mode reference shorter than its tile is decoded as one window
+    (as on a 2026-10 run, where clustermaps then asked for an un-stored layer):
+    its features are derived, nothing feature-like is stored, and the stage's
+    merged-layer clustermaps draw."""
+    raw = write_raw_store(
+        _frame(),
+        tmp_path / "raw_outputs",
+        reference_lengths={"ref_top": 12},
+        analysis_mode="genome",
+        extra_uns={"References": {"ref_FASTA_sequence": "ACGCGTACGTAC"}},
+    )
+    preprocess = execute_partitioned_preprocessing(
+        raw["spine"], _preprocess_cfg(), tmp_path / "preprocess_outputs"
+    )
+    cfg = _hmm_cfg(
+        hmm_methbases=["C"],
+        hmm_max_iter=2,
+        target_task_memory_mb=1,
+        hmm_merge_layer_features=[["all_accessible_features", 60], ["all_footprint_features", 10]],
+        hmm_clustermap_length_layers=["all_footprint_features_merged"],
+    )
+    outputs = execute_partitioned_hmm(preprocess["spine"], cfg, tmp_path / "hmm_outputs")
+    stored = {
+        layer for listed in pd.read_parquet(outputs["task_catalog"])["layers"] for layer in listed
+    }
+    assert not any("_features" in layer for layer in stored), stored
+    slice_ = materialize(
+        outputs["spine"],
+        references="ref_top",
+        start=0,
+        end=12,
+        layers=["C_all_footprint_features_merged_lengths"],
+    )
+    assert np.isfinite(slice_.layers["C_all_footprint_features_merged_lengths"]).any()
+
+
+def test_tiled_references_are_the_multi_window_ones():
+    from types import SimpleNamespace
+
+    from smftools.tools.partitioned_hmm import tiled_references
+
+    spine = SimpleNamespace(
+        uns={"reference_plans": {"a": {"reference_length": 100}, "b": {"reference_length": 100}}}
+    )
+
+    def task(ref, start, end):
+        return SimpleNamespace(reference=ref, load_start=start, load_end=end)
+
+    tasks = [task("a", 0, 100), task("a", 0, 100), task("b", 0, 60), task("b", 40, 100)]
+    assert tiled_references(spine, tasks) == {"b"}
+    assert tiled_references(spine, [task("a", 10, 100)]) == {"a"}  # short of the reference

@@ -1142,9 +1142,12 @@ def _derive_hmm_layers(
     references = result.obs["Reference_strand"].astype(str)
     for reference in references.unique():
         plan = _reference_plan(spine, reference)
-        if plan.get("analysis_mode") == "genome":
+        tile = int(plan.get("tile_size") or 0)
+        if plan.get("analysis_mode") == "genome" and 0 < tile < int(
+            plan.get("reference_length") or 0
+        ):
             raise KeyError(
-                f"HMM feature layers of genome-mode reference {reference!r} are stored, "
+                f"HMM feature layers of tiled reference {reference!r} are stored, "
                 "not derived; request them without hmm_feature_overrides"
             )
         rows = np.flatnonzero(references.to_numpy() == reference)

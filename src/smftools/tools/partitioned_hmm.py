@@ -1315,8 +1315,8 @@ def execute_hmm_task(
     # stores the posterior, states and coverage and not the features (genome
     # tasks, or ``hmm_store_feature_layers: true``, still store them).
     derivable = _derivable_task_layers(adata)
-    store_features = bool(getattr(cfg, "hmm_store_feature_layers", False)) or (
-        str(getattr(task, "analysis_mode", "")) == "genome"
+    store_features = bool(getattr(cfg, "hmm_store_feature_layers", False)) or bool(
+        getattr(cfg, "_hmm_tiled_references", False)
     )
     stored_layers = [name for name in appended_layers if store_features or name not in derivable]
     if not store_features and derivable and COVERED_BASE_MASK in adata.layers:
@@ -1397,6 +1397,23 @@ def execute_hmm_task(
             sort_keys=True,
         ),
     }
+
+
+def tiled_references(spine, tasks) -> set[str]:
+    """References decoded in more than one window, or in a window short of
+    the whole reference: their feature layers cannot be re-derived exactly."""
+    plans = spine.uns.get("reference_plans", {}) or {}
+    windows: dict[str, set[tuple[int, int]]] = {}
+    for task in tasks:
+        windows.setdefault(str(task.reference), set()).add(
+            (int(task.load_start), int(task.load_end))
+        )
+    tiled = set()
+    for reference, spans in windows.items():
+        length = int(dict(plans.get(reference, {}) or {}).get("reference_length") or 0)
+        if len(spans) > 1 or (length and next(iter(spans)) != (0, length)):
+            tiled.add(reference)
+    return tiled
 
 
 def _derivable_task_layers(adata) -> set[str]:
@@ -2624,6 +2641,15 @@ def execute_partitioned_hmm(spine_path, cfg, output_dir) -> dict[str, Path]:
     )
     if not tasks:
         raise RuntimeError("partitioned HMM has no non-empty tasks")
+    # `DLS-03b`: feature layers are derived from the posterior over each read's
+    # whole span, which equals the stage's own calls only when a reference is
+    # decoded as one window. If any reference is tiled, every task stores its
+    # feature layers (one rule per generation: a catalog never mixes).
+    tiled = tiled_references(spine, tasks)
+    if tiled:
+        cfg = copy.copy(cfg)
+        cfg._hmm_tiled_references = sorted(tiled)
+        logger.info("HMM feature layers stored (tiled references: %s)", ", ".join(sorted(tiled)))
     models_dir = output_dir / HMM_MODEL_SUBDIR
     if bool(getattr(cfg, "force_redo_hmm_fit", False)):
         # One revision per stage invocation: every worker resolves the same new
