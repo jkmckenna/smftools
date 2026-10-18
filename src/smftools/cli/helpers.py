@@ -41,6 +41,8 @@ _NON_SEMANTIC_STAGE_CONFIG_KEYS = {
     "bam_outputs_path",
     "bed_outputs_path",
     "device",
+    # CSV copies of a written spine's obs / var (`DLS-01`): output form only.
+    "write_csv_exports",
     "emit_log_file",
     "emit_perf_log",
     "fasta_outputs_path",
