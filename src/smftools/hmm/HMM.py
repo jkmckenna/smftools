@@ -1205,9 +1205,16 @@ class BaseHMM(nn.Module):
         mask_to_read_span: bool = True,
         mask_use_original_var_names: bool = True,
         device: Optional[Union[str, torch.device]] = None,
+        feature_settings=None,
         **kwargs,
     ):
         """Decode and annotate an AnnData object with HMM-derived layers.
+
+        With ``feature_settings`` (a ``hmm.features.FeatureSettings``) a
+        two-state model decoded by marginals gets its feature layers from
+        ``hmm.features.call_hmm_features`` -- the same function readers use on
+        a stored posterior (`DLS-03`), including merges -- and its posterior is
+        masked to the read span only. Otherwise the version-1 calling below.
 
         Args:
             adata: AnnData to annotate.
@@ -1279,11 +1286,36 @@ class BaseHMM(nn.Module):
         if states_name not in appended:
             appended.append(states_name)
 
+        derive = (
+            feature_settings is not None
+            and str(decode).lower() != "viterbi"
+            and int(gamma.shape[-1]) == 2
+        )
+        post_name = f"{prefix}_posterior_{str(posterior_state).strip().lower().replace(' ', '_').replace('-', '_')}"
+        if derive:
+            # NaN where a column was not decoded (`DLS-03`): the derivation
+            # finds runs among decoded columns only.
+            t_idx = self.resolve_target_state_index(posterior_state)
+            posterior_full = np.full((adata.n_obs, adata.n_vars), np.nan, dtype=np.float32)
+            posterior_full[:, masked_idx] = gamma[:, :, t_idx].astype(np.float32)[:, take]
+            return self._annotate_derived(
+                adata,
+                prefix=prefix,
+                posterior=posterior_full,
+                post_name=post_name if write_posterior else None,
+                states_name=states_name,
+                appended=appended,
+                settings=feature_settings,
+                uns_key=uns_key,
+                uns_flag=uns_flag,
+                mask_to_read_span=mask_to_read_span,
+                mask_use_original_var_names=mask_use_original_var_names,
+            )
+
         # posterior layer (requested state)
         if write_posterior:
             t_idx = self.resolve_target_state_index(posterior_state)
             post = gamma[:, :, t_idx].astype(np.float32)
-            post_name = f"{prefix}_posterior_{str(posterior_state).strip().lower().replace(' ', '_').replace('-', '_')}"
             if post_name not in adata.layers:
                 adata.layers[post_name] = np.zeros((adata.n_obs, adata.n_vars), dtype=np.float32)
             adata.layers[post_name][:, masked_idx] = post[:, take]
@@ -1394,6 +1426,67 @@ class BaseHMM(nn.Module):
                 use_original_var_names=mask_use_original_var_names,
             )
 
+        adata.uns[uns_key] = appended
+        adata.uns[uns_flag] = True
+        return None
+
+    def _annotate_derived(
+        self,
+        adata,
+        *,
+        prefix: str,
+        posterior: np.ndarray,
+        post_name: Optional[str],
+        states_name: str,
+        appended: List[str],
+        settings,
+        uns_key: str,
+        uns_flag: str,
+        mask_to_read_span: bool,
+        mask_use_original_var_names: bool,
+    ):
+        """Feature layers from the posterior via ``hmm.features`` (`DLS-03`)."""
+        from .features import call_hmm_features
+
+        positions, _ = _safe_int_coords(adata.var_names)
+        spans = np.column_stack(
+            [
+                np.asarray(adata.obs["reference_start"], dtype=float),
+                np.asarray(adata.obs["reference_end"], dtype=float),
+            ]
+        )
+        unknown = ~np.isfinite(spans).all(axis=1)
+        # A read without a span keeps every column (as version-1 masking did).
+        spans[unknown] = [positions.min(), positions.max()]
+        covered = (
+            np.asarray(adata.layers[COVERED_BASE_MASK], dtype=bool)
+            if COVERED_BASE_MASK in adata.layers
+            else None
+        )
+        layers = call_hmm_features(
+            posterior,
+            positions,
+            spans.astype(np.int64),
+            prefix=prefix,
+            settings=settings,
+            covered=covered,
+        )
+        for name, values in layers.items():
+            adata.layers[name] = values
+            if name not in appended:
+                appended.append(name)
+        if mask_to_read_span:
+            mask_layers_outside_read_span(
+                adata, [states_name], use_original_var_names=mask_use_original_var_names
+            )
+        if post_name is not None:
+            # The posterior is masked to the read span only: at bases the read
+            # does not cover it is the decoder's estimate, which runs bridge.
+            in_span = (positions[None, :] >= spans[:, :1]) & (positions[None, :] <= spans[:, 1:2])
+            adata.layers[post_name] = np.where(in_span, posterior, np.nan).astype(np.float32)
+            if post_name not in appended:
+                appended.append(post_name)
+        adata.uns[f"hmm_feature_settings_{prefix}"] = json.dumps(settings.to_dict())
         adata.uns[uns_key] = appended
         adata.uns[uns_flag] = True
         return None

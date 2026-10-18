@@ -336,27 +336,23 @@ def test_partitioned_hmm_masks_read_span_for_single_channel_signals(tmp_path, mo
         raw["spine"], _preprocess_cfg(), tmp_path / "preprocess_outputs"
     )
 
-    real_mask = hmm_module.mask_layers_outside_read_span
-    captured_calls = []
-
-    def spy_mask(adata, layers, **kwargs):
-        captured_calls.append(list(layers))
-        return real_mask(adata, layers, **kwargs)
-
-    monkeypatch.setattr(hmm_module, "mask_layers_outside_read_span", spy_mask)
-
     cfg = _hmm_cfg(hmm_methbases=["C"], hmm_max_iter=2, target_task_memory_mb=1)
     outputs = execute_partitioned_hmm(preprocess["spine"], cfg, tmp_path / "hmm_outputs")
 
-    # A single-channel ("C") signal was used -- with the bug, this call never
-    # happened at all for the raw (non-merged) layers.
-    assert captured_calls, (
-        "mask_layers_outside_read_span was never called for a single-channel signal"
-    )
-    masked_layers = {layer for call in captured_calls for layer in call}
-    assert any(layer.endswith("_all_accessible_features") for layer in masked_layers)
-    assert any(layer.endswith("_all_accessible_features_lengths") for layer in masked_layers)
+    # A single-channel ("C") signal was used -- with the bug, its feature
+    # layers were never masked. Masking now happens inside the feature
+    # derivation (`DLS-03`), so assert the outcome: NaN outside each read.
     catalog = pd.read_parquet(outputs["task_catalog"])
+    stored, _ = safe_read_zarr(outputs["task_catalog"].parent / catalog.iloc[0]["group_path"])
+    positions = np.asarray(stored.var_names, dtype=int)
+    for layer in ("C_all_accessible_features", "C_all_accessible_features_lengths"):
+        values = np.asarray(stored.layers[layer], dtype=float)
+        for row, (start, end) in enumerate(
+            zip(stored.obs["reference_start"], stored.obs["reference_end"])
+        ):
+            outside = (positions < int(start)) | (positions > int(end))
+            assert np.isnan(values[row, outside]).all(), layer
+            assert np.isfinite(values[row, ~outside]).any(), layer
     model_id = catalog.iloc[0]["hmm_model_ids"][0]
     artifact_ref = catalog.iloc[0]["hmm_model_artifact_refs"][0]
     assert model_id.startswith("hmm-")
@@ -2355,3 +2351,61 @@ def test_probability_u8_round_trip():
     stored = decode_probability_u8(encode_probability_u8(p))
     for threshold in (0.5, 64 / 254, 200 / 254):  # on the 1/254 grid
         assert np.array_equal(p >= threshold, stored >= threshold)
+
+
+def test_features_recomputed_from_the_stored_posterior_equal_the_stored_features(
+    tmp_path, monkeypatch
+):
+    """`DLS-03` acceptance: every feature layer the HMM stage stores can be
+    rebuilt exactly from its stored (8-bit) posterior, the read spans and
+    coverage, with the stage's feature settings."""
+    from smftools.constants import COVERED_BASE_MASK
+    from smftools.hmm.features import FeatureSettings, call_hmm_features
+
+    raw = write_raw_store(
+        _frame(),
+        tmp_path / "raw_outputs",
+        reference_lengths={"ref_top": 12},
+        analysis_mode="locus",
+        extra_uns={"References": {"ref_FASTA_sequence": "ACGCGTACGTAC"}},
+    )
+    preprocess = execute_partitioned_preprocessing(
+        raw["spine"], _preprocess_cfg(), tmp_path / "preprocess_outputs"
+    )
+    cfg = _hmm_cfg(
+        hmm_methbases=["C"],
+        hmm_max_iter=2,
+        target_task_memory_mb=1,
+        hmm_merge_layer_features=[["all_accessible_features", 2]],
+    )
+    outputs = execute_partitioned_hmm(preprocess["spine"], cfg, tmp_path / "hmm_outputs")
+    stored = materialize(outputs["spine"], references="ref_top", start=0, end=12)
+    feature_layers = [
+        name
+        for name in stored.layers
+        if name.startswith("C_") and "posterior" not in name and not name.endswith("_states")
+    ]
+    assert "C_all_accessible_features_end_truncated" in feature_layers
+    assert stored.layers["C_posterior_modified"].dtype == np.float32  # decoded on read
+
+    settings = FeatureSettings.from_config(cfg)
+    covered = (
+        np.asarray(stored.layers[COVERED_BASE_MASK], bool)
+        if COVERED_BASE_MASK in stored.layers
+        else None
+    )
+    derived = call_hmm_features(
+        np.asarray(stored.layers["C_posterior_modified"]),
+        np.asarray(stored.var_names, dtype=int),
+        np.column_stack([stored.obs["reference_start"], stored.obs["reference_end"]]).astype(int),
+        prefix="C",
+        settings=settings,
+        covered=covered,
+    )
+    assert set(feature_layers) <= set(derived)
+    for name in feature_layers:
+        np.testing.assert_array_equal(
+            np.asarray(stored.layers[name], dtype=float),
+            np.asarray(derived[name], dtype=float),
+            err_msg=name,
+        )
