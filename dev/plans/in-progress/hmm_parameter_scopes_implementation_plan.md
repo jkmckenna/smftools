@@ -1,6 +1,6 @@
 # HMM parameter scopes, fitting plans and a project model store
 
-Status: in progress. Items `HPS-01`--`HPS-13`; `HPS-01`--`HPS-05`, `HPS-07`, `HPS-08`, `HPS-11`--`HPS-13` implemented. Builds on `HCE` (context
+Status: in progress. Items `HPS-01`--`HPS-14`; `HPS-01`--`HPS-05`, `HPS-07`, `HPS-08`, `HPS-11`--`HPS-13` implemented. Builds on `HCE` (context
 emissions, `HCE-07` per-state weights), `HXR` (fits shared across
 references), `SUG-02` (stage-only refit) and `SLC` (storage lifecycle).
 
@@ -93,11 +93,12 @@ fit group within an emission group (as `HXR-02`).
 | `HPS-06` | project HMM model store: content-addressed models with manifests (plan hash, training selection, source generations, samples and experiments spanned), so one emission model can serve several experiments of the same chemistry | proposed |
 | `HPS-07` | layer sets (`cli/hmm_layer_sets.py`): `smftools experiment hmm-plan CONFIG --plan NAME [--list] [--force]` fits and decodes one plan (`default` or an `hmm_variants` entry) from the current spatial spine into `hmm_adata_outputs/layer_sets/<plan>/generations/<id>/` via `staged_generation`; manifest records the plan, per-model `fit_config_hash` and the source spatial generation; unchanged settings and input reuse the current layer set; `--list` flags changed settings / superseded input. Run-root inference, generation listing, the reference graph, prune / archive and project registry discovery (`hmm_layer_set:<plan>` spines) know layer-set containers. Not in v1: a merged multi-plan reader view | implemented |
 | `HPS-08` | storage: layer sets are generations under `SLC` (reference graph, prune, archive) -- done with `HPS-07`; posteriors optional (`hmm_write_posterior`); compact feature storage moved to `DLS-02` / `DLS-03` (`derived_layers_storage_implementation_plan.md`) | implemented |
-| `HPS-09` | acceptance (below) | direct-fit comparison done; pipeline acceptance after `HPS-01`--`HPS-04` |
+| `HPS-09` | acceptance (below) | direct-fit comparison done; pipeline acceptance done on one regenerated experiment (2026-10-16: allele ratios agree with raw in direction in 90-97 % of barcodes per region, was 27-47 %; median abs log2 gap 0.07-0.12, was 0.32-0.37); a multi-enzyme panel pending its re-run |
 | `HPS-10` | docs: choosing scopes for a comparison, config reference | proposed |
 | `HPS-11` | position axis: `hmm_axis: sites` (default) \| `bp`. `bp` places the site calls on the window's full per-bp grid (single and multi-channel; NaN elsewhere; coverage masking unchanged), decodes every position, sets `transition_counting = "span"` for fits and adaptations, and scales a new model's configured per-site starting transitions by the observed site spacing (stay `s ** (1 / spacing)`); refused with `hmm_distance_aware`; fingerprints and fit ids unchanged at `sites` | implemented |
 | `HPS-12` | genome mode: a sample's genome-mode tasks form one fit group (all chromosomes and tiles) -- one model per sample, fitted on a bounded uniform subset of its reads (hash-ranked as before; each read fitted in the first tile window that owns it) and applied to every tile; no per-region fits for now. Context codes are built per loaded window (`ContextBernoulliHMM` position offset), at fit, pooled fit and apply, so a chromosome is never coded whole; locus references are unchanged (their window is the reference). Shared emission scopes tie the per-sample genome fits as usual | implemented |
 | `HPS-13` | tied-fit throughput: an emission group's members built, held and re-estimated by persistent worker processes (one share each), the pooled emission solve in the parent -- identical results; groups run one at a time over all threads; per-round progress log. Found on the 260820 regeneration: 161 members fitted serially in one worker took ~80 min with eleven threads idle | implemented |
+| `HPS-14` | minimum reads for a transition fit: a fit group (sample x reference) with fewer than `hmm_min_fit_reads` training reads adapts its transitions from a pooled fit (the existing `ADAPT` path) instead of fitting them from a handful of reads; recorded in the fit catalog | proposed |
 
 ### `HPS-07` design: layer sets
 

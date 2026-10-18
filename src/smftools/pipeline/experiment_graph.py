@@ -82,7 +82,12 @@ _STAGE_ALGORITHM_VERSIONS = {
     # 2: per-group read caps (EGL-24), locus-plottable regions (F27a, F27b),
     #    and streamed position matrices (F32).
     "spatial": "2",
-    "hmm": "1",
+    # 2: `DLS-03` -- feature runs are measured inside each read's span (read-end
+    #    runs take their observed length and are flagged `_end_truncated`); a
+    #    footprint position is posterior < 0.5 (was <= 0.5); the posterior is
+    #    no longer masked at uncovered bases inside a read. Feature layers
+    #    change at read ends (~0.05-0.8 % of positions on a 2026-10 run).
+    "hmm": "2",
     # 2: Leiden clustering over latent embeddings, cluster-block ordering, and
     #    per-unit clustermaps (EGL-28a-d, F29).
     "latent": "2",

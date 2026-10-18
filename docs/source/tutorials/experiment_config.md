@@ -588,6 +588,22 @@ call. Feature layers are called from the full-precision posterior
 before it is stored, so they are unaffected. `hmm_posterior_encoding: float`
 keeps float storage (`hmm_write_posterior: false` skips the posterior).
 
+Feature layers (size classes, aggregates, lengths, merges) are called from
+the posterior by `smftools.hmm.features.call_hmm_features`, the same function
+a reader can run on a stored posterior, so derived layers equal the stored
+ones exactly. Its rules:
+
+- a position is accessible when the posterior is >= `hmm_feature_prob_threshold`
+  (0.5) and footprint when it is below 1 - threshold, so at 0.5 every
+  position is exactly one of the two;
+- runs are measured in bp inside each read only. A run that reaches the
+  read's first or last decoded base is cut off by the read end: it is sized
+  by what was observed and flagged in `<prefix>_all_<group>_features_end_truncated`
+  (and `..._merged_end_truncated`), so analyses can exclude or separate it;
+- the posterior is kept at bases inside a read that the read does not cover
+  (the decoder's estimate there), and runs continue across them; feature
+  layers are NaN there and outside the read.
+
 Which model produced a read's layers is recorded per read:
 `smftools.hmm.provenance.hmm_read_models(generation, read_ids)` returns each
 read's model id and checksum with that model's fit (label, `fit_config_hash`,

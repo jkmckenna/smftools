@@ -36,6 +36,7 @@ from ..cli.stage_artifacts import (
     register_plot_artifact,
     write_plot_source_manifest,
 )
+from ..hmm.features import FeatureSettings
 from ..hmm.fit_plan import HMMFitPlan, HMMModelSpec, build_hmm_fit_plan
 from ..hmm.HMM import mask_layers_outside_read_span, normalize_hmm_feature_sets
 from ..informatics.partition_read import (
@@ -696,8 +697,20 @@ def _annotate_task(
             # always needed, not just for multi-channel signals.
             mask_to_read_span=True,
             mask_use_original_var_names=True,
+            feature_settings=FeatureSettings(
+                feature_sets=feature_sets,
+                posterior_state=str(posterior_state),
+                prob_threshold=probability_threshold,
+                merges=tuple(
+                    (str(core), int(distance))
+                    for core, distance in (getattr(cfg, "hmm_merge_layer_features", []) or [])
+                ),
+                merged_suffix=str(getattr(cfg, "hmm_merged_suffix", "_merged")),
+            ),
         )
-        _apply_merges(adata, model, prefix, feature_sets, cfg)
+        if f"hmm_feature_settings_{prefix}" not in adata.uns:
+            # Version-1 calling (Viterbi decoding, more than two states).
+            _apply_merges(adata, model, prefix, feature_sets, cfg)
         record_model_artifact(
             [
                 name
