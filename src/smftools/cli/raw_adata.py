@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import functools
+import hashlib
+import os
 import re
 import time
 from pathlib import Path
@@ -87,6 +90,66 @@ def _load_read_sidecar(path: str | Path | None) -> pd.DataFrame | None:
     return frame.drop_duplicates(read_column).set_index(read_column)
 
 
+#: Where ``prepare_summary_demux_status`` left the run's sequencing-summary
+#: demux table; set on ``cfg``, so worker processes receive it with ``cfg``.
+SUMMARY_DEMUX_ATTR = "_summary_demux_status_path"
+
+
+def prepare_summary_demux_status(cfg, search_root, cache_dir) -> Path | None:
+    """Read the run's sequencing summary once, for the partitioned raw path.
+
+    `EGL-29c`: the basecaller's per-end barcode scores give reads without an
+    end call their single- / double-ended status. The dense load applies it;
+    the partitioned raw path builds obs per bucket in worker processes and
+    never did, so a run demultiplexed upstream (every read ``unclassified``)
+    came out of a fresh raw extraction with no demux status at all. The
+    status table is written once (keyed by the summary file and threshold)
+    and its path set on ``cfg``; ``_attach_obs_metadata`` applies it per
+    bucket. A missing or unreadable summary is logged and skipped, as in the
+    dense load.
+    """
+    if not bool(getattr(cfg, "use_sequencing_summary_demux_status", True)):
+        return None
+    from ..informatics.sequencing_summary import find_sequencing_summary, read_demux_status
+
+    try:
+        configured = getattr(cfg, "sequencing_summary_path", None)
+        if configured:
+            summary = Path(configured)
+        else:
+            summary = find_sequencing_summary(search_root) if search_root else None
+        if summary is None or not Path(summary).is_file():
+            logger.debug("No sequencing summary found; demux status left as derived.")
+            return None
+        summary = Path(summary)
+        threshold = float(getattr(cfg, "barcode_end_score_threshold", 62.0))
+        stat = summary.stat()
+        key = hashlib.sha256(
+            f"{summary.resolve()}|{stat.st_size}|{stat.st_mtime_ns}|{threshold}".encode()
+        ).hexdigest()[:16]
+        path = Path(cache_dir) / f"{key}.parquet"
+        if not path.is_file():
+            status = read_demux_status(summary, threshold=threshold)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            partial = path.with_name(f".{path.name}.partial")
+            status.to_parquet(partial, index=False)
+            os.replace(partial, path)
+        setattr(cfg, SUMMARY_DEMUX_ATTR, str(path))
+        logger.info(
+            "Sequencing-summary demux status from %s will fill reads without an end call",
+            summary.name,
+        )
+        return path
+    except Exception:
+        logger.exception("Could not read the sequencing summary for demux status; continuing")
+        return None
+
+
+@functools.lru_cache(maxsize=2)
+def _summary_demux_status(path: str) -> pd.DataFrame:
+    return pd.read_parquet(path)
+
+
 def _attach_obs_metadata(
     frame: pd.DataFrame,
     *,
@@ -131,6 +194,12 @@ def _attach_obs_metadata(
         # reaches obs -- and `duplicate_detection_demux_types_to_use`, which is
         # guarded on the column existing, silently does nothing.
         annotate_demux_obs(frame)
+    status_path = getattr(cfg, SUMMARY_DEMUX_ATTR, None)
+    if status_path:
+        from ..informatics.sequencing_summary import attach_demux_status
+
+        # Fills reads the sidecar left without an end call; never overrides one.
+        attach_demux_status(frame, _summary_demux_status(str(status_path)))
     for sidecar in (_load_read_sidecar(umi_sidecar),):
         if sidecar is not None:
             for column in sidecar.columns:

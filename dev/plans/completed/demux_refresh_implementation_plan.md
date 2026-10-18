@@ -1,7 +1,7 @@
 # Demux refresh without re-extraction (`DRF`)
 
 **Status:** completed -- `DRF-01`..`DRF-03` merged (PR #725, `0523523`,
-`2b0b26c`); `DRF-04` is an open question, recorded here rather than in a new
+`2b0b26c`); `DRF-05` (fresh extraction) merged later; `DRF-04` is an open question, recorded here rather than in a new
 plan because it is one decision.
 
 **Predecessors:** `EGL-29` (sequencing-summary demux status, in
@@ -27,6 +27,7 @@ hour of extraction per run, then preprocess, spatial and HMM again.
 | `DRF-01` summary fills `unclassified` | merged (`0523523`) | `attach_demux_status` treated only empty / `unknown` as no call; `unclassified` from end-less BAM tags blocked the summary. It now fills; classifier calls (double, single, mismatch) are still kept. |
 | `DRF-02` summary in raw reassembly; annotations reach every copy | merged (`2b0b26c`) | `reassemble-raw` applies the configured (or found) sequencing summary. Reassembly rewrote obs, molecules and the spine but **hardlinked the segment catalog and both pointer indexes**, which also carry the read annotations -- and the molecule index is the ML reader's identity source, so re-derived `demux_type` never reached readers. The annotation columns (`demux_type`, `demux_type_source`, `demux_type_confidence`, `barcode_agreement`) are now rewritten, or added, in all three. |
 | `DRF-03` `experiment refresh-demux` | merged (`2b0b26c`) | reassemble raw with the summary, then publish a sibling preprocess generation (`preprocessing/demux_refresh.py`): demux columns from the current raw generation, duplicate keepers re-chosen over the **existing** clusters with `_select_duplicate_keeper` (`--prefer`), every other artifact hardlinked, manifest checksums updated, provenance in an `annotation_refresh` block. Matrices, spatial and HMM generations are reused (they cover every read). |
+| `DRF-05` summary in fresh partitioned raw extraction | merged with this change | The partitioned raw path built obs per bucket (`_attach_obs_metadata`) with the barcode sidecar but never applied the sequencing summary -- only the dense load (`EGL-29c`) and reassembly (`DRF-02`) did. A fresh raw extraction of a run demultiplexed upstream therefore came out with every read `unclassified`, undoing a refresh (found on a 2026-10 regeneration: double-barcoded reads 765,179 -> 0). The raw stage now reads the summary once into a table under `raw_outputs/intermediates/sequencing-summary-demux/` (keyed by file and threshold), sets its path on `cfg`, and each bucket fills reads without an end call from it; existing calls are kept. On that run's reads the result equals `refresh-demux` exactly (927,942 reads, 100 % agreement). |
 
 **Verification.** With unchanged demux calls the keeper recomputation
 reproduces the stored `passes_dedup` exactly (two deaminase runs, 0.58M and
