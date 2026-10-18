@@ -102,3 +102,16 @@ def test_normalize_uns_string_lists_survives_a_write_read_cycle(tmp_path):
     final, _ = safe_read_h5ad(path, verbose=False)
     assert not isinstance(final.uns["signal_columns"], str)
     assert list(final.uns["signal_columns"]) == ["mod_a", "mod_b"]
+
+
+def test_csv_export_switch_does_not_fingerprint_any_stage():
+    """``write_csv_exports`` only adds CSV copies; turning it on or off must
+    not make a stored stage look stale (it did, for every stage, once added)."""
+    from smftools.cli.helpers import resolved_stage_config, stage_config_hash
+    from smftools.config.experiment_config import ExperimentConfig
+
+    off, on = ExperimentConfig(), ExperimentConfig()
+    on.write_csv_exports = True
+    for stage in ("raw", "preprocess", "spatial", "hmm", "latent"):
+        assert "write_csv_exports" not in resolved_stage_config(off, stage)
+        assert stage_config_hash(off, stage) == stage_config_hash(on, stage), stage
