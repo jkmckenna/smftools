@@ -2253,3 +2253,105 @@ def test_decode_memory_counts_every_output_layer():
     cfg.hmm_write_posterior = False
     assert hmm_output_layers_per_position(cfg, [spec]) == 17
     assert hmm_bytes_per_position(cfg, [spec]) == 16 + 12 * 17
+
+
+@pytest.mark.parametrize("encoding", ["uint8", "float"])
+def test_posterior_is_stored_8_bit_and_read_back_as_probabilities(tmp_path, monkeypatch, encoding):
+    """`DLS-02`: the stored posterior is uint8 (error <= 1/508, NaN kept) and
+    every reader gets probabilities back; ``hmm_posterior_encoding: float``
+    keeps the old storage. Reads trace to their model."""
+    import zarr
+
+    from smftools.hmm.provenance import hmm_read_models
+    from smftools.informatics.partition_query import LAYER_ENCODING_ATTR, PROBABILITY_U8
+    from smftools.tools import partitioned_hmm
+
+    raw = write_raw_store(
+        _frame(),
+        tmp_path / "raw_outputs",
+        reference_lengths={"ref_top": 12},
+        analysis_mode="locus",
+        extra_uns={"References": {"ref_FASTA_sequence": "ACGCGTACGTAC"}},
+    )
+    preprocess = execute_partitioned_preprocessing(
+        raw["spine"], _preprocess_cfg(), tmp_path / "preprocess_outputs"
+    )
+    rng = np.random.default_rng(0)
+    written = {}
+
+    def annotate(adata, task, cfg, models_dir, model_assignments):
+        posterior = rng.random(adata.shape)
+        posterior[:, 0] = np.nan
+        written["values"] = posterior.copy()
+        adata.layers["GpC_posterior_modified"] = posterior
+        adata.layers["GpC_test_feature"] = np.ones(adata.shape, dtype=np.int8)
+        layers = ["GpC_posterior_modified", "GpC_test_feature"]
+        adata.uns["hmm_appended_layers"] = layers
+        adata.uns["hmm_model_artifacts"] = [
+            {
+                "model_id": "hmm-0123456789abcdef",
+                "checkpoint_sha256": "a" * 64,
+                "checkpoint": "models/ef/hmm-0123456789abcdef.pt",
+                "metadata": "models/ef/hmm-0123456789abcdef.json",
+                "model_key": {"label": "GpC", "fit_kind": "PER"},
+                "layers": layers,
+            }
+        ]
+        return layers
+
+    monkeypatch.setattr(partitioned_hmm, "_annotate_task", annotate)
+    cfg = SimpleNamespace(target_task_memory_mb=1, hmm_posterior_encoding=encoding)
+    outputs = execute_partitioned_hmm(preprocess["spine"], cfg, tmp_path / "hmm_outputs")
+
+    catalog = pd.read_parquet(outputs["task_catalog"])
+    store = outputs["task_catalog"].parent / catalog.iloc[0]["group_path"]
+    stored = zarr.open_group(str(store), mode="r")["layers"]["GpC_posterior_modified"]
+    if encoding == "uint8":
+        assert stored.dtype == np.uint8
+        assert stored.attrs[LAYER_ENCODING_ATTR] == PROBABILITY_U8
+    else:
+        assert stored.dtype != np.uint8
+        assert LAYER_ENCODING_ATTR not in stored.attrs
+    assert zarr.open_group(str(store), mode="r")["layers"]["GpC_test_feature"].dtype == np.int8
+
+    restored = materialize(
+        outputs["spine"],
+        references="ref_top",
+        read_ids=["read1", "read2"],
+        start=0,
+        end=12,
+        layers=["GpC_posterior_modified"],
+    )
+    values = np.asarray(restored.layers["GpC_posterior_modified"], dtype=float)
+    assert np.isnan(values[:, 0]).all()
+    finite = np.isfinite(values)
+    expected = written["values"][: values.shape[0], : values.shape[1]]
+    error = expected[finite] - values[finite]
+    if encoding == "uint8":  # rounded down: stored <= true < stored + 1/254
+        assert error.min() >= -1e-6 and error.max() < 1 / 254
+    else:
+        assert np.abs(error).max() <= 1e-6
+
+    models = hmm_read_models(outputs["task_catalog"].parent, read_ids=["read1"])
+    assert list(models["read_id"]) == ["read1"]
+    assert set(models["model_id"]) == {"hmm-0123456789abcdef"}
+
+
+def test_probability_u8_round_trip():
+    from smftools.informatics.partition_query import (
+        decode_probability_u8,
+        encode_probability_u8,
+    )
+
+    values = np.array([0.0, 1.0, 0.5, 0.3337, np.nan, 1.2, -0.1])
+    decoded = decode_probability_u8(encode_probability_u8(values))
+    assert np.isnan(decoded[4])
+    np.testing.assert_allclose(decoded[[0, 1, 2]], [0.0, 1.0, 0.5], atol=1e-7)
+    assert 0 <= 0.3337 - decoded[3] < 1 / 254
+    np.testing.assert_allclose(decoded[[5, 6]], [1.0, 0.0])  # clipped
+    # A threshold on the grid gives the same call before and after storage.
+    p = np.random.default_rng(1).random(100_000)
+    p[:200] = 0.5 + np.linspace(-1e-3, 1e-3, 200)  # dense around the threshold
+    stored = decode_probability_u8(encode_probability_u8(p))
+    for threshold in (0.5, 64 / 254, 200 / 254):  # on the 1/254 grid
+        assert np.array_equal(p >= threshold, stored >= threshold)

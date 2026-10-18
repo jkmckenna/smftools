@@ -1130,6 +1130,11 @@ def execute_hmm_task(
         append_zarr_layer,
         consolidate_zarr_store,
     )
+    from ..informatics.partition_query import (
+        LAYER_ENCODING_ATTR,
+        PROBABILITY_U8,
+        encode_probability_u8,
+    )
     from ..informatics.physical_layout import portable_matrix_chunks
 
     adata = materialize(
@@ -1231,16 +1236,31 @@ def execute_hmm_task(
     chunks = portable_matrix_chunks(skeleton.shape, np.float32)
     safe_write_zarr(skeleton, path, backup=False, verbose=False, zarr_format=3, chunks=chunks)
 
+    # `DLS-02`: the posterior is stored as uint8 (features were called from the
+    # full-precision values above); readers decode it back to float.
+    encode_posterior = str(getattr(cfg, "hmm_posterior_encoding", "uint8")) == "uint8"
     for index, name in enumerate(appended_layers):
         cropped = np.asarray(adata.layers[name])[:, core_mask]
         del adata.layers[name]
+        encoded = encode_posterior and "_posterior_" in name
+        if encoded:
+            cropped = encode_probability_u8(cropped)
+        last = index == len(appended_layers) - 1
         append_zarr_layer(
             path,
             name,
             cropped,
             chunks=portable_matrix_chunks(cropped.shape, cropped.dtype),
-            consolidate=(index == len(appended_layers) - 1),
+            consolidate=last and not encoded,
         )
+        if encoded:
+            import zarr
+
+            zarr.open_group(str(path), mode="r+", use_consolidated=False)["layers"][name].attrs[
+                LAYER_ENCODING_ATTR
+            ] = PROBABILITY_U8
+            if last:
+                consolidate_zarr_store(path)
         del cropped
     if not appended_layers:
         consolidate_zarr_store(path)

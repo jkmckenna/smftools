@@ -577,6 +577,22 @@ On a six-enzyme panel and a two-allele deaminase run the bp axis gave
 nucleosome-scale protected stretches where the site axis fragmented them,
 and better agreement between enzymes (`HPS` design record).
 
+## HMM posterior storage and provenance
+
+The HMM stage stores each posterior layer (e.g. `C_posterior_modified`) as
+8-bit values -- probability x 254 rounded down, with 255 for no call -- and
+every reader (`materialize`, analyses) gets probabilities back as float32,
+under 1/254 below the true value. Rounding down keeps thresholds such as 0.5
+exact: a feature re-derived from the stored posterior matches the original
+call. Feature layers are called from the full-precision posterior
+before it is stored, so they are unaffected. `hmm_posterior_encoding: float`
+keeps float storage (`hmm_write_posterior: false` skips the posterior).
+
+Which model produced a read's layers is recorded per read:
+`smftools.hmm.provenance.hmm_read_models(generation, read_ids)` returns each
+read's model id and checksum with that model's fit (label, `fit_config_hash`,
+emission scope and group, efficiency offset).
+
 ## HMM fits shared across references (alleles)
 
 The HMM is fitted per sample and per reference by default. When one sample
