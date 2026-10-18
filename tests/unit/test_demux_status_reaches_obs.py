@@ -156,3 +156,110 @@ def test_barcode_agreement_survives_into_a_published_raw_store(tmp_path):
 
     assert "barcode_agreement" in obs.columns
     assert set(obs["barcode_agreement"]) == {"agree", "disagree"}
+
+
+# --- the sequencing summary on the partitioned raw path (`EGL-29c`) -------------
+
+#: columns `_attach_obs_metadata` joins from BAM metrics
+_METRICS = [
+    "BM",
+    "read_length",
+    "mapped_length",
+    "reference_length",
+    "read_quality",
+    "mapping_quality",
+]
+
+
+def _summary(path, rows):
+    pd.DataFrame(
+        rows,
+        columns=["read_id", "barcode_arrangement", "barcode_front_score", "barcode_rear_score"],
+    ).to_csv(path, sep="\t", index=False)
+    return path
+
+
+def test_summary_demux_reaches_a_published_raw_store_from_the_partitioned_path(tmp_path):
+    """A run demultiplexed upstream has no end evidence in its BAM, so every
+    read is ``unclassified`` unless the basecaller's summary fills it. The
+    dense load did; the partitioned raw path -- every current run -- did not,
+    so a fresh raw extraction of such a run lost its demux status entirely."""
+    import pickle
+    from types import SimpleNamespace
+
+    from smftools.cli.raw_adata import (
+        SUMMARY_DEMUX_ATTR,
+        _attach_obs_metadata,
+        prepare_summary_demux_status,
+    )
+
+    summary = _summary(
+        tmp_path / "sequencing_summary_x.txt",
+        [
+            ("read0", "barcode01", 99.0, 95.0),  # double
+            ("read1", "barcode01", 99.0, 40.0),  # single
+            ("read2", "barcode01", 30.0, 20.0),  # unclassified
+        ],
+    )
+    cfg = SimpleNamespace(
+        sequencing_summary_path=str(summary),
+        barcode_end_score_threshold=62.0,
+        experiment_name="exp",
+        samtools_backend="python",
+    )
+    cache = tmp_path / "raw_outputs" / "intermediates" / "sequencing-summary-demux"
+    table = prepare_summary_demux_status(cfg, None, cache)
+    assert table is not None and table.parent == cache
+    assert prepare_summary_demux_status(cfg, None, cache) == table  # read once, reused
+    cfg = pickle.loads(pickle.dumps(cfg))  # what a worker process receives
+    assert getattr(cfg, SUMMARY_DEMUX_ATTR) == str(table)
+
+    frame = _frame(["unclassified"] * 3).drop(columns=_METRICS)
+    metrics = {f"read{i}": (4, 30.0, 12, 4, 60, 0, 4) for i in range(3)}
+    frame = _attach_obs_metadata(
+        frame,
+        cfg=cfg,
+        bam_path=tmp_path / "unused.bam",
+        barcode_sidecar=None,
+        umi_sidecar=None,
+        metrics=metrics,
+    )
+    outputs = write_raw_store(
+        frame.reset_index(drop=True), tmp_path / "raw_outputs", reference_lengths={"ref_top": 12}
+    )
+    import anndata as ad
+
+    obs = ad.read_h5ad(outputs["spine"]).obs
+    assert list(obs.sort_index()["demux_type"].astype(str)) == ["double", "single", "unclassified"]
+
+
+def test_an_existing_end_call_is_not_overridden_by_the_summary(tmp_path):
+    from types import SimpleNamespace
+
+    from smftools.cli.raw_adata import _attach_obs_metadata, prepare_summary_demux_status
+
+    summary = _summary(tmp_path / "sequencing_summary_x.txt", [("read0", "barcode01", 99.0, 40.0)])
+    cfg = SimpleNamespace(
+        sequencing_summary_path=str(summary), experiment_name="exp", samtools_backend="python"
+    )
+    prepare_summary_demux_status(cfg, None, tmp_path / "cache")
+    frame = _frame(["both"]).drop(columns=_METRICS).assign(demux_type="double")
+    frame = _attach_obs_metadata(
+        frame,
+        cfg=cfg,
+        bam_path=tmp_path / "unused.bam",
+        barcode_sidecar=None,
+        umi_sidecar=None,
+        metrics={"read0": (4, 30.0, 12, 4, 60, 0, 4)},
+    )
+    assert list(frame["demux_type"]) == ["double"]  # the summary would say single
+
+
+def test_no_summary_leaves_demux_as_derived(tmp_path):
+    from types import SimpleNamespace
+
+    from smftools.cli.raw_adata import SUMMARY_DEMUX_ATTR, prepare_summary_demux_status
+
+    cfg = SimpleNamespace(sequencing_summary_path=None)
+    assert prepare_summary_demux_status(cfg, tmp_path, tmp_path / "cache") is None
+    assert not hasattr(cfg, SUMMARY_DEMUX_ATTR)

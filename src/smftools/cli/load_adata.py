@@ -2189,6 +2189,13 @@ def load_adata_core(
         from .raw_adata import (
             build_partitioned_ragged_records_streaming,
             build_ragged_records_streaming,
+            prepare_summary_demux_status,
+        )
+
+        prepare_summary_demux_status(
+            cfg,
+            original_input_data_path or cfg.input_data_path,
+            output_directory / RAW_DIR / "intermediates" / "sequencing-summary-demux",
         )
 
         assert alignment_partitions is not None
