@@ -1,6 +1,6 @@
 # HMM parameter scopes, fitting plans and a project model store
 
-Status: in progress. Items `HPS-01`--`HPS-14`; `HPS-01`--`HPS-05`, `HPS-07`, `HPS-08`, `HPS-11`--`HPS-13` implemented. Builds on `HCE` (context
+Status: in progress. Items `HPS-01`--`HPS-15`; `HPS-01`--`HPS-05`, `HPS-07`, `HPS-08`, `HPS-11`--`HPS-13`, `HPS-15` implemented. Builds on `HCE` (context
 emissions, `HCE-07` per-state weights), `HXR` (fits shared across
 references), `SUG-02` (stage-only refit) and `SLC` (storage lifecycle).
 
@@ -99,6 +99,7 @@ fit group within an emission group (as `HXR-02`).
 | `HPS-12` | genome mode: a sample's genome-mode tasks form one fit group (all chromosomes and tiles) -- one model per sample, fitted on a bounded uniform subset of its reads (hash-ranked as before; each read fitted in the first tile window that owns it) and applied to every tile; no per-region fits for now. Context codes are built per loaded window (`ContextBernoulliHMM` position offset), at fit, pooled fit and apply, so a chromosome is never coded whole; locus references are unchanged (their window is the reference). Shared emission scopes tie the per-sample genome fits as usual | implemented |
 | `HPS-13` | tied-fit throughput: an emission group's members built, held and re-estimated by persistent worker processes (one share each), the pooled emission solve in the parent -- identical results; groups run one at a time over all threads; per-round progress log. Found on the 260820 regeneration: 161 members fitted serially in one worker took ~80 min with eleven threads idle | implemented |
 | `HPS-14` | minimum reads for a transition fit: a fit group (sample x reference) with fewer than `hmm_min_fit_reads` training reads adapts its transitions from a pooled fit (the existing `ADAPT` path) instead of fitting them from a handful of reads; recorded in the fit catalog | proposed |
+| `HPS-15` | the endogenous CpG model's own fitting settings (`hmm_cpg_settings`, over the stage's): default per site (`hmm_axis: sites`), one emission model shared by every sample with no dose offset (`shared`, no groupby, no covariates) -- the accessibility model's dose offsets do not apply to endogenous methylation; a shared scope that follows no sheet column needs no sample sheet, and the sheet is read for the first plan that does | implemented |
 
 ### `HPS-07` design: layer sets
 
