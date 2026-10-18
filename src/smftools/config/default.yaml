@@ -509,6 +509,16 @@ hmm_device: "cpu" # Torch device for HMM fitting/decoding specifically (override
 footprints: True # whether to use the default HMM footprint params
 accessible_patches: True # whether to use the default HMM accessible patch params
 cpg: False # whether to use the default HMM endogenous CpG patch params
+# The endogenous CpG model's own fitting settings (`HPS-15`), over the stage's:
+# CpG sites are sparse, so it is fitted per site; its emissions are shared by
+# every sample with no dose offset -- the GpC methyltransferase dose that
+# drives accessibility says nothing about endogenous methylation.
+hmm_cpg_settings:
+  hmm_axis: sites
+  hmm_emission_scope: shared
+  hmm_emission_groupby: []
+  hmm_efficiency_groupby: []
+  hmm_efficiency_covariates: []
 hmm_methbases:
   - "GpC"
   - "CpG"

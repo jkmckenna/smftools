@@ -2522,3 +2522,88 @@ def test_materialize_derives_hmm_features_from_the_posterior(tmp_path, monkeypat
     np.testing.assert_array_equal(
         np.asarray(window.layers["C_all_footprint_features_lengths"], float), full[:, 3:9]
     )
+
+
+def test_the_cpg_model_is_fitted_per_site_with_shared_emissions_by_default(tmp_path, monkeypatch):
+    """`HPS-15`: the endogenous CpG model has its own settings -- per site,
+    one emission model for every sample, no dose offset -- while the
+    accessibility model keeps the stage's (bp axis)."""
+    from smftools.config.experiment_config import DEFAULT_HMM_CPG_SETTINGS, ExperimentConfig
+    from smftools.tools.partitioned_hmm import _configured_model_specs
+
+    defaults = ExperimentConfig().hmm_cpg_settings
+    assert defaults == DEFAULT_HMM_CPG_SETTINGS
+    feature_sets = {
+        "accessible": {"state": "Modified", "features": {"open": [1, 1e9]}},
+        "footprint": {"state": "Non-Modified", "features": {"bound": [1, 1e9]}},
+        "cpg": {"state": "Modified", "features": {"cpg_patch": [0, 1e9]}},
+    }
+    cfg = _hmm_cfg(
+        hmm_methbases=["C"],
+        cpg=True,
+        hmm_cpg_settings=dict(defaults),
+        hmm_feature_sets=feature_sets,
+    )
+    specs = {spec.label: spec for spec in _configured_model_specs(cfg)}
+    assert set(specs) == {"C", "CpG"}
+    cpg = specs["CpG"].config(cfg)
+    assert cpg.hmm_axis == "sites" and cpg.hmm_emission_scope == "shared"
+    assert list(cpg.hmm_efficiency_covariates) == []
+    assert specs["C"].config(cfg) is cfg  # the accessibility model is untouched
+
+    with pytest.raises(ValueError, match="hmm_cpg_settings may set"):
+        _configured_model_specs(
+            _hmm_cfg(
+                hmm_methbases=["C"],
+                cpg=True,
+                hmm_cpg_settings={"threads": 2},
+                hmm_feature_sets=feature_sets,
+            )
+        )
+
+
+def test_the_cpg_model_runs_per_site_with_one_emission_model_and_no_sample_sheet(
+    tmp_path, monkeypatch
+):
+    """`HPS-15` end to end: the CpG model shares one emission model across
+    every sample without needing a sample sheet, decodes only at CpG sites,
+    and its features derive from its posterior."""
+    from smftools.config.experiment_config import DEFAULT_HMM_CPG_SETTINGS
+
+    raw = write_raw_store(
+        _frame(),
+        tmp_path / "raw_outputs",
+        reference_lengths={"ref_top": 12},
+        analysis_mode="locus",
+        extra_uns={"References": {"ref_FASTA_sequence": "ACGCGTACGTAC"}},
+    )
+    preprocess = execute_partitioned_preprocessing(
+        raw["spine"], _preprocess_cfg(), tmp_path / "preprocess_outputs"
+    )
+    cfg = _hmm_cfg(
+        hmm_methbases=["C"],
+        hmm_max_iter=2,
+        target_task_memory_mb=1,
+        cpg=True,
+        hmm_cpg_settings=dict(DEFAULT_HMM_CPG_SETTINGS),
+        hmm_feature_sets={
+            "accessible": {"state": "Modified", "features": {"open": [1, 1e9]}},
+            "footprint": {"state": "Non-Modified", "features": {"bound": [1, 1e9]}},
+            "cpg": {"state": "Modified", "features": {"cpg_patch": [0, 1e9]}},
+        },
+    )
+    outputs = execute_partitioned_hmm(preprocess["spine"], cfg, tmp_path / "hmm_outputs")
+    fits = pd.read_parquet(outputs["fit_catalog"]).set_index("model_label")
+    assert fits.loc["CpG", "emission_scope"] == "shared"
+    assert fits.loc["CpG", "emission_group"] == "CpG|all"
+    assert set(fits["fit_state"]) == {"complete"}
+    slice_ = materialize(
+        outputs["spine"],
+        references="ref_top",
+        start=0,
+        end=12,
+        layers=["CpG_posterior_modified", "CpG_cpg_patch"],
+    )
+    decoded = np.flatnonzero(np.isfinite(slice_.layers["CpG_posterior_modified"]).any(axis=0))
+    assert set(decoded) <= {1, 3, 7}  # CpG cytosines of ACGCGTACGTAC: per site
+    assert np.isfinite(slice_.layers["CpG_cpg_patch"]).any()

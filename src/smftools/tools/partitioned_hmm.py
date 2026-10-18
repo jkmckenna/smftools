@@ -170,22 +170,44 @@ def _configured_model_specs(cfg) -> list[HMMModelSpec]:
                 else "single"
             )
 
-        architecture = base_architecture(cfg)
+        # The endogenous CpG model carries its own settings (`HPS-15`).
+        task_settings = hmm_task_settings(cfg, str(task.name))
+        task_overrides = tuple(
+            (key, tuple(value) if isinstance(value, list) else value)
+            for key, value in sorted(task_settings.items())
+        )
+        task_cfg = HMMModelSpec(
+            name="",
+            label="",
+            signals=(),
+            feature_groups=(),
+            architecture="",
+            overrides=task_overrides,
+        ).config(cfg)
+        architecture = base_architecture(task_cfg)
         base = HMMModelSpec(
             name=str(task.name),
             label=label,
             signals=tuple(map(str, task.signals)),
             feature_groups=tuple(map(str, task.feature_groups)),
-            architecture=_context_architecture(cfg, architecture, multichannel),
+            architecture=_context_architecture(task_cfg, architecture, multichannel),
             base_label=label,
+            overrides=task_overrides,
         )
         specs.append(base)
         for variant, settings in hmm_variants(cfg).items():
             if multichannel and any(key.startswith(VARIANT_SETTINGS_PREFIX) for key in settings):
                 continue  # context emissions are single-channel
             overrides = tuple(
-                (key, tuple(value) if isinstance(value, list) else value)
-                for key, value in sorted(settings.items())
+                sorted(
+                    {
+                        **dict(task_overrides),
+                        **{
+                            key: tuple(value) if isinstance(value, list) else value
+                            for key, value in settings.items()
+                        },
+                    }.items()
+                )
             )
             variant_spec = HMMModelSpec(
                 name=f"{base.name}_{variant}",
@@ -244,6 +266,25 @@ VARIANT_PLAN_SETTINGS = frozenset(
         "hmm_emission_adapt_iters",
     }
 )
+
+
+def hmm_task_settings(cfg, task_name: str) -> dict:
+    """A model's own fitting settings over the stage's (`HPS-15`): today the
+    endogenous CpG model's ``hmm_cpg_settings``; validated as variant settings."""
+    if task_name != "cpg":
+        return {}
+    settings = dict(getattr(cfg, "hmm_cpg_settings", None) or {})
+    unknown = [
+        key
+        for key in settings
+        if not key.startswith(VARIANT_SETTINGS_PREFIX) and key not in VARIANT_PLAN_SETTINGS
+    ]
+    if unknown:
+        raise ValueError(
+            f"hmm_cpg_settings may set {VARIANT_SETTINGS_PREFIX}* and fitting settings "
+            f"({', '.join(sorted(VARIANT_PLAN_SETTINGS))}), not {unknown}"
+        )
+    return settings
 
 
 def hmm_variants(cfg) -> dict[str, dict]:
@@ -822,11 +863,30 @@ def _resolve_spec_scopes(spine, specs, cfg):
                 (key, value) for key, value in spec.overrides if key != "hmm_emission_scope"
             ) + (("hmm_emission_scope", scope),)
             spec = dataclasses.replace(spec, overrides=tuple(sorted(overrides)))
-        if scope != "fit_group" and shared_cfg is None:
+        # The sample sheet is read for the first plan whose emission groups or
+        # efficiency offsets follow sheet columns; a plan sharing one emission
+        # model across every sample (`HPS-15`'s CpG default) needs none.
+        if scope != "fit_group" and shared_cfg is None and _sheet_columns(spec.config(cfg)):
             shared_cfg = spec.config(cfg)
         resolved.append(spec)
     attributes = hmm_sample_attributes(spine, shared_cfg) if shared_cfg is not None else None
+    if attributes is None and any(
+        str(getattr(spec.config(cfg), "hmm_emission_scope", "fit_group")) != "fit_group"
+        for spec in resolved
+    ):
+        attributes = {}
     return resolved, attributes
+
+
+def _sheet_columns(cfg) -> list[str]:
+    """Sample-sheet columns a plan's emission groups or offsets follow."""
+    from ..hmm.fit_plan import efficiency_columns_of, emission_scope
+
+    columns = [str(c) for c in (getattr(cfg, "hmm_emission_groupby", None) or [])]
+    if emission_scope(cfg) == "shared_efficiency":
+        categorical, numeric = efficiency_columns_of(cfg)
+        columns += categorical + numeric
+    return columns
 
 
 def _plan_settings_columns(frame, specs, cfg):

@@ -920,6 +920,29 @@ def _parse_hmm_variants(value: Any) -> Dict[str, Dict[str, Any]]:
     return {str(name): dict(settings or {}) for name, settings in value.items()}
 
 
+#: The endogenous CpG model's defaults (`HPS-15`; also in ``default.yaml``).
+DEFAULT_HMM_CPG_SETTINGS: Dict[str, Any] = {
+    "hmm_axis": "sites",
+    "hmm_emission_scope": "shared",
+    "hmm_emission_groupby": [],
+    "hmm_efficiency_groupby": [],
+    "hmm_efficiency_covariates": [],
+}
+
+
+def _parse_hmm_settings(value: Any) -> Dict[str, Any]:
+    """A settings mapping (e.g. ``hmm_cpg_settings``), or its JSON/YAML text."""
+    if value is None or (isinstance(value, str) and value.strip().lower() in ("", "none", "{}")):
+        return {}
+    if isinstance(value, str):
+        import yaml
+
+        value = yaml.safe_load(value)
+    if not isinstance(value, dict):
+        raise ValueError(f"HMM settings must be a mapping of setting -> value, not {value!r}")
+    return {str(key): setting for key, setting in value.items()}
+
+
 @dataclass
 class ExperimentConfig:
     # Compute
@@ -1434,6 +1457,7 @@ class ExperimentConfig:
     hmm_context_weight_bounds: List[float] = field(default_factory=lambda: [0.1, 10.0])
     # Further emission variants in the same HMM run (`HCE-06`): name -> settings.
     hmm_variants: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    hmm_cpg_settings: Dict[str, Any] = field(default_factory=lambda: dict(DEFAULT_HMM_CPG_SETTINGS))
     # References sharing one HMM fit per sample (`HXR`): name -> references.
     hmm_reference_groups: Dict[str, List[str]] = field(default_factory=dict)
     # Position axis (`HPS-11`): "sites" (site columns) | "bp" (full per-bp grid).
@@ -2824,6 +2848,9 @@ class ExperimentConfig:
             hmm_context_shrinkage=float(merged.get("hmm_context_shrinkage", 50.0)),
             hmm_context_weight_bounds=list(merged.get("hmm_context_weight_bounds", [0.1, 10.0])),
             hmm_variants=_parse_hmm_variants(merged.get("hmm_variants")),
+            hmm_cpg_settings=_parse_hmm_settings(
+                merged.get("hmm_cpg_settings", DEFAULT_HMM_CPG_SETTINGS)
+            ),
             hmm_reference_groups=_parse_hmm_reference_groups(merged.get("hmm_reference_groups")),
             hmm_axis=_parse_hmm_axis(merged.get("hmm_axis")),
             hmm_emission_scope=_parse_hmm_emission_scope(merged.get("hmm_emission_scope")),

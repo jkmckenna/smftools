@@ -577,6 +577,26 @@ On a six-enzyme panel and a two-allele deaminase run the bp axis gave
 nucleosome-scale protected stretches where the site axis fragmented them,
 and better agreement between enzymes (`HPS` design record).
 
+## The endogenous CpG model
+
+With `cpg: True` (the conversion default) a second HMM calls endogenous CpG
+methylation patches (`CpG_cpg_patch`), beside the accessibility model. It has
+its own fitting settings, `hmm_cpg_settings`, applied over the stage's:
+
+```yaml
+hmm_cpg_settings:
+  hmm_axis: sites              # CpGs are sparse: fitted and decoded per site
+  hmm_emission_scope: shared   # one emission model for every sample ...
+  hmm_emission_groupby: []
+  hmm_efficiency_groupby: []
+  hmm_efficiency_covariates: [] # ... with no dose offset
+```
+
+The accessibility model's dose offsets follow the methyltransferase or
+deaminase dose; that says nothing about endogenous methylation, so the CpG
+model shares one emission model across the run without them and needs no
+sample sheet. Any fitting setting a variant may set can be set here.
+
 ## HMM posterior storage and provenance
 
 The HMM stage stores each posterior layer (e.g. `C_posterior_modified`) as
