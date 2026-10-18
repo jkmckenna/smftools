@@ -86,6 +86,9 @@ _DISPLAY_ONLY_CONFIG_KEYS = {
     "clustermap_cmap_cpg",
     "clustermap_cmap_gpc",
     "layer_for_clustermap_plotting",
+    "hmm_clustermap_feature_layers",
+    "hmm_clustermap_length_layers",
+    "hmm_posterior_cmap",
 }
 
 #: Stage order, used to keep a stage from being invalidated by settings that

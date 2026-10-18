@@ -16,6 +16,7 @@ from smftools.constants import (
     BARCODE,
     COVERED_BASE_MASK,
     DEFAULT_CLUSTERMAP_MAX_READS_PER_PLOT,
+    HMM_COVERED_BASE_MASK,
     REFERENCE_STRAND,
     SAMPLE_COL,
 )
@@ -61,6 +62,7 @@ HMM_TASK_CATALOG = "task_catalog.parquet"
 HMM_FIT_CATALOG = "fit_catalog.parquet"
 HMM_FIT_SELECTION_CATALOG = "fit_selection.parquet"
 HMM_PARTIAL_SUBDIR = "store"
+HMM_COVERED_LAYER = HMM_COVERED_BASE_MASK
 HMM_MODEL_SUBDIR = "models"
 
 
@@ -1249,16 +1251,33 @@ def execute_hmm_task(
     chunks = portable_matrix_chunks(skeleton.shape, np.float32)
     safe_write_zarr(skeleton, path, backup=False, verbose=False, zarr_format=3, chunks=chunks)
 
+    # `DLS-03`: feature layers are derivable from the posterior, so a locus task
+    # stores the posterior, states and coverage and not the features (genome
+    # tasks, or ``hmm_store_feature_layers: true``, still store them).
+    derivable = _derivable_task_layers(adata)
+    store_features = bool(getattr(cfg, "hmm_store_feature_layers", False)) or (
+        str(getattr(task, "analysis_mode", "")) == "genome"
+    )
+    stored_layers = [name for name in appended_layers if store_features or name not in derivable]
+    if not store_features and derivable and COVERED_BASE_MASK in adata.layers:
+        adata.layers[HMM_COVERED_LAYER] = np.asarray(
+            adata.layers[COVERED_BASE_MASK], dtype=bool
+        ).astype(np.uint8)
+        stored_layers.append(HMM_COVERED_LAYER)
+    for name in appended_layers:
+        if name not in stored_layers:
+            del adata.layers[name]
+
     # `DLS-02`: the posterior is stored as uint8 (features were called from the
     # full-precision values above); readers decode it back to float.
     encode_posterior = str(getattr(cfg, "hmm_posterior_encoding", "uint8")) == "uint8"
-    for index, name in enumerate(appended_layers):
+    for index, name in enumerate(stored_layers):
         cropped = np.asarray(adata.layers[name])[:, core_mask]
         del adata.layers[name]
         encoded = encode_posterior and "_posterior_" in name
         if encoded:
             cropped = encode_probability_u8(cropped)
-        last = index == len(appended_layers) - 1
+        last = index == len(stored_layers) - 1
         append_zarr_layer(
             path,
             name,
@@ -1275,7 +1294,7 @@ def execute_hmm_task(
             if last:
                 consolidate_zarr_store(path)
         del cropped
-    if not appended_layers:
+    if not stored_layers:
         consolidate_zarr_store(path)
 
     from ..informatics.derived_read_index import write_derived_read_index
@@ -1293,7 +1312,7 @@ def execute_hmm_task(
         **task.to_dict(include_read_ids=False),
         "group_path": path.relative_to(output_dir).as_posix(),
         "n_positions": n_positions,
-        "layers": appended_layers,
+        "layers": stored_layers,
         "hmm_model_ids": [str(item["model_id"]) for item in model_artifacts],
         "hmm_model_checksums": [
             str(item.get("model_checksum", item["checkpoint_sha256"])) for item in model_artifacts
@@ -1307,7 +1326,107 @@ def execute_hmm_task(
         ),
         "read_index_path": read_index_path.relative_to(output_dir).as_posix(),
         "context_qc_partial": context_qc_partial,
+        # `DLS-03`: per model label, the settings its feature layers were called
+        # with (absent for version-1 calling).
+        "hmm_feature_settings_json": json.dumps(
+            {
+                key[len("hmm_feature_settings_") :]: json.loads(value)
+                for key, value in adata.uns.items()
+                if key.startswith("hmm_feature_settings_")
+            },
+            sort_keys=True,
+        ),
     }
+
+
+def _derivable_task_layers(adata) -> set[str]:
+    """Feature layers this task's settings can re-derive from its posterior."""
+    from ..hmm.features import FeatureSettings, feature_layer_names
+
+    names: set[str] = set()
+    for key, value in adata.uns.items():
+        if key.startswith("hmm_feature_settings_"):
+            prefix = key[len("hmm_feature_settings_") :]
+            names.update(feature_layer_names(FeatureSettings.from_dict(json.loads(value)), prefix))
+    return names
+
+
+def record_layers(record) -> list[str]:
+    """Every layer a task record offers: stored, plus derivable (`DLS-03`)."""
+    from ..hmm.features import FeatureSettings, feature_layer_names
+
+    names = [str(layer) for layer in record.get("layers", [])]
+    for prefix, value in json.loads(record.get("hmm_feature_settings_json") or "{}").items():
+        names.extend(feature_layer_names(FeatureSettings.from_dict(value), prefix))
+    return list(dict.fromkeys(names))
+
+
+def read_task_layers(record, output_dir: Path, names):
+    """A task store's rows with ``names`` as layers: stored ones read, feature
+    layers that were not stored derived from its posterior (`DLS-03`)."""
+    from ..hmm.features import FeatureSettings, call_hmm_features, feature_layer_names
+    from ..informatics.partition_query import read_zarr_subset
+
+    names = list(dict.fromkeys(map(str, names)))
+    stored = {str(layer) for layer in record.get("layers", [])}
+    settings = {
+        prefix: FeatureSettings.from_dict(value)
+        for prefix, value in json.loads(record.get("hmm_feature_settings_json") or "{}").items()
+    }
+    wanted: dict[str, list[str]] = {}
+    for prefix, setting in settings.items():
+        derivable = feature_layer_names(setting, prefix)
+        wanted[prefix] = [n for n in names if n in derivable and n not in stored]
+    load = {n for n in names if n in stored}
+    for prefix, derived in wanted.items():
+        if derived:
+            load.add(settings[prefix].posterior_layer(prefix))
+            if HMM_COVERED_LAYER in stored:
+                load.add(HMM_COVERED_LAYER)
+    part = read_zarr_subset(Path(output_dir) / record["group_path"], layers=load)
+    if not any(wanted.values()):
+        return part
+    positions = np.asarray(part.var_names, dtype=np.int64)
+    spans = np.column_stack(
+        [
+            np.asarray(part.obs["reference_start"], dtype=np.int64),
+            np.asarray(part.obs["reference_end"], dtype=np.int64),
+        ]
+    )
+    covered = (
+        np.asarray(part.layers[HMM_COVERED_LAYER], dtype=bool)
+        if HMM_COVERED_LAYER in part.layers
+        else None
+    )
+    for prefix, derived in wanted.items():
+        if not derived:
+            continue
+        layers = call_hmm_features(
+            np.asarray(part.layers[settings[prefix].posterior_layer(prefix)], dtype=np.float64),
+            positions,
+            spans,
+            prefix=prefix,
+            settings=settings[prefix],
+            covered=covered,
+            layers=derived,
+        )
+        for name, values in layers.items():
+            part.layers[name] = values
+    for name in list(part.layers):
+        if name not in names:
+            del part.layers[name]
+    return part
+
+
+def hmm_feature_settings(records) -> dict[str, dict]:
+    """Per model label, the feature settings every task used (`DLS-03`)."""
+    settings: dict[str, dict] = {}
+    for record in records:
+        for prefix, value in json.loads(record.get("hmm_feature_settings_json") or "{}").items():
+            existing = settings.setdefault(prefix, value)
+            if existing != value:
+                raise ValueError(f"HMM tasks called {prefix!r} features with different settings")
+    return settings
 
 
 def _plot_feature_fractions(records, output_dir: Path, layout) -> None:
@@ -1316,10 +1435,18 @@ def _plot_feature_fractions(records, output_dir: Path, layout) -> None:
 
     rows = []
     for record in records:
-        result, _ = safe_read_zarr(output_dir / record["group_path"], verbose=False)
-        for layer in record.get("layers", []):
-            if any(token in str(layer) for token in ("_lengths", "_states", "_posterior")):
-                continue
+        layers = [
+            layer
+            for layer in record_layers(record)
+            if not any(
+                token in str(layer)
+                for token in ("_lengths", "_states", "_posterior", "_end_truncated", "covered")
+            )
+        ]
+        if not layers:
+            continue
+        result = read_task_layers(record, output_dir, layers)
+        for layer in layers:
             values = np.asarray(result.layers[layer], dtype=float)
             valid = np.isfinite(values)
             rows.append(
@@ -1403,16 +1530,16 @@ def _plot_feature_count_size_histograms(records, output_dir: Path, layout, specs
     import matplotlib.pyplot as plt
 
     def _is_group_feature_layer(name: str) -> bool:
-        if name.endswith(("_lengths", "_states")) or "_posterior_" in name:
+        if name.endswith(("_lengths", "_states", "_end_truncated")) or "_posterior_" in name:
             return False
         return "_all_footprint_features" in name or "_all_accessible_features" in name
 
     histograms: dict[tuple[str, int, int, str, str], dict[str, dict[int, int]]] = {}
     for record in records:
-        layer_names = [name for name in record.get("layers", []) if _is_group_feature_layer(name)]
+        layer_names = [name for name in record_layers(record) if _is_group_feature_layer(name)]
         if not layer_names:
             continue
-        result, _ = safe_read_zarr(output_dir / record["group_path"], verbose=False)
+        result = read_task_layers(record, output_dir, layer_names)
         for layer in layer_names:
             arr = np.asarray(result.layers[layer], dtype=float)
             key = (
@@ -1571,7 +1698,7 @@ def _plot_molecule_fractions(records, output_dir: Path, layout, specs=(), obs_re
     for record in records:
         layers = [
             str(layer)
-            for layer in record.get("layers", [])
+            for layer in record_layers(record)
             if str(layer).endswith(FRACTION_LAYER_SUFFIXES)
         ]
         if not layers:
@@ -2119,7 +2246,7 @@ def _variant_label(variant: str) -> str:
 
 def _matching_hmm_layers(records, roots, *, lengths: bool = False) -> list[str]:
     """Resolve configured feature roots against layers actually written by the tasks."""
-    available = {str(layer) for record in records for layer in record.get("layers", [])}
+    available = {str(layer) for record in records for layer in record_layers(record)}
     suffixes = [f"_{root}{'_lengths' if lengths else ''}" for root in roots]
     return sorted(
         layer for layer in available if any(layer.endswith(suffix) for suffix in suffixes)
@@ -2290,7 +2417,12 @@ def _plot_feature_clustermaps(
                 adata,
                 hmm_feature_layer=layer,
                 extra_hmm_layers=extras,
-                cmap_hmm=_resolve_feature_colormap(
+                cmap_hmm=(
+                    str(getattr(cfg, "hmm_posterior_cmap", None) or "RdBu_r")
+                    if "_posterior_" in layer
+                    else None
+                )
+                or _resolve_feature_colormap(
                     layer, cfg, str(getattr(cfg, "clustermap_cmap_hmm", "coolwarm"))
                 ),
                 save_path=plot_dir,
@@ -2620,6 +2752,10 @@ def execute_partitioned_hmm(spine_path, cfg, output_dir) -> dict[str, Path]:
     read_index_dir = output_dir / DERIVED_READ_INDEX_DIRNAME
     hmm_spine.uns["hmm_read_index"] = relative_uns_path(read_index_dir, run_root)
     hmm_spine.uns["hmm_schema_version"] = 2
+    # What the feature layers can be re-derived with (`DLS-03`), as JSON.
+    hmm_spine.uns["hmm_feature_settings"] = json.dumps(
+        hmm_feature_settings(records), sort_keys=True
+    )
     safe_write_h5ad(hmm_spine, output_spine, backup=False, verbose=False)
     # The superset experiment spine is regenerated by the caller after this
     # generation is published, matching latent (cli/latent_adata.py), raw

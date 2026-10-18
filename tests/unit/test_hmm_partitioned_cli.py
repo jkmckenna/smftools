@@ -342,8 +342,14 @@ def test_partitioned_hmm_masks_read_span_for_single_channel_signals(tmp_path, mo
     # A single-channel ("C") signal was used -- with the bug, its feature
     # layers were never masked. Masking now happens inside the feature
     # derivation (`DLS-03`), so assert the outcome: NaN outside each read.
+    from smftools.tools.partitioned_hmm import read_task_layers
+
     catalog = pd.read_parquet(outputs["task_catalog"])
-    stored, _ = safe_read_zarr(outputs["task_catalog"].parent / catalog.iloc[0]["group_path"])
+    stored = read_task_layers(
+        catalog.iloc[0].to_dict(),
+        outputs["task_catalog"].parent,
+        ["C_all_accessible_features", "C_all_accessible_features_lengths"],
+    )
     positions = np.asarray(stored.var_names, dtype=int)
     for layer in ("C_all_accessible_features", "C_all_accessible_features_lengths"):
         values = np.asarray(stored.layers[layer], dtype=float)
@@ -1384,8 +1390,10 @@ def test_variants_run_end_to_end_with_comparison_plots(tmp_path, monkeypatch):
     cfg, outputs, artifacts = _context_run(
         tmp_path, hmm_variants={"learned": {"hmm_context_model": "learned"}}
     )
+    from smftools.tools.partitioned_hmm import record_layers
+
     catalog = pd.read_parquet(outputs["task_catalog"])
-    layers = set(catalog.iloc[0]["layers"])
+    layers = set(record_layers(catalog.iloc[0].to_dict()))
     assert {"C_all_accessible_features", "C_learned_all_accessible_features"} <= layers
     architectures = {a["model_key"]["architecture"] for a in artifacts}
     assert architectures == {"single", "context_single"}
@@ -1433,8 +1441,12 @@ def test_context_qc_tallies_every_variant_and_match_the_decoded_layers(tmp_path)
 
     # Equal to a direct count from the stored decoded layer and the input calls.
     catalog = pd.read_parquet(outputs["task_catalog"])
+    from smftools.tools.partitioned_hmm import read_task_layers
+
     record = catalog.iloc[0]
-    task, _ = safe_read_zarr(outputs["task_catalog"].parent / record["group_path"])
+    task = read_task_layers(
+        record.to_dict(), outputs["task_catalog"].parent, ["C_all_accessible_features"]
+    )
     spine = outputs["task_catalog"].parent / "spine.h5ad"
     adata = materialize(
         spine,
@@ -1525,8 +1537,15 @@ def test_raw_site_fraction_equals_the_model_inputs_modified_share(tmp_path):
     cfg, outputs, _ = _context_run(
         tmp_path, hmm_variants={"learned": {"hmm_context_model": "learned"}}
     )
+    from smftools.tools.partitioned_hmm import read_task_layers, record_layers
+
     record = pd.read_parquet(outputs["task_catalog"]).iloc[0]
-    task, _ = safe_read_zarr(outputs["task_catalog"].parent / record["group_path"])
+    task = read_task_layers(
+        record.to_dict(),
+        outputs["task_catalog"].parent,
+        [name for name in record_layers(record.to_dict()) if name.startswith("C_")]
+        + [name for name in record["layers"] if not name.startswith("C_")],
+    )
     assert "C_site_modified_fraction" in task.obs
     assert "C_learned_site_modified_fraction" not in task.obs  # variants share the input
     adata = materialize(
@@ -1616,8 +1635,15 @@ def test_site_fractions_count_the_hmm_call_at_observed_sites(tmp_path):
     cfg, outputs, _ = _context_run(
         tmp_path, hmm_variants={"learned": {"hmm_context_model": "learned"}}
     )
+    from smftools.tools.partitioned_hmm import read_task_layers, record_layers
+
     record = pd.read_parquet(outputs["task_catalog"]).iloc[0]
-    task, _ = safe_read_zarr(outputs["task_catalog"].parent / record["group_path"])
+    task = read_task_layers(
+        record.to_dict(),
+        outputs["task_catalog"].parent,
+        [name for name in record_layers(record.to_dict()) if name.startswith("C_")]
+        + [name for name in record["layers"] if not name.startswith("C_")],
+    )
     for layer in (
         "C_all_accessible_features",
         "C_learned_all_accessible_features",
@@ -1751,8 +1777,12 @@ def test_reference_group_fits_alleles_once_and_decodes_each(tmp_path, monkeypatc
     tasks = pd.read_parquet(outputs["task_catalog"])
     assert set(tasks["reference"]) == {"ref_top", "alt_top"}
     assert len({ids[0] for ids in tasks["hmm_model_ids"]}) == 1  # one model, both alleles
+    from smftools.tools.partitioned_hmm import record_layers
+
     for _, task in tasks.iterrows():
-        assert any(layer.endswith("_all_accessible_features") for layer in task["layers"])
+        assert any(
+            layer.endswith("_all_accessible_features") for layer in record_layers(task.to_dict())
+        )
     if context:
         artifact = json.loads(tasks.iloc[0]["hmm_model_artifacts_json"])[0]
         model = _load_model(cfg, outputs, artifact)
@@ -2002,8 +2032,10 @@ def test_variants_are_full_fitting_plans(tmp_path, monkeypatch):
     assert scopes == {"C": "fit_group", "C_shared_bp": "shared"}
     assert fits.groupby("model_label")["fit_config_hash"].nunique().eq(1).all()
     assert fits["fit_config_hash"].nunique() == 2
+    from smftools.tools.partitioned_hmm import record_layers
+
     tasks = pd.read_parquet(outputs["task_catalog"])
-    layers = set().union(*map(set, tasks["layers"]))
+    layers = set().union(*(set(record_layers(t.to_dict())) for _, t in tasks.iterrows()))
     assert any(layer.startswith("C_shared_bp_") for layer in layers)
     assert any(layer.startswith("C_all_") for layer in layers)
 
@@ -2409,3 +2441,84 @@ def test_features_recomputed_from_the_stored_posterior_equal_the_stored_features
             np.asarray(derived[name], dtype=float),
             err_msg=name,
         )
+
+
+def _hmm_run_with_features(tmp_path, monkeypatch):
+    raw = write_raw_store(
+        _frame(),
+        tmp_path / "raw_outputs",
+        reference_lengths={"ref_top": 12},
+        analysis_mode="locus",
+        extra_uns={"References": {"ref_FASTA_sequence": "ACGCGTACGTAC"}},
+    )
+    preprocess = execute_partitioned_preprocessing(
+        raw["spine"], _preprocess_cfg(), tmp_path / "preprocess_outputs"
+    )
+    cfg = _hmm_cfg(
+        hmm_methbases=["C"],
+        hmm_max_iter=2,
+        target_task_memory_mb=1,
+        hmm_merge_layer_features=[["all_accessible_features", 2]],
+    )
+    return execute_partitioned_hmm(preprocess["spine"], cfg, tmp_path / "hmm_outputs")
+
+
+def test_materialize_derives_hmm_features_from_the_posterior(tmp_path, monkeypatch):
+    """`DLS-03b`: requested HMM feature layers can be derived from the stored
+    posterior with the recorded settings (equal to the stored layers), with
+    overrides, selectively, and over a window without cutting runs."""
+    import json
+
+    outputs = _hmm_run_with_features(tmp_path, monkeypatch)
+    spine, _ = safe_read_h5ad(outputs["spine"])
+    recorded = json.loads(spine.uns["hmm_feature_settings"])
+    assert recorded["C"]["merges"] == [["all_accessible_features", 2]]
+
+    names = [
+        "C_all_accessible_features",
+        "C_all_footprint_features_lengths",
+        "C_all_accessible_features_merged",
+        "C_all_accessible_features_end_truncated",
+    ]
+    stored = materialize(outputs["spine"], references="ref_top", start=0, end=12, layers=names)
+    same = materialize(
+        outputs["spine"],
+        references="ref_top",
+        start=0,
+        end=12,
+        layers=names,
+        hmm_feature_overrides={"merges": [["all_accessible_features", 2]]},
+    )
+    assert same.uns["hmm_feature_settings_used"]["C"]["merges"] == [["all_accessible_features", 2]]
+    for name in names:
+        np.testing.assert_array_equal(
+            np.asarray(stored.layers[name], float), np.asarray(same.layers[name], float), name
+        )
+
+    wide = materialize(
+        outputs["spine"],
+        references="ref_top",
+        start=0,
+        end=12,
+        layers=["C_all_accessible_features", "C_all_accessible_features_merged"],
+        hmm_feature_overrides={"merges": [["all_accessible_features", 12]]},
+    )
+    assert set(wide.layers) == {"C_all_accessible_features", "C_all_accessible_features_merged"}
+    np.testing.assert_array_equal(  # unmerged layer unaffected by the merge distance
+        np.asarray(wide.layers["C_all_accessible_features"], float),
+        np.asarray(stored.layers["C_all_accessible_features"], float),
+    )
+    assert wide.uns["hmm_feature_settings_used"]["C"]["merges"] == [["all_accessible_features", 12]]
+
+    window = materialize(
+        outputs["spine"],
+        references="ref_top",
+        start=3,
+        end=9,
+        layers=["C_all_footprint_features_lengths"],
+        hmm_feature_overrides={},
+    )
+    full = np.asarray(same.layers["C_all_footprint_features_lengths"], float)
+    np.testing.assert_array_equal(
+        np.asarray(window.layers["C_all_footprint_features_lengths"], float), full[:, 3:9]
+    )

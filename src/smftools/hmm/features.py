@@ -67,6 +67,40 @@ class FeatureSettings:
             merged_suffix=str(getattr(cfg, "hmm_merged_suffix", "_merged")),
         )
 
+    @classmethod
+    def from_dict(cls, record: Mapping[str, Any]) -> "FeatureSettings":
+        """Inverse of :meth:`to_dict` (e.g. from a spine's recorded settings)."""
+        return cls(
+            feature_sets={
+                group: {
+                    "state": spec.get("state", "Modified"),
+                    "features": {
+                        name: (float(lo), float(hi))
+                        for name, (lo, hi) in (spec.get("features", {}) or {}).items()
+                    },
+                }
+                for group, spec in (record.get("feature_sets", {}) or {}).items()
+            },
+            posterior_state=str(record.get("posterior_state", "Modified")),
+            prob_threshold=float(record.get("prob_threshold", 0.5)),
+            merges=tuple((str(c), int(d)) for c, d in (record.get("merges", []) or [])),
+            merged_suffix=str(record.get("merged_suffix", "_merged")),
+            version=int(record.get("version", FEATURE_DERIVATION_VERSION)),
+        )
+
+    def with_overrides(self, **overrides) -> "FeatureSettings":
+        """A copy with some settings replaced (``merges``, ``prob_threshold``,
+        ``feature_sets``, ...)."""
+        from dataclasses import replace
+
+        if "merges" in overrides:
+            overrides["merges"] = tuple((str(c), int(d)) for c, d in overrides["merges"])
+        return replace(self, **overrides)
+
+    def posterior_layer(self, prefix: str) -> str:
+        state = str(self.posterior_state).strip().lower().replace(" ", "_").replace("-", "_")
+        return f"{prefix}_posterior_{state}"
+
     def to_dict(self) -> dict[str, Any]:
         """JSON-ready record of the settings (generation manifests, analyses)."""
         return {
@@ -86,6 +120,27 @@ class FeatureSettings:
                 for group, spec in self.feature_sets.items()
             },
         }
+
+
+def feature_layer_names(settings: FeatureSettings, prefix: str) -> dict[str, str]:
+    """Every layer ``call_hmm_features`` can produce -> the feature group it
+    belongs to (merged layers map to their group too)."""
+    names: dict[str, str] = {}
+    merged = {core for core, _ in settings.merges}
+    suffix = settings.merged_suffix
+    for group, spec in settings.feature_sets.items():
+        aggregate = f"{prefix}_all_{group}_features"
+        stems = [aggregate] + [f"{prefix}_{name}" for name in (spec.get("features", {}) or {})]
+        for stem in stems:
+            names[stem] = group
+            names[f"{stem}_lengths"] = group
+        names[f"{aggregate}{END_TRUNCATED_SUFFIX}"] = group
+        if f"all_{group}_features" in merged:
+            for stem in stems:
+                names[f"{stem}{suffix}"] = group
+                names[f"{stem}{suffix}_lengths"] = group
+            names[f"{aggregate}{suffix}{END_TRUNCATED_SUFFIX}"] = group
+    return names
 
 
 def _same_state(a: str, b: str) -> bool:
@@ -139,6 +194,7 @@ def call_hmm_features(
     prefix: str,
     settings: FeatureSettings,
     covered: np.ndarray | None = None,
+    layers: Sequence[str] | None = None,
 ) -> dict[str, np.ndarray]:
     """Feature layers from a two-state posterior.
 
@@ -151,6 +207,8 @@ def call_hmm_features(
         settings: feature settings.
         covered: optional (N, L) bases each read covers; features are masked
             (NaN) where it is False, as well as outside the span.
+        layers: optional names to return (see :func:`feature_layer_names`);
+            only their feature groups and merges are computed. Default: all.
 
     Returns:
         layer name -> (N, L) array, float32 with NaN outside the read (and at
@@ -164,11 +222,20 @@ def call_hmm_features(
     keep = in_span if covered is None else (in_span & np.asarray(covered, dtype=bool))
     decoded = in_span & np.isfinite(posterior)
     threshold = float(settings.prob_threshold)
+    wanted = None
+    if layers is not None:
+        known = feature_layer_names(settings, prefix)
+        unknown = sorted(set(layers).difference(known))
+        if unknown:
+            raise KeyError(f"not derivable from the {prefix} posterior: {unknown}")
+        wanted = set(layers)
+    groups = None if wanted is None else {known[name] for name in wanted}
+    requested = layers
     layers: dict[str, np.ndarray] = {}
 
     for group, spec in settings.feature_sets.items():
         ranges = dict(spec.get("features", {}) or {})
-        if not ranges:
+        if not ranges or (groups is not None and group not in groups):
             continue
         favoured = _same_state(spec.get("state", "Modified"), settings.posterior_state)
         member = posterior >= threshold if favoured else posterior < 1.0 - threshold
@@ -198,9 +265,22 @@ def call_hmm_features(
             layers[f"{prefix}_{name}"] = out[name]
             layers[f"{prefix}_{name}_lengths"] = run_lengths(out[name])
 
-    merged = _merge_layers(layers, positions, prefix=prefix, settings=settings, keep=keep)
+    merges = settings.merges
+    if wanted is not None:
+        suffix = settings.merged_suffix
+        merges = tuple(
+            (core, distance)
+            for core, distance in merges
+            if any(name.startswith(prefix) and suffix in name for name in wanted)
+            and f"{prefix}_{core}" in layers
+        )
+    merged = _merge_layers(
+        layers, positions, prefix=prefix, settings=settings.with_overrides(merges=merges), keep=keep
+    )
     layers = {name: _mask(array, keep) for name, array in layers.items()}
     layers.update(merged)
+    if requested is not None:
+        layers = {name: layers[name] for name in requested}
     return layers
 
 

@@ -70,6 +70,7 @@ hmm_merge_layer_features:
   - ["all_accessible_features", 60]
   - ["all_footprint_features", 10]
 hmm_clustermap_feature_layers:
+  - posterior_modified # diverging about 0.5 (hmm_posterior_cmap, default RdBu_r)
   - all_accessible_features
   - all_accessible_features_merged
   - all_footprint_features_merged

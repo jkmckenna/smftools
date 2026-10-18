@@ -24,7 +24,7 @@ import re
 import threading
 from collections import OrderedDict
 from pathlib import Path
-from typing import TYPE_CHECKING, Iterable
+from typing import TYPE_CHECKING, Any, Iterable, Mapping
 
 import numpy as np
 import pandas as pd
@@ -1086,6 +1086,119 @@ def _materialize_legacy(
     return result
 
 
+def _recorded_hmm_feature_settings(spine: "ad.AnnData") -> dict:
+    """Per model label, the feature settings an HMM generation recorded."""
+    import json
+
+    raw = spine.uns.get("hmm_feature_settings")
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return {}
+    return json.loads(raw) if isinstance(raw, str) else dict(raw)
+
+
+def _derivable_hmm_layers(
+    spine: "ad.AnnData", overrides: Mapping[str, Any] | None = None
+) -> dict[str, str]:
+    """HMM feature layer name -> model label, for every layer the spine's
+    recorded feature settings (with ``overrides``) can derive."""
+    from ..hmm.features import FeatureSettings, feature_layer_names
+
+    names: dict[str, str] = {}
+    for prefix, record in _recorded_hmm_feature_settings(spine).items():
+        settings = FeatureSettings.from_dict(record)
+        if overrides:
+            settings = settings.with_overrides(**dict(overrides))
+        names.update({name: prefix for name in feature_layer_names(settings, prefix)})
+    return names
+
+
+def _derive_hmm_layers(
+    spine: "ad.AnnData",
+    base: Path,
+    result: "ad.AnnData",
+    to_derive: Mapping[str, str],
+    overrides: Mapping[str, Any] | None,
+) -> None:
+    """Attach HMM feature layers derived from the stored posterior (`DLS-03`).
+
+    For each reference in ``result``, the posterior and coverage of its reads
+    are loaded over the whole reference -- runs are measured over each read's
+    span, so a narrower window would cut them -- the requested layers are
+    derived, then cropped to ``result``'s positions.
+    """
+    from ..constants import COVERED_BASE_MASK, HMM_COVERED_BASE_MASK
+    from ..hmm.features import FeatureSettings, call_hmm_features
+
+    recorded = _recorded_hmm_feature_settings(spine)
+    # Coverage from the HMM store when it kept a copy (no raw / preprocess read).
+    hmm_coverage = HMM_COVERED_BASE_MASK in _derived_layer_names(
+        spine, _run_root_from_source_base(base)
+    )
+    coverage_layer = HMM_COVERED_BASE_MASK if hmm_coverage else COVERED_BASE_MASK
+    positions = np.asarray(result.var_names, dtype=np.int64)
+    column_of = {int(p): i for i, p in enumerate(positions)}
+    out = {name: np.full(result.shape, np.nan, dtype=np.float32) for name in to_derive}
+    used: dict[str, dict] = {}
+    references = result.obs["Reference_strand"].astype(str)
+    for reference in references.unique():
+        plan = _reference_plan(spine, reference)
+        if plan.get("analysis_mode") == "genome":
+            raise KeyError(
+                f"HMM feature layers of genome-mode reference {reference!r} are stored, "
+                "not derived; request them without hmm_feature_overrides"
+            )
+        rows = np.flatnonzero(references.to_numpy() == reference)
+        read_ids = list(result.obs_names[rows].astype(str))
+        length = int(
+            plan.get("reference_length") or _reference_lengths(spine, [reference])[reference]
+        )
+        for prefix in sorted(set(to_derive.values())):
+            settings = FeatureSettings.from_dict(recorded[prefix])
+            if overrides:
+                settings = settings.with_overrides(**dict(overrides))
+            used[prefix] = settings.to_dict()
+            names = [name for name, owner in to_derive.items() if owner == prefix]
+            source = materialize(
+                spine,
+                base_dir=base,
+                references=reference,
+                read_ids=read_ids,
+                start=0,
+                end=length,
+                layers=[settings.posterior_layer(prefix), coverage_layer],
+                x=not hmm_coverage,
+            )
+            source = source[read_ids]
+            covered = (
+                np.nan_to_num(np.asarray(source.layers[coverage_layer], dtype=float)) > 0
+                if coverage_layer in source.layers
+                else None
+            )
+            spans = np.column_stack(
+                [
+                    np.asarray(source.obs["reference_start"], dtype=np.int64),
+                    np.asarray(source.obs["reference_end"], dtype=np.int64),
+                ]
+            )
+            derived = call_hmm_features(
+                np.asarray(source.layers[settings.posterior_layer(prefix)], dtype=np.float64),
+                np.asarray(source.var_names, dtype=np.int64),
+                spans,
+                prefix=prefix,
+                settings=settings,
+                covered=covered,
+                layers=names,
+            )
+            source_positions = np.asarray(source.var_names, dtype=np.int64)
+            take = [i for i, p in enumerate(source_positions) if int(p) in column_of]
+            put = [column_of[int(source_positions[i])] for i in take]
+            for name in names:
+                out[name][np.ix_(rows, put)] = derived[name][:, take]
+    for name, values in out.items():
+        result.layers[name] = values
+    result.uns["hmm_feature_settings_used"] = used
+
+
 def materialize(
     spine,
     *,
@@ -1103,6 +1216,7 @@ def materialize(
     end: int | None = None,
     query_memory_mb: int = DEFAULT_QUERY_MEMORY_MB,
     x: bool = True,
+    hmm_feature_overrides: Mapping[str, Any] | None = None,
 ) -> "ad.AnnData":
     """Assemble a concrete AnnData for a molecule selection from the partitions.
 
@@ -1138,6 +1252,16 @@ def materialize(
             selection's rows, the window's positions and the requested layers,
             with ``X`` empty. Saves reading preprocess ``X`` only to discard it.
             Requires an explicit, all-derived ``layers``.
+        hmm_feature_overrides: HMM feature settings to use instead of the
+            generation's recorded ones (e.g. ``{"merges": [["all_accessible_features",
+            40]]}``); requested HMM feature layers are then derived even if stored.
+
+    HMM feature layers (`DLS-03`) named in ``layers`` that the generation did not
+    store -- or every requested one, with ``hmm_feature_overrides`` -- are derived
+    from its stored posterior with the recorded settings: only their feature
+    groups are computed, over each read's whole span (then cropped to the
+    window), and ``uns["hmm_feature_settings_used"]`` records the settings.
+    Not for genome-mode references, whose feature layers stay stored.
 
     Returns:
         anndata.AnnData: The materialized selection, ordered as in the spine, with
@@ -1215,6 +1339,32 @@ def materialize(
     )
     derived_available = _derived_layer_names(spine_obj, run_root)
     requested_layer_set = None if layers is None else set(layers)
+    to_derive: dict[str, str] = {}
+    if requested_layer_set is None:
+        # Every layer, as before `DLS-03b`: derivable feature layers included.
+        to_derive = {
+            name: prefix
+            for name, prefix in _derivable_hmm_layers(spine_obj, hmm_feature_overrides).items()
+            if hmm_feature_overrides is not None or name not in derived_available
+        }
+        derived_available = derived_available.difference(to_derive)
+    else:
+        derivable = _derivable_hmm_layers(spine_obj, hmm_feature_overrides)
+        to_derive = {
+            name: prefix
+            for name, prefix in derivable.items()
+            if name in requested_layer_set
+            and (hmm_feature_overrides is not None or name not in derived_available)
+        }
+        if to_derive:
+            requested_layer_set = requested_layer_set.difference(to_derive)
+            derived_available = derived_available.difference(to_derive)
+
+    def _finish(result):
+        if to_derive:
+            _derive_hmm_layers(spine_obj, base, result, to_derive, hmm_feature_overrides)
+        return result
+
     requested_derived = (
         derived_available
         if requested_layer_set is None
@@ -1240,7 +1390,7 @@ def materialize(
     if not x:
         # `MRC-04`: the requested layers come from derived stores, so build only
         # what they are stitched onto -- rows and positions -- not X.
-        if requested_layer_set is None or source_layers or not requested_derived:
+        if requested_layer_set is None or source_layers or not (requested_derived or to_derive):
             raise ValueError(
                 "materialize: x=False needs an explicit layers list of derived layers only; "
                 f"not derived here: {sorted(source_layers or ())}"
@@ -1254,7 +1404,7 @@ def materialize(
             spine_obj, result, requested_read_metrics, run_root, lazy, query_memory_mb
         )
         logger.debug("materialized %d molecules, derived layers only", result.n_obs)
-        return result
+        return _finish(result)
     if start is None:
         genome_references = [
             reference
@@ -1285,7 +1435,7 @@ def materialize(
             spine_obj, fast, requested_read_metrics, run_root, lazy, query_memory_mb
         )
         logger.debug("materialized %d molecules from preprocess-owned X", fast.n_obs)
-        return fast
+        return _finish(fast)
     if not _dense_cache_available(sel, base):
         tiled = _load_tiled_cache_selection(
             spine_obj,
@@ -1306,7 +1456,7 @@ def materialize(
                 spine_obj, tiled, requested_read_metrics, run_root, lazy, query_memory_mb
             )
             logger.debug("materialized %d molecules from tiled dense cache", tiled.n_obs)
-            return tiled
+            return _finish(tiled)
         result = _load_ragged_selection(spine_obj, sel, base, source_layers, start, end)
         _overlay_preprocess_layers(
             spine_obj, result, requested_derived, run_root, lazy, query_memory_mb
@@ -1316,7 +1466,7 @@ def materialize(
             spine_obj, result, requested_read_metrics, run_root, lazy, query_memory_mb
         )
         logger.debug("materialized %d molecules from ragged parquet", result.n_obs)
-        return result
+        return _finish(result)
 
     parts: list[ad.AnnData] = []
     for partition_rel, grp in sel.groupby(PARTITION_COL, sort=False, observed=True):
@@ -1355,4 +1505,4 @@ def materialize(
     )
 
     logger.debug("materialized %d molecules from %d partition(s)", result.n_obs, len(parts))
-    return result
+    return _finish(result)

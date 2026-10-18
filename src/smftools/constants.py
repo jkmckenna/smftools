@@ -139,6 +139,9 @@ MISMATCH_INTEGER_ENCODING: Final[str] = "mismatch_integer_encoding"
 BASE_QUALITY_SCORES: Final[str] = "base_quality_scores"
 READ_SPAN_MASK: Final[str] = "read_span_mask"
 COVERED_BASE_MASK: Final[str] = "covered_base_mask"
+#: The HMM stage's copy of each read's coverage, stored beside the posterior
+#: when feature layers are derived rather than stored (`DLS-03`).
+HMM_COVERED_BASE_MASK: Final[str] = "hmm_covered_base_mask"
 MATE_COVERAGE_COUNT: Final[str] = "mate_coverage_count"
 OVERLAP_CONFLICT_MASK: Final[str] = "overlap_conflict_mask"
 

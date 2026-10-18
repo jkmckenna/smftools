@@ -893,7 +893,13 @@ def _hmm_raw_one_group(args: dict) -> dict:
     mean_hmm = (
         normalized_mean(hmm_matrix_raw) if normalize_hmm else np.nanmean(hmm_matrix_raw, axis=0)
     )
-    hmm_plot_cmap = _build_hmm_feature_cmap(cmap_hmm)
+    hmm_plot_cmap = (
+        # A posterior keeps its own (diverging) colour map; feature layers are
+        # drawn two-colour.
+        _build_nan_aware_cmap(cmap_hmm)
+        if "_posterior_" in str(hmm_feature_layer)
+        else _build_hmm_feature_cmap(cmap_hmm)
+    )
     cmap_c = _build_nan_aware_cmap(cmap_c)
     cmap_gpc = _build_nan_aware_cmap(cmap_gpc)
     cmap_cpg = _build_nan_aware_cmap(cmap_cpg)
@@ -981,13 +987,29 @@ def _hmm_raw_one_group(args: dict) -> dict:
     for i, (name, matrix, labels, cmap, mean_vec, n_ticks) in enumerate(panels):
         _hmm_mod.clean_barplot(axes_bar[i], mean_vec, name)
         heatmap_kwargs = dict(cmap=cmap, ax=axes_heat[i], yticklabels=False, cbar=False)
+        # A posterior is a probability, not a call: diverging about 0.5 (the
+        # feature threshold), with a colour bar instead of the two-entry legend.
+        is_posterior = name.startswith("HMM -") and "_posterior_" in name
         if name.startswith("HMM -"):
             heatmap_kwargs.update(vmin=0.0, vmax=1.0)
+        if is_posterior:
+            heatmap_kwargs.update(
+                center=0.5,
+                cbar=True,
+                cbar_kws={
+                    "orientation": "horizontal",
+                    "shrink": 0.6,
+                    "pad": 0.12,
+                    "label": "posterior",
+                },
+            )
         _sns.heatmap(matrix, **heatmap_kwargs)
         xtick_pos, xtick_labels = _pick_xticks(np.asarray(labels), n_ticks)
         axes_heat[i].set_xticks(xtick_pos)
         axes_heat[i].set_xticklabels(xtick_labels, rotation=90, fontsize=10)
         legend_labels = hmm_legend_labels if name.startswith("HMM -") else raw_legend_labels
+        if is_posterior:
+            legend_labels = None
         if legend_labels is not None:
             low_label, high_label = legend_labels
             handles = [

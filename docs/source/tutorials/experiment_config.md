@@ -604,6 +604,22 @@ ones exactly. Its rules:
   (the decoder's estimate there), and runs continue across them; feature
   layers are NaN there and outside the read.
 
+The HMM stage stores, per read, the posterior, the states and a coverage
+mask (`hmm_covered_base_mask`) -- not the feature layers. It records the
+feature settings on its spine (`uns["hmm_feature_settings"]`), and
+`materialize` derives any requested feature layer from the posterior with
+them: only the requested feature groups, over each read's whole span (then
+cropped to the window). `materialize(..., hmm_feature_overrides={"merges":
+[["all_accessible_features", 40]]})` derives with other settings and records
+them in `uns["hmm_feature_settings_used"]`. Deriving costs about 1 s per
+1,000 reads x 4.7 kb for every layer. Genome-mode tasks, and
+`hmm_store_feature_layers: true`, still store the feature layers.
+
+HMM clustermaps can draw the posterior: `posterior_modified` in
+`hmm_clustermap_feature_layers` (on by default for deaminase) gives a panel
+on a diverging colour map centred at 0.5 -- the feature threshold --
+(`hmm_posterior_cmap`, default `RdBu_r`) with a colour bar.
+
 Which model produced a read's layers is recorded per read:
 `smftools.hmm.provenance.hmm_read_models(generation, read_ids)` returns each
 read's model id and checksum with that model's fit (label, `fit_config_hash`,
