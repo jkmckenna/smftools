@@ -2399,7 +2399,7 @@ def _plot_feature_clustermaps(
     raw_layer = str(getattr(cfg, "layer_for_clustermap_plotting", "nan0_0minus1"))
     # `HPS-18`: the posterior beside each feature panel.
     posterior_of = (
-        _posterior_layers(feature_layers, _configured_model_specs(cfg), cfg)
+        _posterior_layers([*feature_layers, *length_layers], _configured_model_specs(cfg), cfg)
         if bool(getattr(cfg, "hmm_clustermap_posterior_panel", False))
         else {}
     )
@@ -2559,11 +2559,14 @@ def _plot_feature_clustermaps(
                 )
         for _, members in variant_layer_groups(length_layers, specs):
             layer, extras = members[0][1], [name for _, name in members[1:]]
+            if posterior_of.get(layer):
+                extras = [*extras, posterior_of[layer]]
             plot_dir = base_dir / "lengths" / _component(layer)
             combined_hmm_length_clustermap(
                 adata,
                 length_layer=layer,
                 extra_length_layers=extras,
+                posterior_cmap=str(getattr(cfg, "hmm_posterior_cmap", None) or "RdBu_r"),
                 cmap_lengths=_resolve_feature_colormap(layer, cfg, "Greens"),
                 length_feature_ranges=_resolve_length_feature_ranges(layer, cfg, "Greens"),
                 save_path=plot_dir,

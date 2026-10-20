@@ -2716,8 +2716,8 @@ def test_pooled_fits_cap_reads_per_sample_and_mark_them(tmp_path, monkeypatch):
 
 
 def test_feature_clustermaps_carry_the_posterior_panel(tmp_path, monkeypatch):
-    """`HPS-18`: with hmm_clustermap_posterior_panel each feature clustermap
-    gets its model's posterior as a further panel, on the diverging map."""
+    """`HPS-18`: with hmm_clustermap_posterior_panel each feature and length
+    clustermap gets its model's posterior as a further panel, on the diverging map."""
     from smftools import plotting
     from smftools.tools import partitioned_hmm
 
@@ -2729,6 +2729,14 @@ def test_feature_clustermaps_carry_the_posterior_panel(tmp_path, monkeypatch):
         return real(adata, **kwargs)
 
     monkeypatch.setattr(plotting, "combined_hmm_raw_clustermap", spy)
+    length_spy = []
+    real_length = plotting.combined_hmm_length_clustermap
+
+    def spy_length(adata, **kwargs):
+        length_spy.append(kwargs)
+        return real_length(adata, **kwargs)
+
+    monkeypatch.setattr(plotting, "combined_hmm_length_clustermap", spy_length)
     raw = write_raw_store(
         _frame(),
         tmp_path / "raw_outputs",
@@ -2744,6 +2752,7 @@ def test_feature_clustermaps_carry_the_posterior_panel(tmp_path, monkeypatch):
         hmm_max_iter=2,
         target_task_memory_mb=1,
         hmm_clustermap_feature_layers=["all_accessible_features"],
+        hmm_clustermap_length_layers=["all_footprint_features"],
         hmm_clustermap_posterior_panel=True,
     )
     partitioned_hmm.execute_partitioned_hmm(preprocess["spine"], cfg, tmp_path / "hmm_outputs")
@@ -2751,3 +2760,6 @@ def test_feature_clustermaps_carry_the_posterior_panel(tmp_path, monkeypatch):
     assert feature_calls
     assert all("C_posterior_modified" in c["extra_hmm_layers"] for c in feature_calls)
     assert {c["posterior_cmap"] for c in feature_calls} == {"RdBu_r"}
+    length_calls = [c for c in length_spy if c["length_layer"].startswith("C_all_footprint")]
+    assert length_calls
+    assert all("C_posterior_modified" in c["extra_length_layers"] for c in length_calls)

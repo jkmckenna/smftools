@@ -649,7 +649,7 @@ them in `uns["hmm_feature_settings_used"]`. Deriving costs about 1 s per
 1,000 reads x 4.7 kb for every layer. Genome-mode tasks, and
 `hmm_store_feature_layers: true`, still store the feature layers.
 
-HMM clustermaps can show the posterior beside each feature panel
+HMM clustermaps can show the posterior beside each feature and length panel
 (`hmm_clustermap_posterior_panel`, on by default for deaminase), on a
 diverging colour map centred at 0.5 -- the feature threshold --
 (`hmm_posterior_cmap`, default `RdBu_r`) with a colour bar. `posterior_modified`

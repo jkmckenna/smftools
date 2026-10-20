@@ -1002,25 +1002,7 @@ def _hmm_raw_one_group(args: dict) -> dict:
         if name.startswith("HMM -"):
             heatmap_kwargs.update(vmin=0.0, vmax=1.0)
         if is_posterior:
-            # The colour bar gets its own axes just right of the panel, so
-            # the panel keeps the size of its neighbours.
-            from mpl_toolkits.axes_grid1.inset_locator import inset_axes
-
-            cax = inset_axes(
-                axes_heat[i],
-                width="3%",
-                height="40%",
-                loc="center left",
-                bbox_to_anchor=(1.02, 0.0, 1.0, 1.0),
-                bbox_transform=axes_heat[i].transAxes,
-                borderpad=0,
-            )
-            heatmap_kwargs.update(
-                center=0.5,
-                cbar=True,
-                cbar_ax=cax,
-                cbar_kws={"orientation": "vertical", "ticks": [0.0, 0.5, 1.0]},
-            )
+            heatmap_kwargs.update(_posterior_heatmap_kwargs(axes_heat[i]))
         _sns.heatmap(matrix, **heatmap_kwargs)
         xtick_pos, xtick_labels = _pick_xticks(np.asarray(labels), n_ticks)
         axes_heat[i].set_xticks(xtick_pos)
@@ -1516,6 +1498,7 @@ def _hmm_length_one_group(args: dict) -> dict:
     length_layer: str = args["length_layer"]
     # Further length layers (emission variants, `HCE-06`): extra columns, same rows.
     extra_length_layers: list = list(args.get("extra_length_layers") or [])
+    posterior_cmap = args.get("posterior_cmap") or "RdBu_r"
     gpc_sites: np.ndarray = args["gpc_sites"]
     cpg_sites: np.ndarray = args["cpg_sites"]
     any_c_sites: np.ndarray = args["any_c_sites"]
@@ -1698,6 +1681,19 @@ def _hmm_length_one_group(args: dict) -> dict:
         if not stacked_extra[name]:
             continue
         extra_raw = np.vstack(stacked_extra[name])
+        if "_posterior_" in str(name):
+            panels.append(
+                (
+                    f"HMM - {name}",
+                    extra_raw,
+                    length_labels,
+                    _build_nan_aware_cmap(posterior_cmap),
+                    np.nanmean(extra_raw, axis=0),
+                    n_xticks_lengths,
+                    None,
+                )
+            )
+            continue
         extra_matrix = (
             _map_length_matrix_to_subclasses(extra_raw, feature_ranges)
             if feature_ranges
@@ -1790,15 +1786,18 @@ def _hmm_length_one_group(args: dict) -> dict:
     for i, (name, matrix, labels, cmap, mean_vec, n_ticks, norm) in enumerate(panels):
         _hmm_mod.clean_barplot(axes_bar[i], mean_vec, name)
         heatmap_kwargs = dict(cmap=cmap, ax=axes_heat[i], yticklabels=False, cbar=False)
+        is_posterior = name.startswith("HMM -") and "_posterior_" in name
         if norm is not None:
             heatmap_kwargs["norm"] = norm
+        if is_posterior:
+            heatmap_kwargs.update(_posterior_heatmap_kwargs(axes_heat[i]))
         _sns.heatmap(matrix, **heatmap_kwargs)
         xtick_pos, xtick_labels = _pick_xticks(np.asarray(labels), n_ticks)
         axes_heat[i].set_xticks(xtick_pos)
         axes_heat[i].set_xticklabels(xtick_labels, rotation=90, fontsize=10)
         for boundary in bin_boundaries[:-1]:
             axes_heat[i].axhline(y=boundary, color="black", linewidth=1.2)
-        if feature_ranges and name.startswith("HMM -") and legend_handles:
+        if feature_ranges and name.startswith("HMM -") and legend_handles and not is_posterior:
             axes_heat[i].legend(
                 legend_handles,
                 legend_labels_list,
@@ -1849,6 +1848,31 @@ def _hmm_length_one_group(args: dict) -> dict:
     return {"reference": ref, "sample": sample, "output_path": str(out_file) if out_file else None}
 
 
+def _posterior_heatmap_kwargs(ax) -> dict:
+    """Heatmap settings for a posterior panel (`HPS-18`): diverging about 0.5
+    with a colour bar in its own axes just right of the panel, so the panel
+    keeps the size of its neighbours."""
+    from mpl_toolkits.axes_grid1.inset_locator import inset_axes
+
+    cax = inset_axes(
+        ax,
+        width="3%",
+        height="40%",
+        loc="center left",
+        bbox_to_anchor=(1.02, 0.0, 1.0, 1.0),
+        bbox_transform=ax.transAxes,
+        borderpad=0,
+    )
+    return dict(
+        vmin=0.0,
+        vmax=1.0,
+        center=0.5,
+        cbar=True,
+        cbar_ax=cax,
+        cbar_kws={"orientation": "vertical", "ticks": [0.0, 0.5, 1.0]},
+    )
+
+
 def combined_hmm_length_clustermap(
     adata,
     sample_col: str = "Sample_Names",
@@ -1893,6 +1917,7 @@ def combined_hmm_length_clustermap(
     max_reads_per_plot: int | None = None,
     cfg=None,
     extra_length_layers: Sequence[str] = (),
+    posterior_cmap: str = "RdBu_r",
 ):
     """
     Plot clustermaps for length-encoded HMM feature layers with optional subclass colors.
@@ -2145,6 +2170,7 @@ def combined_hmm_length_clustermap(
                         "signal_type": signal_type,
                         "length_layer": length_layer,
                         "extra_length_layers": list(extra_length_layers),
+                        "posterior_cmap": posterior_cmap,
                         "gpc_sites": gpc_sites,
                         "cpg_sites": cpg_sites,
                         "any_c_sites": any_c_sites,
