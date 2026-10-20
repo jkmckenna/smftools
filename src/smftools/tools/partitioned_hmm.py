@@ -247,6 +247,7 @@ VARIANT_PLAN_SETTINGS = frozenset(
         "hmm_efficiency_covariates",
         "hmm_efficiency_prior_sd",
         "hmm_tied_rounds",
+        "hmm_tied_tol",
         "hmm_tied_transition_iters",
         "hmm_reference_groups",
         "hmm_transition_scope",
@@ -1039,7 +1040,8 @@ def execute_tied_fit_task(
                     categories=[p.efficiency_key or None for p in member_plans],
                     free_w=free_w,
                     fixed_w=fixed_w,
-                    rounds=int(getattr(cfg, "hmm_tied_rounds", 8)),
+                    rounds=int(getattr(cfg, "hmm_tied_rounds", 50)),
+                    tol=float(getattr(cfg, "hmm_tied_tol", 1e-5)),
                     transition_iters=int(getattr(cfg, "hmm_tied_transition_iters", 3)),
                     shrinkage=float(getattr(variant_cfg, "hmm_context_shrinkage", 50.0)),
                     bound=float(np.log(float(bounds[1]))),
@@ -1100,6 +1102,8 @@ def execute_tied_fit_task(
                         result.groups[plan.emission_group]["constant_covariates"]
                     ),
                     "transition_scope": "pooled" if pooled else "fit_group",
+                    "tied_converged": bool(result.converged),
+                    "tied_rounds_run": int(result.rounds_run),
                 }
             )
         artifacts[plan.fit_id] = artifact

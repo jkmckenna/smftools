@@ -379,7 +379,8 @@ def test_emission_scope_defaults_change_no_fingerprint():
     cfg.hmm_efficiency_groupby = []
     cfg.hmm_efficiency_covariates = []
     cfg.hmm_efficiency_prior_sd = 1.0
-    cfg.hmm_tied_rounds = 8
+    cfg.hmm_tied_rounds = 50
+    cfg.hmm_tied_tol = 1e-5
     cfg.hmm_tied_transition_iters = 3
     assert {stage: helpers.stage_config_hash(cfg, stage) for stage in stages} == before
     assert hmm_fit_config_hash(cfg) == fit_before

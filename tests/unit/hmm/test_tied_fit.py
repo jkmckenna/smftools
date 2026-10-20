@@ -278,3 +278,43 @@ def test_pooled_transitions_sharded_match_in_process():
 
 def _sig(x):
     return 1.0 / (1.0 + np.exp(-np.asarray(x)))
+
+
+def _members():
+    doses = np.log([1.0, 2.0, 4.0])
+    members = []
+    for i, (dose, stay) in enumerate(zip(doses, [(0.95, 0.9), (0.97, 0.85), (0.92, 0.95)])):
+        X = _simulate(stay, 0.5 * (dose - doses.mean()), seed=i)
+        members.append(TiedMember(_single(), X, np.arange(X.shape[1]), covariates=np.array([dose])))
+    return members, np.zeros((2, 0), bool), np.zeros((2, 0))
+
+
+def test_tied_em_stops_on_the_relative_tolerance_before_the_round_cap():
+    """The round count is a cap: a loose tolerance stops the fit early and
+    says so; a zero tolerance runs to the cap, not converged."""
+    members, free_w, fixed_w = _members()
+    loose = tied_em(
+        members,
+        free_w=free_w,
+        fixed_w=fixed_w,
+        rounds=40,
+        transition_iters=2,
+        shrinkage=50.0,
+        bound=np.log(10.0),
+        prior_sd=1.0,
+        tol=1e-3,
+    )
+    assert loose.converged and loose.rounds_run < 40
+    members, free_w, fixed_w = _members()
+    capped = tied_em(
+        members,
+        free_w=free_w,
+        fixed_w=fixed_w,
+        rounds=3,
+        transition_iters=2,
+        shrinkage=50.0,
+        bound=np.log(10.0),
+        prior_sd=1.0,
+        tol=0.0,
+    )
+    assert not capped.converged and capped.rounds_run == 3

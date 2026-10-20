@@ -182,7 +182,8 @@ _OMIT_AT_DEFAULT_CONFIG_KEYS = {
     "hmm_efficiency_groupby": [],
     "hmm_efficiency_covariates": [],
     "hmm_efficiency_prior_sd": 1.0,
-    "hmm_tied_rounds": 8,
+    "hmm_tied_rounds": 50,
+    "hmm_tied_tol": 1e-5,
     "hmm_tied_transition_iters": 3,
 }
 

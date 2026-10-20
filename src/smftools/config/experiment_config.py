@@ -1483,7 +1483,8 @@ class ExperimentConfig:
     hmm_efficiency_groupby: List[str] = field(default_factory=list)
     hmm_efficiency_covariates: List[str] = field(default_factory=list)
     hmm_efficiency_prior_sd: float = 1.0
-    hmm_tied_rounds: int = 8
+    hmm_tied_rounds: int = 50
+    hmm_tied_tol: float = 1e-5
     hmm_tied_transition_iters: int = 3
     hmm_dtype: str = "float64"
     hmm_annotation_threshold: float = 0.5
@@ -1532,7 +1533,6 @@ class ExperimentConfig:
     )
     hmm_clustermap_length_layers: List[str] = field(
         default_factory=lambda: [
-            "all_accessible_features_merged",
             "all_footprint_features",
             "all_footprint_features_merged",
         ]
@@ -2531,7 +2531,7 @@ class ExperimentConfig:
         hmm_clustermap_length_layers = _parse_list(
             merged.get(
                 "hmm_clustermap_length_layers",
-                "all_accessible_features_merged,all_footprint_features,all_footprint_features_merged",
+                "all_footprint_features,all_footprint_features_merged",
             )
         )
 
@@ -2885,7 +2885,8 @@ class ExperimentConfig:
                 str(v) for v in _parse_list(merged.get("hmm_efficiency_covariates", []))
             ],
             hmm_efficiency_prior_sd=float(merged.get("hmm_efficiency_prior_sd", 1.0)),
-            hmm_tied_rounds=int(merged.get("hmm_tied_rounds", 8)),
+            hmm_tied_rounds=int(merged.get("hmm_tied_rounds", 50)),
+            hmm_tied_tol=float(merged.get("hmm_tied_tol", 1e-5)),
             hmm_tied_transition_iters=int(merged.get("hmm_tied_transition_iters", 3)),
             hmm_fit_strategy=hmm_fit_strategy,
             hmm_shared_scope=hmm_shared_scope,

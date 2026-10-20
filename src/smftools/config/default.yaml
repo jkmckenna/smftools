@@ -498,7 +498,10 @@ hmm_emission_groupby: [enzyme]
 hmm_efficiency_groupby: []
 hmm_efficiency_covariates: [enzyme_per_cell]
 hmm_efficiency_prior_sd: 1.0 # log-odds; offsets shrink to 0 without strong evidence
-hmm_tied_rounds: 8
+# Tied EM stops once a round's relative log-likelihood gain is below
+# hmm_tied_tol, or after hmm_tied_rounds rounds (the cap).
+hmm_tied_rounds: 50
+hmm_tied_tol: 1.0e-5
 hmm_tied_transition_iters: 3
 hmm_groupby: ["sample", "reference", "methbase"]
 # If hmm_fit_strategy == shared_transitions
@@ -571,8 +574,8 @@ hmm_clustermap_feature_layers:
   - small_bound_stretch
   - medium_bound_stretch
   - putative_nucleosome
+# Length figures show footprints only; accessibility is in the feature figures.
 hmm_clustermap_length_layers:
-  - all_accessible_features_merged
   - all_footprint_features
   - all_footprint_features_merged
 hmm_clustermap_sortby: "hmm"
