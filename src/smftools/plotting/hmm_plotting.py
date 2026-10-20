@@ -979,7 +979,11 @@ def _hmm_raw_one_group(args: dict) -> dict:
 
     n_panels = len(panels)
     fig = _plt.figure(figsize=(4.5 * n_panels, 10))
-    gs = _gridspec.GridSpec(2, n_panels, height_ratios=[1, 6], hspace=0.01)
+    # A posterior panel's colour bar sits in the gap to its right: widen it.
+    has_posterior = any("_posterior_" in str(panel[0]) for panel in panels)
+    gs = _gridspec.GridSpec(
+        2, n_panels, height_ratios=[1, 6], hspace=0.01, wspace=0.35 if has_posterior else None
+    )
     fig.suptitle(
         f"{display_sample} — {ref} — {total_reads} reads ({signal_type})",
         fontsize=14,
@@ -998,16 +1002,16 @@ def _hmm_raw_one_group(args: dict) -> dict:
         if name.startswith("HMM -"):
             heatmap_kwargs.update(vmin=0.0, vmax=1.0)
         if is_posterior:
-            # The colour bar gets its own axes below the panel, so the panel
-            # keeps the height of its neighbours.
+            # The colour bar gets its own axes just right of the panel, so
+            # the panel keeps the size of its neighbours.
             from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 
             cax = inset_axes(
                 axes_heat[i],
-                width="60%",
-                height="2.5%",
-                loc="lower center",
-                bbox_to_anchor=(0.0, -0.085, 1.0, 1.0),
+                width="3%",
+                height="40%",
+                loc="center left",
+                bbox_to_anchor=(1.02, 0.0, 1.0, 1.0),
                 bbox_transform=axes_heat[i].transAxes,
                 borderpad=0,
             )
@@ -1015,7 +1019,7 @@ def _hmm_raw_one_group(args: dict) -> dict:
                 center=0.5,
                 cbar=True,
                 cbar_ax=cax,
-                cbar_kws={"orientation": "horizontal", "label": "posterior"},
+                cbar_kws={"orientation": "vertical", "ticks": [0.0, 0.5, 1.0]},
             )
         _sns.heatmap(matrix, **heatmap_kwargs)
         xtick_pos, xtick_labels = _pick_xticks(np.asarray(labels), n_ticks)
@@ -1769,7 +1773,11 @@ def _hmm_length_one_group(args: dict) -> dict:
 
     n_panels = len(panels)
     fig = _plt.figure(figsize=(4.5 * n_panels, 10))
-    gs = _gridspec.GridSpec(2, n_panels, height_ratios=[1, 6], hspace=0.01)
+    # A posterior panel's colour bar sits in the gap to its right: widen it.
+    has_posterior = any("_posterior_" in str(panel[0]) for panel in panels)
+    gs = _gridspec.GridSpec(
+        2, n_panels, height_ratios=[1, 6], hspace=0.01, wspace=0.35 if has_posterior else None
+    )
     fig.suptitle(
         f"{display_sample} — {ref} — {total_reads} reads ({signal_type})",
         fontsize=14,
