@@ -66,4 +66,17 @@ def hmm_read_models(
         return reads
     keep = ["model_id", *[c for c in FIT_COLUMNS if c in catalog.columns]]
     catalog = catalog[keep].dropna(subset=["model_id"]).drop_duplicates("model_id")
-    return reads.merge(catalog, on="model_id", how="left")
+    reads = reads.merge(catalog, on="model_id", how="left")
+    selection_path = generation / "fit_selection.parquet"
+    if selection_path.is_file() and "fit_id" in reads:
+        # `HPS-17`: was this read among the reads its model was fitted on?
+        selected = pd.read_parquet(selection_path)
+        pairs = (
+            set(zip(selected["fit_id"].astype(str), selected["read_id"].astype(str)))
+            if {"fit_id", "read_id"} <= set(selected.columns)
+            else set()
+        )
+        reads["used_in_fit"] = [
+            (str(f), str(r)) in pairs for f, r in zip(reads["fit_id"], reads["read_id"])
+        ]
+    return reads

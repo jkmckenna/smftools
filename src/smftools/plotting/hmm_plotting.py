@@ -757,6 +757,7 @@ def _hmm_raw_one_group(args: dict) -> dict:
     hmm_feature_layer: str = args["hmm_feature_layer"]
     # Further HMM layers (emission variants, `HCE-06`): extra columns, same rows.
     extra_hmm_layers: list = list(args.get("extra_hmm_layers") or [])
+    posterior_cmap = args.get("posterior_cmap") or "RdBu_r"
     gpc_sites: np.ndarray = args["gpc_sites"]
     cpg_sites: np.ndarray = args["cpg_sites"]
     any_c_sites: np.ndarray = args["any_c_sites"]
@@ -919,8 +920,12 @@ def _hmm_raw_one_group(args: dict) -> dict:
             continue
         extra_raw = np.vstack(stacked_extra[name])
         extra_mean = normalized_mean(extra_raw) if normalize_hmm else np.nanmean(extra_raw, axis=0)
+        # A posterior panel (`HPS-18`) keeps its diverging colour map.
+        extra_cmap = (
+            _build_nan_aware_cmap(posterior_cmap) if "_posterior_" in str(name) else hmm_plot_cmap
+        )
         panels.append(
-            (f"HMM - {name}", extra_raw, hmm_labels, hmm_plot_cmap, extra_mean, n_xticks_hmm)
+            (f"HMM - {name}", extra_raw, hmm_labels, extra_cmap, extra_mean, n_xticks_hmm)
         )
 
     if stacked_any_c:
@@ -993,15 +998,24 @@ def _hmm_raw_one_group(args: dict) -> dict:
         if name.startswith("HMM -"):
             heatmap_kwargs.update(vmin=0.0, vmax=1.0)
         if is_posterior:
+            # The colour bar gets its own axes below the panel, so the panel
+            # keeps the height of its neighbours.
+            from mpl_toolkits.axes_grid1.inset_locator import inset_axes
+
+            cax = inset_axes(
+                axes_heat[i],
+                width="60%",
+                height="2.5%",
+                loc="lower center",
+                bbox_to_anchor=(0.0, -0.085, 1.0, 1.0),
+                bbox_transform=axes_heat[i].transAxes,
+                borderpad=0,
+            )
             heatmap_kwargs.update(
                 center=0.5,
                 cbar=True,
-                cbar_kws={
-                    "orientation": "horizontal",
-                    "shrink": 0.6,
-                    "pad": 0.12,
-                    "label": "posterior",
-                },
+                cbar_ax=cax,
+                cbar_kws={"orientation": "horizontal", "label": "posterior"},
             )
         _sns.heatmap(matrix, **heatmap_kwargs)
         xtick_pos, xtick_labels = _pick_xticks(np.asarray(labels), n_ticks)
@@ -1072,6 +1086,7 @@ def combined_hmm_raw_clustermap(
     layer_c: str = "nan0_0minus1",
     layer_a: str = "nan0_0minus1",
     cmap_hmm: str = "tab10",
+    posterior_cmap: str = "RdBu_r",
     cmap_gpc: str = "coolwarm",
     cmap_cpg: str = "viridis",
     cmap_c: str = "coolwarm",
@@ -1367,6 +1382,7 @@ def combined_hmm_raw_clustermap(
                         "signal_type": signal_type,
                         "hmm_feature_layer": hmm_feature_layer,
                         "extra_hmm_layers": list(extra_hmm_layers),
+                        "posterior_cmap": posterior_cmap,
                         "gpc_sites": gpc_sites,
                         "cpg_sites": cpg_sites,
                         "any_c_sites": any_c_sites,

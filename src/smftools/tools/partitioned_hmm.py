@@ -249,6 +249,8 @@ VARIANT_PLAN_SETTINGS = frozenset(
         "hmm_tied_rounds",
         "hmm_tied_transition_iters",
         "hmm_reference_groups",
+        "hmm_transition_scope",
+        "hmm_fit_reads_per_sample",
         "hmm_fit_strategy",
         "hmm_groupby",
         "hmm_shared_scope",
@@ -970,6 +972,7 @@ def execute_tied_fit_task(
     from ..hmm.tied_fit import LocalMembers, ShardedMembers, tied_em_backend
 
     variant_cfg = plans[0].model_spec.config(cfg)
+    pooled = str(getattr(variant_cfg, "hmm_transition_scope", "fit_group")) == "pooled"
     device = resolve_torch_device(
         getattr(cfg, "hmm_device", None) or getattr(cfg, "device", "auto")
     )
@@ -1042,7 +1045,19 @@ def execute_tied_fit_task(
                     bound=float(np.log(float(bounds[1]))),
                     prior_sd=float(getattr(cfg, "hmm_efficiency_prior_sd", 1.0)),
                     device=device,
-                    label=f"{plans[0].emission_group} ({len(member_plans)} members)",
+                    label=(
+                        f"{plans[0].model_spec.label} pooled transitions "
+                        f"({len(member_plans)} members, "
+                        f"{len({p.emission_group for p in member_plans})} emission groups)"
+                        if pooled
+                        else f"{plans[0].emission_group} ({len(member_plans)} members)"
+                    ),
+                    emission_groups=[p.emission_group for p in member_plans],
+                    # `HPS-16`: one transition model per reference (or reference
+                    # group / genome fit group), shared across emission groups.
+                    transition_groups=(
+                        [str(p.reference) for p in member_plans] if pooled else None
+                    ),
                 )
         finally:
             backend.close()
@@ -1078,8 +1093,13 @@ def execute_tied_fit_task(
             artifact.update(
                 {
                     "efficiency_offset": float(result.offsets[index]),
-                    "efficiency_slopes": [float(b) for b in result.beta],
-                    "efficiency_constant_covariates": list(result.constant_covariates),
+                    "efficiency_slopes": [
+                        float(b) for b in result.groups[plan.emission_group]["beta"]
+                    ],
+                    "efficiency_constant_covariates": list(
+                        result.groups[plan.emission_group]["constant_covariates"]
+                    ),
+                    "transition_scope": "pooled" if pooled else "fit_group",
                 }
             )
         artifacts[plan.fit_id] = artifact
@@ -2321,6 +2341,20 @@ def _variant_label(variant: str) -> str:
     return variant or "default"
 
 
+def _posterior_layers(layers, specs, cfg) -> dict[str, str]:
+    """Each feature layer's model posterior layer (`HPS-18`): the posterior of
+    the model label that prefixes it (the longest, so variants map to theirs)."""
+    state = str(getattr(cfg, "hmm_posterior_state", "Modified"))
+    suffix = state.strip().lower().replace(" ", "_").replace("-", "_")
+    labels = sorted({spec.label for spec in specs}, key=len, reverse=True)
+    out = {}
+    for layer in layers:
+        label = next((lab for lab in labels if str(layer).startswith(f"{lab}_")), None)
+        if label is not None:
+            out[layer] = f"{label}_posterior_{suffix}"
+    return out
+
+
 def _matching_hmm_layers(records, roots, *, lengths: bool = False) -> list[str]:
     """Resolve configured feature roots against layers actually written by the tasks."""
     available = {str(layer) for record in records for layer in record_layers(record)}
@@ -2363,7 +2397,15 @@ def _plot_feature_clustermaps(
         return
 
     raw_layer = str(getattr(cfg, "layer_for_clustermap_plotting", "nan0_0minus1"))
-    requested_layers = [raw_layer, *feature_layers, *length_layers]
+    # `HPS-18`: the posterior beside each feature panel.
+    posterior_of = (
+        _posterior_layers(feature_layers, _configured_model_specs(cfg), cfg)
+        if bool(getattr(cfg, "hmm_clustermap_posterior_panel", False))
+        else {}
+    )
+    requested_layers = list(
+        dict.fromkeys([raw_layer, *feature_layers, *length_layers, *posterior_of.values()])
+    )
     spine = load_spine(output_spine, verbose=False)
     plans = resolve_plot_region_plans(
         spine,
@@ -2489,11 +2531,14 @@ def _plot_feature_clustermaps(
         # column in the same read order (`HCE-06`).
         for _, members in variant_layer_groups(feature_layers, specs):
             layer, extras = members[0][1], [name for _, name in members[1:]]
+            if posterior_of.get(layer) and posterior_of[layer] != layer:
+                extras = [*extras, posterior_of[layer]]
             plot_dir = base_dir / "features" / _component(layer)
             combined_hmm_raw_clustermap(
                 adata,
                 hmm_feature_layer=layer,
                 extra_hmm_layers=extras,
+                posterior_cmap=str(getattr(cfg, "hmm_posterior_cmap", None) or "RdBu_r"),
                 cmap_hmm=(
                     str(getattr(cfg, "hmm_posterior_cmap", None) or "RdBu_r")
                     if "_posterior_" in layer
@@ -2684,6 +2729,20 @@ def execute_partitioned_hmm(spine_path, cfg, output_dir) -> dict[str, Path]:
     _fit_selection_frame(fit_planning.all_plans).to_parquet(fit_selection_path, index=False)
 
     single_plans = [plan for plan in fit_planning.base_plans if not plan.emission_group]
+    unpooled = sorted(
+        {
+            plan.model_spec.label
+            for plan in single_plans
+            if str(getattr(plan.model_spec.config(cfg), "hmm_transition_scope", "fit_group"))
+            == "pooled"
+        }
+    )
+    if unpooled:
+        logger.warning(
+            "hmm_transition_scope pooled needs a shared emission scope; %s fit their own "
+            "transitions per sample",
+            ", ".join(unpooled),
+        )
     base_results = run_tasks_parallel(
         execute_hmm_fit_task,
         [(spine_path, plan, cfg, models_dir, None) for plan in single_plans],
@@ -2701,10 +2760,17 @@ def execute_partitioned_hmm(spine_path, cfg, output_dir) -> dict[str, Path]:
         plan.fit_id: artifact for plan, artifact in zip(single_plans, base_results, strict=True)
     }
     # Shared emission scopes (`HPS-03`): one tied fit per model x emission group.
+    # One tied fit per model x emission group -- or, with pooled transitions
+    # (`HPS-16`), one per model across its emission groups.
     tied_groups: dict[tuple[str, str], list[HMMFitPlan]] = {}
     for plan in fit_planning.base_plans:
         if plan.emission_group:
-            tied_groups.setdefault((plan.model_spec.label, plan.emission_group), []).append(plan)
+            pooled_spec = (
+                str(getattr(plan.model_spec.config(cfg), "hmm_transition_scope", "fit_group"))
+                == "pooled"
+            )
+            key = (plan.model_spec.label, "" if pooled_spec else plan.emission_group)
+            tied_groups.setdefault(key, []).append(plan)
     tied_jobs = [tied_groups[key] for key in sorted(tied_groups)]
     # One group at a time, its members spread over every thread: a group's
     # rounds are synchronised, so one large group in one worker would leave
@@ -2838,6 +2904,15 @@ def execute_partitioned_hmm(spine_path, cfg, output_dir) -> dict[str, Path]:
     read_index_dir = output_dir / DERIVED_READ_INDEX_DIRNAME
     hmm_spine.uns["hmm_read_index"] = relative_uns_path(read_index_dir, run_root)
     hmm_spine.uns["hmm_schema_version"] = 2
+    # `HPS-17`: reads a model was fitted on, so analyses can hold them out.
+    selection = pd.read_parquet(fit_selection_path)
+    fit_reads = set(selection["read_id"].astype(str)) if "read_id" in selection.columns else set()
+    read_ids = (
+        hmm_spine.obs["read_id"].astype(str)
+        if "read_id" in hmm_spine.obs
+        else pd.Series(hmm_spine.obs_names.astype(str), index=hmm_spine.obs_names)
+    )
+    hmm_spine.obs["hmm_fit_read"] = read_ids.isin(fit_reads).to_numpy()
     # What the feature layers can be re-derived with (`DLS-03`), as JSON.
     hmm_spine.uns["hmm_feature_settings"] = json.dumps(
         hmm_feature_settings(records), sort_keys=True

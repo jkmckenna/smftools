@@ -91,6 +91,7 @@ _DISPLAY_ONLY_CONFIG_KEYS = {
     "hmm_clustermap_feature_layers",
     "hmm_clustermap_length_layers",
     "hmm_posterior_cmap",
+    "hmm_clustermap_posterior_panel",
 }
 
 #: Stage order, used to keep a stage from being invalidated by settings that
@@ -175,6 +176,8 @@ _OMIT_WHEN_UNSET_CONFIG_KEYS = {"barcodes_to_include", "hmm_reference_groups"}
 _OMIT_AT_DEFAULT_CONFIG_KEYS = {
     "hmm_axis": "sites",
     "hmm_emission_scope": "fit_group",
+    "hmm_transition_scope": "fit_group",
+    "hmm_fit_reads_per_sample": 200,
     "hmm_emission_groupby": [],
     "hmm_efficiency_groupby": [],
     "hmm_efficiency_covariates": [],

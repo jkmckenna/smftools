@@ -525,6 +525,20 @@ hmm_variants:
 Each plan is planned and fitted under its own settings; the fit catalog
 records every fit's resolved `emission_scope` and `fit_config_hash`.
 
+## HMM transitions shared across samples
+
+`hmm_transition_scope: pooled` (the deaminase default) fits one transition (chromatin) model per
+reference shared by every sample -- across enzymes -- while emissions stay
+shared per `hmm_emission_groupby` (e.g. per enzyme) with dose offsets. All of a
+model's emission groups are then fitted together: each round, emissions are
+solved per group and the transition model from every sample's expected
+counts. It needs a shared emission scope (otherwise transitions stay per
+sample, with a warning). Each sample contributes at most
+`hmm_fit_reads_per_sample` reads (200), so large samples do not dominate. The
+reads a model was fitted on are marked: `hmm_fit_read` in the HMM spine's
+obs, and `used_in_fit` from `smftools.hmm.provenance.hmm_read_models`, so an
+analysis can score held-out reads only.
+
 ## HMM layer sets: one plan without regenerating the stage
 
 `smftools experiment hmm-plan CONFIG --plan NAME` fits and decodes one fitting
@@ -635,10 +649,11 @@ them in `uns["hmm_feature_settings_used"]`. Deriving costs about 1 s per
 1,000 reads x 4.7 kb for every layer. Genome-mode tasks, and
 `hmm_store_feature_layers: true`, still store the feature layers.
 
-HMM clustermaps can draw the posterior: `posterior_modified` in
-`hmm_clustermap_feature_layers` (on by default for deaminase) gives a panel
-on a diverging colour map centred at 0.5 -- the feature threshold --
-(`hmm_posterior_cmap`, default `RdBu_r`) with a colour bar.
+HMM clustermaps can show the posterior beside each feature panel
+(`hmm_clustermap_posterior_panel`, on by default for deaminase), on a
+diverging colour map centred at 0.5 -- the feature threshold --
+(`hmm_posterior_cmap`, default `RdBu_r`) with a colour bar. `posterior_modified`
+in `hmm_clustermap_feature_layers` also gives it a figure of its own.
 
 Which model produced a read's layers is recorded per read:
 `smftools.hmm.provenance.hmm_read_models(generation, read_ids)` returns each

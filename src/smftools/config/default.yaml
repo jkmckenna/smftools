@@ -487,6 +487,13 @@ hmm_axis: bp
 # enzyme_per_cell (enzyme_amount_uL / cell_input) -- when the sheet has those columns
 # for every sample; otherwise fit_group, with a warning (recorded in the fit catalog).
 hmm_emission_scope: auto
+# Transitions (`HPS-16`): fit_group (each sample x reference its own chromatin
+# model) | pooled (one transition model per reference shared by every sample,
+# across enzymes; emissions stay per hmm_emission_groupby). Needs a shared
+# emission scope. Pooled fits take hmm_fit_reads_per_sample reads per sample
+# (`HPS-17`), so large samples do not dominate the shared transitions.
+hmm_transition_scope: fit_group
+hmm_fit_reads_per_sample: 200
 hmm_emission_groupby: [enzyme]
 hmm_efficiency_groupby: []
 hmm_efficiency_covariates: [enzyme_per_cell]
@@ -551,6 +558,7 @@ hmm_feature_colormaps:
   putative_nucleosome: "#6D4C41"
   all_footprint_features: "#6A1B9A"
   cpg_patch: "#6D4C41"
+hmm_clustermap_posterior_panel: false # the posterior beside every feature clustermap panel (HPS-18)
 hmm_merge_layer_features:
   - ["all_accessible_features", 60]
   - ["all_footprint_features", 10]

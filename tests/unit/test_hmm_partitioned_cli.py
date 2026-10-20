@@ -1884,7 +1884,7 @@ def test_bp_axis_gives_way_to_the_distance_binned_model():
 # --- HPS-01..04: shared emissions across samples (tied EM) ----------------------
 
 
-def _two_sample_run(tmp_path, monkeypatch, **overrides):
+def _two_sample_run(tmp_path, monkeypatch, enzymes=("E1", "E1"), **overrides):
     from smftools.tools import partitioned_hmm
 
     for name in (
@@ -1913,7 +1913,7 @@ def _two_sample_run(tmp_path, monkeypatch, **overrides):
     pd.DataFrame(
         {
             "Barcode": ["bc1", "bc2"],
-            "enzyme": ["E1", "E1"],
+            "enzyme": list(enzymes),
             "enzyme_per_cell": [1e-4, 4e-4],
             "cell_type": ["NK", "B"],
         }
@@ -2661,3 +2661,93 @@ def test_tiled_references_are_the_multi_window_ones():
     tasks = [task("a", 0, 100), task("a", 0, 100), task("b", 0, 60), task("b", 40, 100)]
     assert tiled_references(spine, tasks) == {"b"}
     assert tiled_references(spine, [task("a", 10, 100)]) == {"a"}  # short of the reference
+
+
+def test_pooled_transitions_share_one_chromatin_model_across_enzymes(tmp_path, monkeypatch):
+    """`HPS-16`: with pooled transitions, samples of two enzymes are fitted in
+    one tied fit -- the same transitions for both, emissions per enzyme."""
+    cfg, outputs = _two_sample_run(
+        tmp_path,
+        monkeypatch,
+        enzymes=("E1", "E2"),
+        hmm_emission_scope="shared",
+        hmm_emission_groupby=["enzyme"],
+        hmm_transition_scope="pooled",
+    )
+    fits = pd.read_parquet(outputs["fit_catalog"])
+    assert set(fits["fit_state"]) == {"complete"}
+    assert set(fits["emission_group"]) == {"C|enzyme=E1", "C|enzyme=E2"}
+    tasks = pd.read_parquet(outputs["task_catalog"])
+    artifacts = [json.loads(a)[0] for a in tasks["hmm_model_artifacts_json"]]
+    models = [_load_model(cfg, outputs, a) for a in artifacts]
+    assert len(models) == 2
+    np.testing.assert_allclose(
+        models[0].trans.detach().numpy(), models[1].trans.detach().numpy(), atol=1e-12
+    )
+    # (Per-enzyme emission levels are checked on simulated data, test_tied_fit:
+    # this two-read fixture saturates both.)
+    recorded = {json.loads(value).get("transition_scope") for value in fits["artifact_json"]}
+    assert recorded == {"pooled"}
+
+
+def test_pooled_fits_cap_reads_per_sample_and_mark_them(tmp_path, monkeypatch):
+    """`HPS-17`: a pooled fit takes at most hmm_fit_reads_per_sample reads per
+    sample; the reads used are marked on the spine and by hmm_read_models."""
+    from smftools.hmm.provenance import hmm_read_models
+
+    cfg, outputs = _two_sample_run(
+        tmp_path,
+        monkeypatch,
+        enzymes=("E1", "E2"),
+        hmm_emission_scope="shared",
+        hmm_emission_groupby=["enzyme"],
+        hmm_transition_scope="pooled",
+        hmm_fit_reads_per_sample=1,
+    )
+    fits = pd.read_parquet(outputs["fit_catalog"])
+    assert set(fits["configured_max_fit_reads"]) == {1}
+    selected = pd.read_parquet(outputs["fit_catalog"].parent / "fit_selection.parquet")
+    spine, _ = safe_read_h5ad(outputs["spine"])
+    marked = set(spine.obs_names[spine.obs["hmm_fit_read"].astype(bool)].astype(str))
+    assert marked == set(selected["read_id"].astype(str))
+    models = hmm_read_models(outputs["task_catalog"].parent)
+    assert models["used_in_fit"].any()
+    assert set(models.loc[models["used_in_fit"], "read_id"].astype(str)) <= marked
+
+
+def test_feature_clustermaps_carry_the_posterior_panel(tmp_path, monkeypatch):
+    """`HPS-18`: with hmm_clustermap_posterior_panel each feature clustermap
+    gets its model's posterior as a further panel, on the diverging map."""
+    from smftools import plotting
+    from smftools.tools import partitioned_hmm
+
+    calls = []
+    real = plotting.combined_hmm_raw_clustermap
+
+    def spy(adata, **kwargs):
+        calls.append(kwargs)
+        return real(adata, **kwargs)
+
+    monkeypatch.setattr(plotting, "combined_hmm_raw_clustermap", spy)
+    raw = write_raw_store(
+        _frame(),
+        tmp_path / "raw_outputs",
+        reference_lengths={"ref_top": 12},
+        analysis_mode="locus",
+        extra_uns={"References": {"ref_FASTA_sequence": "ACGCGTACGTAC"}},
+    )
+    preprocess = execute_partitioned_preprocessing(
+        raw["spine"], _preprocess_cfg(), tmp_path / "preprocess_outputs"
+    )
+    cfg = _hmm_cfg(
+        hmm_methbases=["C"],
+        hmm_max_iter=2,
+        target_task_memory_mb=1,
+        hmm_clustermap_feature_layers=["all_accessible_features"],
+        hmm_clustermap_posterior_panel=True,
+    )
+    partitioned_hmm.execute_partitioned_hmm(preprocess["spine"], cfg, tmp_path / "hmm_outputs")
+    feature_calls = [c for c in calls if c["hmm_feature_layer"] == "C_all_accessible_features"]
+    assert feature_calls
+    assert all("C_posterior_modified" in c["extra_hmm_layers"] for c in feature_calls)
+    assert {c["posterior_cmap"] for c in feature_calls} == {"RdBu_r"}
