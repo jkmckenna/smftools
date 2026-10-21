@@ -92,6 +92,7 @@ _DISPLAY_ONLY_CONFIG_KEYS = {
     "hmm_clustermap_length_layers",
     "hmm_posterior_cmap",
     "hmm_clustermap_posterior_panel",
+    "hmm_clustermap_max_reads_per_plot",
 }
 
 #: Stage order, used to keep a stage from being invalidated by settings that

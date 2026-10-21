@@ -36,7 +36,7 @@ def _capture_heatmap_shapes(monkeypatch, **kwargs):
         captured.append(np.asarray(matrix).shape)
         return None
 
-    monkeypatch.setattr(hmm_plotting.sns, "heatmap", fake_heatmap)
+    monkeypatch.setattr(hmm_plotting, "fast_heatmap", fake_heatmap)
     combined_hmm_raw_clustermap(
         _adata_with_span(),
         min_quality=None,

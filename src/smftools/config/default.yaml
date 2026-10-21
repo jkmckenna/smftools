@@ -561,6 +561,9 @@ hmm_feature_colormaps:
   putative_nucleosome: "#6D4C41"
   all_footprint_features: "#6A1B9A"
   cpg_patch: "#6D4C41"
+# Reads drawn per (reference, sample) HMM clustermap, randomly and
+# reproducibly subsampled before loading (a figure has ~2400 pixel rows).
+hmm_clustermap_max_reads_per_plot: 2500
 hmm_clustermap_posterior_panel: false # the posterior beside every feature clustermap panel (HPS-18)
 hmm_merge_layer_features:
   - ["all_accessible_features", 60]

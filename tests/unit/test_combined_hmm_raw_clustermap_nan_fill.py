@@ -28,13 +28,13 @@ def test_combined_hmm_raw_clustermap_nan_fill(tmp_path):
     adata.var["R1_A_site"] = [False, False, False]
 
     captured = []
-    original_heatmap = hmm_plotting.sns.heatmap
+    original_heatmap = hmm_plotting.fast_heatmap
 
     def fake_heatmap(matrix, *args, **kwargs):
         captured.append(np.asarray(matrix))
         return None
 
-    hmm_plotting.sns.heatmap = fake_heatmap
+    hmm_plotting.fast_heatmap = fake_heatmap
     try:
         combined_hmm_raw_clustermap(
             adata,
@@ -48,7 +48,7 @@ def test_combined_hmm_raw_clustermap_nan_fill(tmp_path):
             fill_nan_value=0.0,
         )
     finally:
-        hmm_plotting.sns.heatmap = original_heatmap
+        hmm_plotting.fast_heatmap = original_heatmap
 
     assert any(np.isnan(matrix).any() for matrix in captured[1:])
 

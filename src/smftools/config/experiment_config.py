@@ -1477,6 +1477,7 @@ class ExperimentConfig:
     hmm_emission_scope: str = "fit_group"
     hmm_transition_scope: str = "fit_group"
     hmm_clustermap_posterior_panel: bool = False
+    hmm_clustermap_max_reads_per_plot: Optional[int] = 2500
     hmm_posterior_cmap: str = "RdBu_r"
     hmm_fit_reads_per_sample: int = 200
     hmm_emission_groupby: List[str] = field(default_factory=list)
@@ -2872,6 +2873,9 @@ class ExperimentConfig:
             hmm_transition_scope=_parse_hmm_transition_scope(merged.get("hmm_transition_scope")),
             hmm_clustermap_posterior_panel=_parse_bool(
                 merged.get("hmm_clustermap_posterior_panel", False)
+            ),
+            hmm_clustermap_max_reads_per_plot=_parse_numeric(
+                merged.get("hmm_clustermap_max_reads_per_plot", 2500), None
             ),
             hmm_posterior_cmap=str(merged.get("hmm_posterior_cmap") or "RdBu_r"),
             hmm_fit_reads_per_sample=int(merged.get("hmm_fit_reads_per_sample", 200) or 200),

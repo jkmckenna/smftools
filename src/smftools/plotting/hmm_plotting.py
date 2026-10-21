@@ -18,6 +18,7 @@ from smftools.plotting.plotting_utils import (
     chimera_filter_column,
     clean_barplot,
     coerce_bool_series,
+    fast_heatmap,
     normalized_mean,
     subsample_reads_for_plot,
 )
@@ -1003,7 +1004,7 @@ def _hmm_raw_one_group(args: dict) -> dict:
             heatmap_kwargs.update(vmin=0.0, vmax=1.0)
         if is_posterior:
             heatmap_kwargs.update(_posterior_heatmap_kwargs(axes_heat[i]))
-        _sns.heatmap(matrix, **heatmap_kwargs)
+        _hmm_mod.fast_heatmap(matrix, **heatmap_kwargs)
         xtick_pos, xtick_labels = _pick_xticks(np.asarray(labels), n_ticks)
         axes_heat[i].set_xticks(xtick_pos)
         axes_heat[i].set_xticklabels(xtick_labels, rotation=90, fontsize=10)
@@ -1791,7 +1792,7 @@ def _hmm_length_one_group(args: dict) -> dict:
             heatmap_kwargs["norm"] = norm
         if is_posterior:
             heatmap_kwargs.update(_posterior_heatmap_kwargs(axes_heat[i]))
-        _sns.heatmap(matrix, **heatmap_kwargs)
+        _hmm_mod.fast_heatmap(matrix, **heatmap_kwargs)
         xtick_pos, xtick_labels = _pick_xticks(np.asarray(labels), n_ticks)
         axes_heat[i].set_xticks(xtick_pos)
         axes_heat[i].set_xticklabels(xtick_labels, rotation=90, fontsize=10)
