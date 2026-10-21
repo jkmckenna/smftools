@@ -150,6 +150,10 @@ def _same_state(a: str, b: str) -> bool:
     return norm(a) == norm(b)
 
 
+#: Reads per block in :func:`call_hmm_features`.
+FEATURE_CHUNK_READS = 1024
+
+
 def _runs(mask: np.ndarray) -> list[tuple[int, int]]:
     """``[start, end)`` index runs of True."""
     edges = np.diff(np.concatenate([[0], mask.astype(np.int8), [0]]))
@@ -195,6 +199,7 @@ def call_hmm_features(
     settings: FeatureSettings,
     covered: np.ndarray | None = None,
     layers: Sequence[str] | None = None,
+    chunk_reads: int | None = FEATURE_CHUNK_READS,
 ) -> dict[str, np.ndarray]:
     """Feature layers from a two-state posterior.
 
@@ -209,11 +214,26 @@ def call_hmm_features(
             (NaN) where it is False, as well as outside the span.
         layers: optional names to return (see :func:`feature_layer_names`);
             only their feature groups and merges are computed. Default: all.
+        chunk_reads: reads computed at a time. Every feature is a property
+            of one read, so chunking changes nothing but the peak memory --
+            the intermediates are ~12x the output. ``None``: all at once.
 
     Returns:
         layer name -> (N, L) array, float32 with NaN outside the read (and at
         uncovered bases).
     """
+    n_total = np.shape(posterior)[0]
+    if chunk_reads is not None and 0 < int(chunk_reads) < n_total:
+        return _call_chunked(
+            posterior,
+            positions,
+            spans,
+            prefix=prefix,
+            settings=settings,
+            covered=covered,
+            layers=layers,
+            chunk_reads=int(chunk_reads),
+        )
     posterior = np.asarray(posterior, dtype=np.float64)
     positions = np.asarray(positions, dtype=np.int64)
     spans = np.asarray(spans)
@@ -282,6 +302,28 @@ def call_hmm_features(
     if requested is not None:
         layers = {name: layers[name] for name in requested}
     return layers
+
+
+def _call_chunked(posterior, positions, spans, *, chunk_reads, covered, **kwargs):
+    """:func:`call_hmm_features` over consecutive blocks of reads, stitched."""
+    spans = np.asarray(spans)
+    n_reads = np.shape(posterior)[0]
+    out: dict[str, np.ndarray] = {}
+    for start in range(0, n_reads, chunk_reads):
+        stop = min(start + chunk_reads, n_reads)
+        part = call_hmm_features(
+            posterior[start:stop],
+            positions,
+            spans[start:stop],
+            covered=None if covered is None else covered[start:stop],
+            chunk_reads=None,
+            **kwargs,
+        )
+        for name, values in part.items():
+            if name not in out:
+                out[name] = np.empty((n_reads, values.shape[1]), dtype=values.dtype)
+            out[name][start:stop] = values
+    return out
 
 
 def _merge_layers(

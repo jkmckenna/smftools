@@ -216,6 +216,40 @@ def iter_cigar_aligned_pairs(cigar: str, reference_start: int) -> Iterator[tuple
             reference_position += length
 
 
+def cigar_aligned_arrays(cigar: str, reference_start: int) -> tuple[np.ndarray, np.ndarray]:
+    """The pairs of :func:`iter_cigar_aligned_pairs` as two int64 arrays
+    (query positions, reference positions), built per CIGAR block."""
+    query_parts: list[np.ndarray] = []
+    reference_parts: list[np.ndarray] = []
+    query_position = 0
+    reference_position = int(reference_start)
+    for length, op in parse_cigar(cigar):
+        if op in _ALIGNED and length > 0:
+            query_parts.append(np.arange(query_position, query_position + length, dtype=np.int64))
+            reference_parts.append(
+                np.arange(reference_position, reference_position + length, dtype=np.int64)
+            )
+        if op in _QUERY_CONSUMING:
+            query_position += length
+        if op in _REFERENCE_CONSUMING:
+            reference_position += length
+    if not query_parts:
+        empty = np.empty(0, dtype=np.int64)
+        return empty, empty
+    return np.concatenate(query_parts), np.concatenate(reference_parts)
+
+
+def _as_array(value: object) -> np.ndarray | None:
+    """A ragged cell as an array (``None`` when absent or empty)."""
+    if value is None or (isinstance(value, float) and np.isnan(value)):
+        return None
+    if isinstance(value, np.ndarray):
+        return value if value.size else None
+    if isinstance(value, (list, tuple)):
+        return np.asarray(value) if len(value) else None
+    raise TypeError(f"ragged array values must be list-like, got {type(value).__name__}")
+
+
 def _as_list(value: object) -> list:
     if value is None or (isinstance(value, float) and np.isnan(value)):
         return []
@@ -561,35 +595,27 @@ def _scatter_read_row(
     if span_start < span_end:
         grids.span[out_row, span_start - window_start : span_end - window_start] = 1
 
-    signal_values = _as_list(row.get(MODIFICATION_SIGNAL))
-    sequence_values = _as_list(row.get(SEQUENCE))
-    mismatch_values = _as_list(row.get(MISMATCH))
-    quality_values = _as_list(row.get(QUALITY))
-    feature_lists = {
-        layer_name: _as_list(row.get(column))
-        for column, layer_name in SIGNAL_FEATURE_LAYERS.items()
-        if layer_name in grids.feature_layers
-    }
-    for query_position, reference_position in iter_cigar_aligned_pairs(str(row[CIGAR]), read_start):
-        if (
-            reference_position < window_start
-            or reference_position >= window_end
-            or reference_position >= ref_length
-        ):
-            continue
-        target_position = reference_position - window_start
-        grids.covered[out_row, target_position] = 1
-        if signal_values:
-            grids.signal[out_row, target_position] = signal_values[query_position]
-        if sequence_values:
-            grids.sequence[out_row, target_position] = sequence_values[query_position]
-        if mismatch_values:
-            grids.mismatch[out_row, target_position] = mismatch_values[query_position]
-        if quality_values:
-            grids.quality[out_row, target_position] = quality_values[query_position]
-        for layer_name, values in feature_lists.items():
-            if values:
-                grids.feature_layers[layer_name][out_row, target_position] = values[query_position]
+    # The aligned bases inside the window, as arrays: one indexed assignment
+    # per layer instead of a Python step per base. Aligned reference positions
+    # never repeat within a read, so this writes exactly what the per-base
+    # walk wrote.
+    query, reference = cigar_aligned_arrays(str(row[CIGAR]), read_start)
+    inside = (reference >= window_start) & (reference < window_end) & (reference < ref_length)
+    query, target = query[inside], reference[inside] - window_start
+    grids.covered[out_row, target] = 1
+    for grid, values in (
+        (grids.signal, _as_array(row.get(MODIFICATION_SIGNAL))),
+        (grids.sequence, _as_array(row.get(SEQUENCE))),
+        (grids.mismatch, _as_array(row.get(MISMATCH))),
+        (grids.quality, _as_array(row.get(QUALITY))),
+        *(
+            (grids.feature_layers[layer_name], _as_array(row.get(column)))
+            for column, layer_name in SIGNAL_FEATURE_LAYERS.items()
+            if layer_name in grids.feature_layers
+        ),
+    ):
+        if values is not None:
+            grid[out_row, target] = values[query]
 
 
 def _assemble_ragged_adata(

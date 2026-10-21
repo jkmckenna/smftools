@@ -12,6 +12,7 @@ from smftools.informatics.partition_query import (
     query_derived_index,
     query_molecule_index,
     query_segment_index,
+    read_zarr_layers,
     read_zarr_subset,
 )
 from smftools.informatics.partition_read import materialize
@@ -227,3 +228,65 @@ def test_empty_index_query_short_circuits_before_spine_load(tmp_path, monkeypatc
 
     with pytest.raises(ValueError, match="selection matched no molecules"):
         materialize(spine_path, references="missing")
+
+
+def test_read_zarr_layers_matches_read_zarr_subset(tmp_path):
+    """The direct reader returns what the full reader does for a layer overlay
+    -- rows, positions, values, dtypes, decoded 8-bit posteriors -- and a store
+    it does not handle (a sparse layer) goes to the full reader."""
+    import scipy.sparse as sp
+    import zarr
+
+    from smftools.informatics.partition_query import (
+        LAYER_ENCODING_ATTR,
+        PROBABILITY_U8,
+        encode_probability_u8,
+    )
+
+    rng = np.random.default_rng(0)
+    path = tmp_path / "part.zarr"
+    posterior = rng.random((6, 10)).astype(np.float32)
+    posterior[0, :3] = np.nan
+    source = ad.AnnData(
+        X=np.zeros((6, 10), dtype=np.float32),
+        obs=pd.DataFrame(
+            {"qc": rng.random(6), "kind": pd.Categorical(list("abcabc"))},
+            index=[f"r{i}" for i in range(6)],
+        ),
+        layers={
+            "states": rng.integers(0, 2, (6, 10)).astype(np.float64),
+            "post": encode_probability_u8(posterior),
+            "mask": np.ones((6, 10), dtype=np.uint8),
+        },
+    )
+    source.var_names = list(map(str, range(100, 110)))
+    source.write_zarr(path)
+    zarr.open_group(str(path), mode="r+")["layers"]["post"].attrs[LAYER_ENCODING_ATTR] = (
+        PROBABILITY_U8
+    )
+
+    for rows, start, end in (([4, 1, 5], 102, 108), (None, None, None), ([], 100, 110)):
+        names = ["states", "post", "absent"]
+        fast = read_zarr_layers(path, row_indices=rows, start=start, end=end, layers=names)
+        full = read_zarr_subset(path, row_indices=rows, start=start, end=end, layers=names)
+        assert list(fast.obs_names) == list(full.obs_names)
+        assert list(fast.var_names) == list(full.var_names)
+        assert set(fast.layers) == set(full.layers) == {"states", "post"}
+        for name in fast.layers:
+            assert np.asarray(fast.layers[name]).dtype == np.asarray(full.layers[name]).dtype
+            np.testing.assert_array_equal(
+                np.asarray(fast.layers[name]), np.asarray(full.layers[name]), err_msg=name
+            )
+
+    sparse_path = tmp_path / "sparse.zarr"
+    sparse = ad.AnnData(
+        X=np.zeros((3, 4), dtype=np.float32),
+        layers={"s": sp.csr_matrix(np.eye(3, 4, dtype=np.float32))},
+    )
+    sparse.var_names = list(map(str, range(4)))
+    sparse.write_zarr(sparse_path)
+    out = read_zarr_layers(sparse_path, row_indices=[2, 0], start=0, end=4, layers=["s"])
+    np.testing.assert_array_equal(
+        np.asarray(out.layers["s"].todense() if sp.issparse(out.layers["s"]) else out.layers["s"]),
+        np.eye(3, 4)[[2, 0]],
+    )
