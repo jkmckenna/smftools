@@ -534,7 +534,12 @@ model's emission groups are then fitted together: each round, emissions are
 solved per group and the transition model from every sample's expected
 counts. It needs a shared emission scope (otherwise transitions stay per
 sample, with a warning). Each sample contributes at most
-`hmm_fit_reads_per_sample` reads (200), so large samples do not dominate. Tied
+`hmm_fit_reads_per_sample` reads (200), so large samples do not dominate. A
+member (sample x reference) with fewer than `hmm_min_fit_reads` fit reads (20)
+adds nothing to the shared parameters and takes them for decoding (a group
+with no such member is fitted on all its members). A sample whose emission
+group names no real group -- its sheet value is blank, `unassigned`,
+`unclassified` or `unassigned_*` -- is fitted on its own, not pooled. Tied
 fits (pooled and shared transitions) stop once a round's relative
 log-likelihood gain is below `hmm_tied_tol` (1e-5, the rule of ordinary fits),
 or after `hmm_tied_rounds` rounds (50); each fit records `tied_converged` and

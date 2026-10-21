@@ -318,3 +318,37 @@ def test_tied_em_stops_on_the_relative_tolerance_before_the_round_cap():
         tol=0.0,
     )
     assert not capped.converged and capped.rounds_run == 3
+
+
+def test_members_that_do_not_contribute_take_the_shared_model_without_shaping_it():
+    """A member flagged as not contributing (e.g. too few reads) gets the shared
+    transitions and its group's emissions, and the shared parameters equal a fit
+    without it -- however unlike the others its reads are."""
+    from smftools.hmm.tied_fit import LocalMembers, tied_em_backend
+
+    settings = dict(_pooled_settings(), tol=0.0)
+    without = [_two_enzyme_member(i) for i in range(4)]
+    expected, _ = tied_em_backend(
+        LocalMembers(without), covariates=[np.zeros(0)] * 4, categories=[None] * 4, **settings
+    )
+    stranger = _simulate((0.5, 0.5), 2.0, n_reads=40, seed=99)
+    members = [_two_enzyme_member(i) for i in range(4)]
+    members.append(TiedMember(_single(), stranger, np.arange(stranger.shape[1])))
+    settings.update(emission_groups=["A", "A", "B", "B", "A"], transition_groups=["ref"] * 5)
+    result, models = tied_em_backend(
+        LocalMembers(members),
+        covariates=[np.zeros(0)] * 5,
+        categories=[None] * 5,
+        contributes=[True, True, True, True, False],
+        **settings,
+    )
+    np.testing.assert_allclose(
+        result.transitions["ref"]["trans"], expected.transitions["ref"]["trans"], atol=1e-10
+    )
+    for key in ("A", "B"):
+        np.testing.assert_allclose(
+            result.groups[key]["theta"], expected.groups[key]["theta"], atol=1e-10
+        )
+    trans = [m.trans.detach().numpy() for m in models]
+    np.testing.assert_allclose(trans[4], trans[0], atol=1e-12)  # takes the shared model
+    assert result.offsets[4] == 0.0

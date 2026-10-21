@@ -870,64 +870,79 @@ def test_plot_feature_count_size_histograms_writes_per_barcode_grids(tmp_path):
     assert size_path.exists() and size_path.stat().st_size > 0
 
 
-def test_plot_hmm_parameters_across_barcodes_compares_saved_models(tmp_path):
+def _parameter_plot_case(tmp_path, checkpoints: dict[str, tuple[str, float]]):
+    """Records for barcodes -> (checkpoint name, emission prob), with the
+    model artifacts a stage records; returns the plotted series per figure."""
+    import hashlib
+
+    import matplotlib.axes
     import torch
 
-    from smftools.cli.hmm_adata import HMMTrainer
     from smftools.cli.stage_artifacts import prepare_analysis_plot_layout
     from smftools.hmm.HMM import create_hmm
-    from smftools.tools.partitioned_hmm import _plot_hmm_parameters_across_barcodes
+    from smftools.tools import partitioned_hmm
 
     cfg = _hmm_cfg()
-    models_dir = tmp_path / "models"
-    trainer = HMMTrainer(cfg=cfg, models_dir=models_dir)
-
-    model_reference = "ref_top__0_100"
-    label = "GpC"
-    # Two barcodes with deliberately different emission probabilities, so the
-    # comparison plot has something real to show, not just identical bars.
-    for barcode, emission_prob in (("bc1", 0.2), ("bc2", 0.8)):
-        model = create_hmm(cfg, arch="single", device="cpu")
-        with torch.no_grad():
-            model.emission.data = torch.tensor([1.0 - emission_prob, emission_prob])
-        path = trainer._path("PER", barcode, model_reference, label)
-        trainer._save(model, path)
-
-    records = [
-        {"reference": "ref_top", "barcode": "bc1", "core_start": 0, "core_end": 100},
-        {"reference": "ref_top", "barcode": "bc2", "core_start": 0, "core_end": 100},
-    ]
+    models_dir = tmp_path / "hmm_outputs" / "models"
+    models_dir.mkdir(parents=True)
+    records = []
+    for barcode, (name, emission_prob) in checkpoints.items():
+        path = models_dir / f"{name}.pt"
+        if not path.exists():
+            model = create_hmm(cfg, arch="single", device="cpu")
+            with torch.no_grad():
+                model.emission.data = torch.tensor([1.0 - emission_prob, emission_prob])
+            torch.save({"state_dict": model.state_dict()}, path)
+        content = hashlib.sha256(str(emission_prob).encode()).hexdigest()
+        artifact = {
+            "checkpoint": f"models/{name}.pt",
+            "checkpoint_content_sha256": content,
+            "model_key": {"label": "C", "fit_kind": "PER", "barcode": barcode},
+        }
+        records.append(
+            {
+                "reference": "ref_top",
+                "barcode": barcode,
+                "core_start": 0,
+                "core_end": 100,
+                "hmm_model_artifacts_json": json.dumps([artifact]),
+            }
+        )
     layout = prepare_analysis_plot_layout(tmp_path / "hmm_outputs", stage="hmm")
+    drawn = []
+    real_bar = matplotlib.axes.Axes.bar
 
-    _plot_hmm_parameters_across_barcodes(records, models_dir, cfg, layout)
+    def bar(self, *args, label=None, **kwargs):
+        if self.get_title() == "" and label is not None:
+            drawn.append(label)
+        return real_bar(self, *args, label=label, **kwargs)
 
+    matplotlib.axes.Axes.bar = bar
+    try:
+        partitioned_hmm._plot_hmm_parameters_across_barcodes(records, models_dir, cfg, layout)
+    finally:
+        matplotlib.axes.Axes.bar = real_bar
     catalog = pd.read_parquet(layout.catalog)
-    matching = catalog[catalog["plot_type"] == "hmm_parameters_across_barcodes"]
-    assert len(matching) == 1
-    assert matching.iloc[0]["category"] == "emissions"
-    assert matching.iloc[0]["reference"] == "ref_top"
-    plot_path = layout.root.parent / matching.iloc[0]["path"]
-    assert plot_path.exists()
-    assert plot_path.stat().st_size > 0
+    figures = catalog[catalog["plot_type"] == "hmm_parameters_across_barcodes"]
+    for path in figures["path"]:
+        assert (layout.root.parent / path).stat().st_size > 0
+    # Each series is drawn on both axes (emission, transition).
+    return len(figures), sorted(set(drawn))
 
 
-def test_plot_hmm_parameters_across_barcodes_noop_for_global_scope(tmp_path):
-    from smftools.cli.stage_artifacts import prepare_analysis_plot_layout
-    from smftools.tools.partitioned_hmm import _plot_hmm_parameters_across_barcodes
-
-    cfg = _hmm_cfg(hmm_fit_scope="global")
-    models_dir = tmp_path / "models"
-    models_dir.mkdir()
-    records = [
-        {"reference": "ref_top", "barcode": "bc1", "core_start": 0, "core_end": 100},
-        {"reference": "ref_top", "barcode": "bc2", "core_start": 0, "core_end": 100},
-    ]
-    layout = prepare_analysis_plot_layout(tmp_path / "hmm_outputs", stage="hmm")
-
-    _plot_hmm_parameters_across_barcodes(records, models_dir, cfg, layout)
-
-    catalog = pd.read_parquet(layout.catalog)
-    assert catalog.empty
+def test_parameter_plot_draws_one_series_per_distinct_model_for_every_strategy(tmp_path):
+    """Per-sample fits: a series per barcode. A shared model: one series for
+    everyone. A tied / pooled fit (separate checkpoints, identical content):
+    drawn once. Every strategy gets its figure."""
+    per_sample = _parameter_plot_case(tmp_path / "per", {"bc1": ("m1", 0.2), "bc2": ("m2", 0.8)})
+    assert per_sample == (1, ["bc1", "bc2"])
+    shared = _parameter_plot_case(tmp_path / "shared", {"bc1": ("m", 0.5), "bc2": ("m", 0.5)})
+    assert shared == (1, ["all 2 barcodes"])
+    pooled = _parameter_plot_case(
+        tmp_path / "pooled",
+        {"bc1": ("a", 0.6), "bc2": ("b", 0.6), "bc3": ("c", 0.3)},
+    )
+    assert pooled == (1, ["bc1, bc2", "bc3"])
 
 
 def test_hmm_trainer_save_persists_fit_history(tmp_path):
@@ -2763,3 +2778,37 @@ def test_feature_clustermaps_carry_the_posterior_panel(tmp_path, monkeypatch):
     length_calls = [c for c in length_spy if c["length_layer"].startswith("C_all_footprint")]
     assert length_calls
     assert all("C_posterior_modified" in c["extra_length_layers"] for c in length_calls)
+
+
+def test_unassigned_samples_are_fitted_on_their_own_not_pooled(tmp_path, monkeypatch):
+    """A sample with no enzyme on the sheet (``unassigned_*``) does not join the
+    pooled fit: it is fitted alone, with its own transitions."""
+    from smftools.hmm.fit_plan import is_unassigned_emission_group
+    from smftools.tools import partitioned_hmm
+
+    assert is_unassigned_emission_group("C|enzyme=unassigned_37")
+    assert is_unassigned_emission_group("C|enzyme=Unclassified")
+    assert is_unassigned_emission_group("C|enzyme=")
+    assert not is_unassigned_emission_group("C|enzyme=CseDa01")
+    assert not is_unassigned_emission_group("C|all")
+
+    calls = []
+    real = partitioned_hmm.execute_tied_fit_task
+
+    def recording(spine_path, plans, cfg, models_dir, workers=1, pooled=None):
+        calls.append((sorted(p.emission_group for p in plans), pooled))
+        return real(spine_path, plans, cfg, models_dir, workers, pooled)
+
+    monkeypatch.setattr(partitioned_hmm, "execute_tied_fit_task", recording)
+    _two_sample_run(
+        tmp_path,
+        monkeypatch,
+        enzymes=("E1", "unassigned_bc2"),
+        hmm_emission_scope="shared",
+        hmm_emission_groupby=["enzyme"],
+        hmm_transition_scope="pooled",
+    )
+    assert sorted(calls) == [
+        (["C|enzyme=E1"], None),  # the pooled fit (the model's own scope)
+        (["C|enzyme=unassigned_bc2"], False),  # alone, own transitions
+    ]

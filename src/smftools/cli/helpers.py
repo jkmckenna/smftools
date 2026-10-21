@@ -179,6 +179,7 @@ _OMIT_AT_DEFAULT_CONFIG_KEYS = {
     "hmm_emission_scope": "fit_group",
     "hmm_transition_scope": "fit_group",
     "hmm_fit_reads_per_sample": 200,
+    "hmm_min_fit_reads": 20,
     "hmm_emission_groupby": [],
     "hmm_efficiency_groupby": [],
     "hmm_efficiency_covariates": [],

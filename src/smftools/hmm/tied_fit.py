@@ -507,6 +507,7 @@ def tied_em_backend(
     emission_groups: Sequence[str] | None = None,
     transition_groups: Sequence[str] | None = None,
     tol: float = 1e-5,
+    contributes: Sequence[bool] | None = None,
 ) -> tuple[TiedResult, list[Any]]:
     """Tied EM over a members backend (:class:`LocalMembers` or
     :class:`ShardedMembers`); returns the result and the fitted models in
@@ -521,7 +522,13 @@ def tied_em_backend(
 
     ``rounds`` is a cap: the fit stops early once a round's log-likelihood gain
     is below ``tol * max(|log-likelihood|, 1)`` -- the relative rule of
-    :meth:`BaseHMM.fit`."""
+    :meth:`BaseHMM.fit`.
+
+    ``contributes`` (one flag per member; default all) marks the members whose
+    reads shape the shared parameters. The others -- e.g. too few reads to say
+    anything -- take their group's emissions, an offset predicted from their
+    covariates, and their transition group's transitions, but add nothing to
+    them. A group with no contributing member is fitted on all its members."""
     import time
 
     n = len(covariates)
@@ -535,21 +542,45 @@ def tied_em_backend(
         raw = raw[:, None]
     started = time.monotonic()
     tag = f"tied fit {label}: " if label else "tied fit: "
+    flags = [True] * n if contributes is None else [bool(c) for c in contributes]
+    if len(flags) != n:
+        raise ValueError("one contributes flag per member")
 
-    # Per emission group: members, centred covariates, categories.
+    def contributing(idx: list[int], what: str) -> list[int]:
+        kept = [i for i in idx if flags[i]]
+        if kept or not idx:
+            return kept
+        logger.warning(
+            "%sno member of %s has enough reads to contribute; fitting it on all %d",
+            tag,
+            what,
+            len(idx),
+        )
+        return list(idx)
+
+    # Per emission group: its members, the contributing ones (``fit``), their
+    # centred covariates and categories. Offsets follow every member's own
+    # covariates, centred on the contributors.
     groups: dict[str, dict] = {}
     for key in dict.fromkeys(egroups):
         idx = [i for i, g in enumerate(egroups) if g == key]
-        sub = raw[idx]
-        centred = sub - sub.mean(axis=0, keepdims=True) if sub.size else np.zeros((len(idx), 0))
+        fit = contributing(idx, f"emission group {key or 'all'!r}")
+        mean = raw[fit].mean(axis=0, keepdims=True) if fit else np.zeros((1, raw.shape[1]))
+        all_centred = raw[idx] - mean if idx else np.zeros((0, raw.shape[1]))
+        centred = raw[fit] - mean if fit else np.zeros((0, raw.shape[1]))
         cats = [categories[i] for i in idx]
-        names = sorted({c for c in cats if c is not None})
+        names = sorted({categories[i] for i in fit if categories[i] is not None})
         groups[key] = {
             "idx": idx,
+            "fit": fit,
             "centred": centred,
+            "all_centred": all_centred,
             "constant": [j for j in range(centred.shape[1]) if np.allclose(centred[:, j], 0.0)],
             "names": names,
-            "category_index": [names.index(c) if c is not None else None for c in cats],
+            "category_index": [
+                names.index(categories[i]) if categories[i] is not None else None for i in fit
+            ],
+            "all_category_index": [names.index(c) if c in names else None for c in cats],
         }
 
     # Round 0: each member's own quick fit orients the states and starts each
@@ -557,7 +588,7 @@ def tied_em_backend(
     history: list[float] = []
     logits = backend.initial_logits(transition_iters, device)
     for key, g in groups.items():
-        g["theta"] = np.mean([logits[i] for i in g["idx"]], axis=0)
+        g["theta"] = np.mean([logits[i] for i in g["fit"]], axis=0)
         g["w"] = np.array(fixed_w, dtype=float)
         g["beta"] = np.zeros(g["centred"].shape[1])
         g["gamma"] = np.zeros(len(g["names"]))
@@ -570,13 +601,24 @@ def tied_em_backend(
         ws = [groups[egroups[i]]["w"] for i in range(n)]
         return thetas, ws
 
+    contributing_of = (
+        {
+            key: contributing(
+                [i for i, t in enumerate(tgroups) if t == key], f"transition group {key!r}"
+            )
+            for key in dict.fromkeys(tgroups)
+        }
+        if tgroups is not None
+        else {}
+    )
+
     def pool_transitions(iterations: int) -> float:
         loglik = 0.0
         for _ in range(max(1, int(iterations))):
             stats = backend.transition_stats(device)
             loglik = float(sum(s.get("loglik", 0.0) for s in stats))
             for key in dict.fromkeys(tgroups):
-                members_of = [i for i, t in enumerate(tgroups) if t == key]
+                members_of = contributing_of[key]
                 pooled[key] = pooled_transitions([stats[i] for i in members_of])
             backend.set_transitions(
                 [pooled[tgroups[i]][0] for i in range(n)],
@@ -610,12 +652,12 @@ def tied_em_backend(
         hits = np.stack([row[0] for row in rows])
         trials = np.stack([row[1] for row in rows])
         for key, g in groups.items():
-            idx = g["idx"]
+            idx, fit = g["idx"], g["fit"]
             level = _sigmoid(g["theta"])
             ridge = shrinkage * level * (1.0 - level)
-            theta, w, beta, gamma_vec, delta = fit_emission_table(
-                hits[idx],
-                trials[idx],
+            theta, w, beta, gamma_vec, _ = fit_emission_table(
+                hits[fit],
+                trials[fit],
                 free_w=free_w,
                 fixed_w=g["w"],
                 covariates=g["centred"],
@@ -628,8 +670,14 @@ def tied_em_backend(
                 init_w=g["w"],
             )
             g.update(theta=theta, w=w, beta=beta, gamma=gamma_vec)
+            # Every member's offset from its own covariates and category --
+            # for contributors exactly the fitted one.
             for position, member in enumerate(idx):
-                offsets[member] = float(delta[position])
+                category = g["all_category_index"][position]
+                offsets[member] = float(
+                    g["all_centred"][position] @ beta
+                    + (gamma_vec[category] if category is not None and gamma_vec.size else 0.0)
+                )
         logger.info(
             "%sround %d/%d over %d members (%.0fs)%s",
             tag,

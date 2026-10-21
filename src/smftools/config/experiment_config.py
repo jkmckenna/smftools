@@ -1480,6 +1480,7 @@ class ExperimentConfig:
     hmm_clustermap_max_reads_per_plot: Optional[int] = 2500
     hmm_posterior_cmap: str = "RdBu_r"
     hmm_fit_reads_per_sample: int = 200
+    hmm_min_fit_reads: int = 20
     hmm_emission_groupby: List[str] = field(default_factory=list)
     hmm_efficiency_groupby: List[str] = field(default_factory=list)
     hmm_efficiency_covariates: List[str] = field(default_factory=list)
@@ -2879,6 +2880,7 @@ class ExperimentConfig:
             ),
             hmm_posterior_cmap=str(merged.get("hmm_posterior_cmap") or "RdBu_r"),
             hmm_fit_reads_per_sample=int(merged.get("hmm_fit_reads_per_sample", 200) or 200),
+            hmm_min_fit_reads=int(merged.get("hmm_min_fit_reads", 20) or 0),
             hmm_emission_groupby=[
                 str(v) for v in _parse_list(merged.get("hmm_emission_groupby", []))
             ],
