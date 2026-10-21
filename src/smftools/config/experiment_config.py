@@ -868,6 +868,17 @@ _DEFAULT_LEIDEN_RESOLUTION_BY_STRATEGY = {"pca": 0.5, "umap": 0.01, "nmf": 0.01,
 LITERAL_NONE_KEYS = frozenset({"hmm_context_model"})
 
 HMM_EMISSION_SCOPES = ("auto", "fit_group", "shared", "shared_efficiency")
+HMM_TRANSITION_SCOPES = ("fit_group", "pooled")
+
+
+def _parse_hmm_transition_scope(value: Any) -> str:
+    """``hmm_transition_scope`` (`HPS-16`): fit_group (default) | pooled."""
+    scope = str(value or "fit_group").strip().lower()
+    if scope not in HMM_TRANSITION_SCOPES:
+        raise ValueError(
+            f"hmm_transition_scope must be one of {HMM_TRANSITION_SCOPES}, not {value!r}"
+        )
+    return scope
 
 
 def _parse_hmm_emission_scope(value: Any) -> str:
@@ -1464,6 +1475,10 @@ class ExperimentConfig:
     hmm_axis: str = "bp"
     # Emission scopes (`HPS-01`): what the emission model is shared across.
     hmm_emission_scope: str = "fit_group"
+    hmm_transition_scope: str = "fit_group"
+    hmm_clustermap_posterior_panel: bool = False
+    hmm_posterior_cmap: str = "RdBu_r"
+    hmm_fit_reads_per_sample: int = 200
     hmm_emission_groupby: List[str] = field(default_factory=list)
     hmm_efficiency_groupby: List[str] = field(default_factory=list)
     hmm_efficiency_covariates: List[str] = field(default_factory=list)
@@ -2854,6 +2869,12 @@ class ExperimentConfig:
             hmm_reference_groups=_parse_hmm_reference_groups(merged.get("hmm_reference_groups")),
             hmm_axis=_parse_hmm_axis(merged.get("hmm_axis")),
             hmm_emission_scope=_parse_hmm_emission_scope(merged.get("hmm_emission_scope")),
+            hmm_transition_scope=_parse_hmm_transition_scope(merged.get("hmm_transition_scope")),
+            hmm_clustermap_posterior_panel=_parse_bool(
+                merged.get("hmm_clustermap_posterior_panel", False)
+            ),
+            hmm_posterior_cmap=str(merged.get("hmm_posterior_cmap") or "RdBu_r"),
+            hmm_fit_reads_per_sample=int(merged.get("hmm_fit_reads_per_sample", 200) or 200),
             hmm_emission_groupby=[
                 str(v) for v in _parse_list(merged.get("hmm_emission_groupby", []))
             ],

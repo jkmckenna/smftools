@@ -1711,6 +1711,14 @@ class SingleBernoulliHMM(BaseHMM):
                 xi = (log_xi - log_norm).exp() * valid_t
                 trans_acc += xi.sum(dim=0)
 
+            stats_out = kwargs.get("stats_out")
+            if stats_out is not None:
+                # Expected start / transition counts under the current
+                # parameters, for fits that pool them across models (`HPS-16`).
+                stats_out["start"] = start_acc.detach().cpu().numpy()
+                stats_out["trans"] = trans_acc.detach().cpu().numpy()
+                stats_out["loglik"] = ll_proxy
+
             with torch.no_grad():
                 if update_start:
                     new_start = start_acc + eps
@@ -2416,6 +2424,12 @@ class MultiBernoulliHMM(BaseHMM):
                 log_norm = _logsumexp(log_xi.view(N, -1), dim=1).view(N, 1, 1)
                 xi = (log_xi - log_norm).exp() * valid_t
                 trans_acc += xi.sum(dim=0)
+
+            stats_out = kwargs.get("stats_out")
+            if stats_out is not None:  # see SingleBernoulliHMM.fit_em (`HPS-16`)
+                stats_out["start"] = start_acc.detach().cpu().numpy()
+                stats_out["trans"] = trans_acc.detach().cpu().numpy()
+                stats_out["loglik"] = ll_proxy
 
             # emission update per channel
             gamma_k = gamma.unsqueeze(-1)  # (N,L,K,1)

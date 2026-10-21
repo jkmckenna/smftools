@@ -391,6 +391,9 @@ def _make_plan(
     first = tasks[0] if len(by_reference) == 1 else by_reference[min(by_reference)][0]
     candidate_ids = sorted({str(read_id) for task in tasks for read_id in task.read_ids})
     configured_max = int(_cfg_value(cfg, "hmm_max_fit_reads", 1000))
+    if str(_cfg_value(cfg, "hmm_transition_scope", "fit_group")).lower() == "pooled":
+        # `HPS-17`: an equal share per sample feeds the shared transitions.
+        configured_max = min(configured_max, int(_cfg_value(cfg, "hmm_fit_reads_per_sample", 200)))
     selection_seed = int(_cfg_value(cfg, "hmm_fit_selection_seed", 0))
     loaded_width = max(int(task.load_end) - int(task.load_start) for task in tasks)
     bytes_per_read = max(

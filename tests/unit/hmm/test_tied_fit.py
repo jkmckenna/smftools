@@ -202,3 +202,79 @@ def test_a_failing_shard_worker_is_reported():
 
 def _explode(index):
     raise RuntimeError(f"cannot build member {index}")
+
+
+def _two_enzyme_member(index):
+    """Members of two enzymes (different emission levels), one chromatin
+    process (the same stay probabilities)."""
+    stay = (0.96, 0.9)
+    efficiency = -1.0 if index < 2 else 0.8  # enzyme A weaker than enzyme B
+    X = _simulate(stay, efficiency, n_reads=120, seed=10 + index)
+    return TiedMember(_single(), X, np.arange(X.shape[1]))
+
+
+def _pooled_settings():
+    return dict(
+        free_w=np.zeros((2, 0), bool),
+        fixed_w=np.zeros((2, 0)),
+        rounds=6,
+        transition_iters=4,
+        shrinkage=50.0,
+        bound=float(np.log(10)),
+        prior_sd=1.0,
+        emission_groups=["A", "A", "B", "B"],
+        transition_groups=["ref"] * 4,
+    )
+
+
+def test_pooled_transitions_are_shared_and_emissions_stay_per_enzyme():
+    """`HPS-16`: one transition model pooled over every member, across
+    emission groups; each emission group keeps its own levels."""
+    from smftools.hmm.tied_fit import LocalMembers, tied_em_backend
+
+    members = [_two_enzyme_member(i) for i in range(4)]
+    result, models = tied_em_backend(
+        LocalMembers(members),
+        covariates=[np.zeros(0)] * 4,
+        categories=[None] * 4,
+        **_pooled_settings(),
+    )
+    trans = [m.trans.detach().numpy() for m in models]
+    for other in trans[1:]:
+        np.testing.assert_allclose(other, trans[0], atol=1e-12)  # one shared model
+    modified = models[0].modified_state_index()
+    stays = [trans[0][1 - modified, 1 - modified], trans[0][modified, modified]]
+    np.testing.assert_allclose(stays, (0.96, 0.9), atol=0.03)
+    levels = {key: np.sort(_sig(g["theta"])) for key, g in result.groups.items()}
+    assert levels["A"][1] < levels["B"][1]  # enzyme B's accessible level is higher
+    assert set(result.transitions) == {"ref"}
+
+
+def test_pooled_transitions_sharded_match_in_process():
+    from smftools.hmm.tied_fit import LocalMembers, ShardedMembers, tied_em_backend
+
+    local = [_two_enzyme_member(i) for i in range(4)]
+    expected, local_models = tied_em_backend(
+        LocalMembers(local),
+        covariates=[np.zeros(0)] * 4,
+        categories=[None] * 4,
+        **_pooled_settings(),
+    )
+    backend = ShardedMembers(_two_enzyme_member, [(i,) for i in range(4)], workers=2)
+    try:
+        result, models = tied_em_backend(
+            backend,
+            covariates=[np.zeros(0)] * 4,
+            categories=[None] * 4,
+            **_pooled_settings(),
+        )
+    finally:
+        backend.close()
+    np.testing.assert_allclose(result.history, expected.history, rtol=1e-12)
+    for model, reference in zip(models, local_models, strict=True):
+        torch.testing.assert_close(model.trans, reference.trans, rtol=0, atol=1e-10)
+        torch.testing.assert_close(model.emission, reference.emission, rtol=0, atol=1e-10)
+
+
+def _sig(x):
+    return 1.0 / (1.0 + np.exp(-np.asarray(x)))

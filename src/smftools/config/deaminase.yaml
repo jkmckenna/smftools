@@ -47,6 +47,11 @@ rolling_nn_site_types:
 # deaminase panels; other modalities keep the generic default (none).
 hmm_context_model: learned
 hmm_context_states: all
+# One chromatin (transition) model per reference shared by every sample, with
+# emissions per enzyme (+ dose offsets) -- `HPS-16`. Validated on a one-enzyme
+# run (2026-10): samples ordered by accessibility as raw calls (Spearman 0.999)
+# with nucleosome-sized footprints; per-sample emissions absorbed cell type.
+hmm_transition_scope: pooled
 cpg: False # whether to use the default HMM endogenous CpG patch params
 hmm_methbases:
   - "C"
@@ -69,8 +74,10 @@ hmm_feature_sets:
 hmm_merge_layer_features:
   - ["all_accessible_features", 60]
   - ["all_footprint_features", 10]
+# The posterior beside every feature panel (`HPS-18`), diverging about 0.5
+# (hmm_posterior_cmap, default RdBu_r).
+hmm_clustermap_posterior_panel: true
 hmm_clustermap_feature_layers:
-  - posterior_modified # diverging about 0.5 (hmm_posterior_cmap, default RdBu_r)
   - all_accessible_features
   - all_accessible_features_merged
   - all_footprint_features_merged
