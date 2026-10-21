@@ -1183,8 +1183,9 @@ def _derive_hmm_layers(
                     np.asarray(source.obs["reference_end"], dtype=np.int64),
                 ]
             )
+            # Converted block by block inside (not a float64 copy of the whole).
             derived = call_hmm_features(
-                np.asarray(source.layers[settings.posterior_layer(prefix)], dtype=np.float64),
+                np.asarray(source.layers[settings.posterior_layer(prefix)]),
                 np.asarray(source.var_names, dtype=np.int64),
                 spans,
                 prefix=prefix,
