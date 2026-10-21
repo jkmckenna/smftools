@@ -2763,3 +2763,40 @@ def test_feature_clustermaps_carry_the_posterior_panel(tmp_path, monkeypatch):
     length_calls = [c for c in length_spy if c["length_layer"].startswith("C_all_footprint")]
     assert length_calls
     assert all("C_posterior_modified" in c["extra_length_layers"] for c in length_calls)
+
+
+def test_feature_derivation_reuses_the_loaded_posterior_over_a_whole_reference(
+    tmp_path, monkeypatch
+):
+    """A window spanning the reference derives features from the posterior it
+    already loaded (no second read of the stores) and gives exactly the
+    layers the second read gives; layers loaded only for that are dropped."""
+    from smftools.informatics import partition_read
+
+    outputs = _hmm_run_with_features(tmp_path, monkeypatch)
+    names = [
+        "C_all_accessible_features",
+        "C_all_footprint_features_lengths",
+        "C_all_accessible_features_merged",
+    ]
+    calls = []
+    real = partition_read.materialize
+
+    def counting(*args, **kwargs):
+        calls.append(kwargs.get("layers"))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(partition_read, "materialize", counting)
+    kwargs = dict(references="ref_top", start=0, end=12, layers=names, hmm_feature_overrides={})
+    reused = partition_read.materialize(outputs["spine"], **kwargs)
+    assert len(calls) == 1  # no nested read for the derivation inputs
+    assert set(reused.layers) == set(names)  # posterior / coverage not left behind
+
+    calls.clear()
+    monkeypatch.setattr(partition_read, "_window_spans_reference", lambda *a, **k: False)
+    reread = partition_read.materialize(outputs["spine"], **kwargs)
+    assert len(calls) == 2  # the second read of the stores
+    for name in names:
+        np.testing.assert_array_equal(
+            np.asarray(reused.layers[name], float), np.asarray(reread.layers[name], float), name
+        )

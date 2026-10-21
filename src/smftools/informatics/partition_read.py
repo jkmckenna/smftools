@@ -1112,29 +1112,63 @@ def _derivable_hmm_layers(
     return names
 
 
+def _derivation_coverage(spine: "ad.AnnData", base: Path) -> tuple[str, bool]:
+    """The coverage layer feature derivation masks with, and whether it is
+    the HMM store's own copy (no raw / preprocess read needed)."""
+    from ..constants import COVERED_BASE_MASK, HMM_COVERED_BASE_MASK
+
+    hmm_coverage = HMM_COVERED_BASE_MASK in _derived_layer_names(
+        spine, _run_root_from_source_base(base)
+    )
+    return (HMM_COVERED_BASE_MASK if hmm_coverage else COVERED_BASE_MASK), hmm_coverage
+
+
+def _derivation_settings(spine: "ad.AnnData", to_derive, overrides) -> dict[str, Any]:
+    """Feature settings per model prefix being derived."""
+    from ..hmm.features import FeatureSettings
+
+    recorded = _recorded_hmm_feature_settings(spine)
+    out = {}
+    for prefix in sorted(set(to_derive.values())):
+        settings = FeatureSettings.from_dict(recorded[prefix])
+        out[prefix] = settings.with_overrides(**dict(overrides)) if overrides else settings
+    return out
+
+
+def _reference_length(spine: "ad.AnnData", reference: str) -> int:
+    plan = _reference_plan(spine, reference)
+    return int(plan.get("reference_length") or _reference_lengths(spine, [reference])[reference])
+
+
+def _window_spans_reference(spine: "ad.AnnData", reference: str, start, end) -> bool:
+    """Whether a ``[start, end)`` request covers the whole reference."""
+    return (start is None or int(start) <= 0) and (
+        end is None or int(end) >= _reference_length(spine, reference)
+    )
+
+
 def _derive_hmm_layers(
     spine: "ad.AnnData",
     base: Path,
     result: "ad.AnnData",
     to_derive: Mapping[str, str],
     overrides: Mapping[str, Any] | None,
+    *,
+    reuse_loaded: bool = False,
 ) -> None:
     """Attach HMM feature layers derived from the stored posterior (`DLS-03`).
 
     For each reference in ``result``, the posterior and coverage of its reads
     are loaded over the whole reference -- runs are measured over each read's
     span, so a narrower window would cut them -- the requested layers are
-    derived, then cropped to ``result``'s positions.
+    derived, then cropped to ``result``'s positions. With ``reuse_loaded``,
+    a reference whose posterior and coverage ``result`` already holds over
+    its whole length is derived from those rows instead of being read again.
     """
-    from ..constants import COVERED_BASE_MASK, HMM_COVERED_BASE_MASK
-    from ..hmm.features import FeatureSettings, call_hmm_features
+    from ..hmm.features import call_hmm_features
 
-    recorded = _recorded_hmm_feature_settings(spine)
-    # Coverage from the HMM store when it kept a copy (no raw / preprocess read).
-    hmm_coverage = HMM_COVERED_BASE_MASK in _derived_layer_names(
-        spine, _run_root_from_source_base(base)
-    )
-    coverage_layer = HMM_COVERED_BASE_MASK if hmm_coverage else COVERED_BASE_MASK
+    coverage_layer, hmm_coverage = _derivation_coverage(spine, base)
+    settings_of = _derivation_settings(spine, to_derive, overrides)
     positions = np.asarray(result.var_names, dtype=np.int64)
     column_of = {int(p): i for i, p in enumerate(positions)}
     out = {name: np.full(result.shape, np.nan, dtype=np.float32) for name in to_derive}
@@ -1152,26 +1186,34 @@ def _derive_hmm_layers(
             )
         rows = np.flatnonzero(references.to_numpy() == reference)
         read_ids = list(result.obs_names[rows].astype(str))
-        length = int(
-            plan.get("reference_length") or _reference_lengths(spine, [reference])[reference]
+        length = _reference_length(spine, reference)
+        # The whole reference, contiguous: what the second read would return.
+        whole = positions.size == length and (
+            length == 0 or (int(positions[0]) == 0 and int(positions[-1]) == length - 1)
         )
-        for prefix in sorted(set(to_derive.values())):
-            settings = FeatureSettings.from_dict(recorded[prefix])
-            if overrides:
-                settings = settings.with_overrides(**dict(overrides))
+        for prefix, settings in settings_of.items():
             used[prefix] = settings.to_dict()
             names = [name for name, owner in to_derive.items() if owner == prefix]
-            source = materialize(
-                spine,
-                base_dir=base,
-                references=reference,
-                read_ids=read_ids,
-                start=0,
-                end=length,
-                layers=[settings.posterior_layer(prefix), coverage_layer],
-                x=not hmm_coverage,
-            )
-            source = source[read_ids]
+            posterior_layer = settings.posterior_layer(prefix)
+            if (
+                reuse_loaded
+                and whole
+                and posterior_layer in result.layers
+                and coverage_layer in result.layers
+            ):
+                source = result[rows]
+            else:
+                source = materialize(
+                    spine,
+                    base_dir=base,
+                    references=reference,
+                    read_ids=read_ids,
+                    start=0,
+                    end=length,
+                    layers=[posterior_layer, coverage_layer],
+                    x=not hmm_coverage,
+                )
+                source = source[read_ids]
             covered = (
                 np.nan_to_num(np.asarray(source.layers[coverage_layer], dtype=float)) > 0
                 if coverage_layer in source.layers
@@ -1185,7 +1227,7 @@ def _derive_hmm_layers(
             )
             # Converted block by block inside (not a float64 copy of the whole).
             derived = call_hmm_features(
-                np.asarray(source.layers[settings.posterior_layer(prefix)]),
+                np.asarray(source.layers[posterior_layer]),
                 np.asarray(source.var_names, dtype=np.int64),
                 spans,
                 prefix=prefix,
@@ -1364,9 +1406,23 @@ def materialize(
             requested_layer_set = requested_layer_set.difference(to_derive)
             derived_available = derived_available.difference(to_derive)
 
+    # Layers loaded only so derivation can reuse them (dropped after).
+    reuse_extra: set[str] = set()
+    reuse_inputs: set[str] = set()
+
     def _finish(result):
         if to_derive:
-            _derive_hmm_layers(spine_obj, base, result, to_derive, hmm_feature_overrides)
+            _derive_hmm_layers(
+                spine_obj,
+                base,
+                result,
+                to_derive,
+                hmm_feature_overrides,
+                reuse_loaded=bool(reuse_inputs),
+            )
+            for name in reuse_extra:
+                if name in result.layers:
+                    del result.layers[name]
         return result
 
     requested_derived = (
@@ -1391,6 +1447,24 @@ def materialize(
     )
     if sel.shape[0] == 0:
         raise EmptySelectionError("materialize: selection matched no molecules")
+    # A window spanning each reference already reads what feature derivation
+    # needs (its posterior and coverage): load them now rather than read every
+    # store a second time.
+    if to_derive and all(
+        _window_spans_reference(spine_obj, reference, start, end)
+        for reference in sel["Reference_strand"].astype(str).unique()
+    ):
+        coverage_layer, _ = _derivation_coverage(spine_obj, base)
+        inputs = {
+            settings.posterior_layer(prefix)
+            for prefix, settings in _derivation_settings(
+                spine_obj, to_derive, hmm_feature_overrides
+            ).items()
+        } | {coverage_layer}
+        if inputs <= set(derived_available) | set(requested_derived):
+            reuse_inputs.update(inputs)
+            reuse_extra.update(inputs.difference(requested_derived))
+            requested_derived = set(requested_derived) | inputs
     if not x:
         # `MRC-04`: the requested layers come from derived stores, so build only
         # what they are stitched onto -- rows and positions -- not X.
