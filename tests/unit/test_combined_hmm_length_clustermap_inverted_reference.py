@@ -38,7 +38,7 @@ def _capture_first_heatmap(monkeypatch, invert: bool):
             captured["matrix"] = np.asarray(matrix)
         return None
 
-    monkeypatch.setattr(hmm_plotting.sns, "heatmap", fake_heatmap)
+    monkeypatch.setattr(hmm_plotting, "fast_heatmap", fake_heatmap)
     combined_hmm_length_clustermap(
         _adata_for_invert(invert),
         min_quality=None,

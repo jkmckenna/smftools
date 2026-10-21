@@ -1477,13 +1477,15 @@ class ExperimentConfig:
     hmm_emission_scope: str = "fit_group"
     hmm_transition_scope: str = "fit_group"
     hmm_clustermap_posterior_panel: bool = False
+    hmm_clustermap_max_reads_per_plot: Optional[int] = 2500
     hmm_posterior_cmap: str = "RdBu_r"
     hmm_fit_reads_per_sample: int = 200
     hmm_emission_groupby: List[str] = field(default_factory=list)
     hmm_efficiency_groupby: List[str] = field(default_factory=list)
     hmm_efficiency_covariates: List[str] = field(default_factory=list)
     hmm_efficiency_prior_sd: float = 1.0
-    hmm_tied_rounds: int = 8
+    hmm_tied_rounds: int = 50
+    hmm_tied_tol: float = 1e-5
     hmm_tied_transition_iters: int = 3
     hmm_dtype: str = "float64"
     hmm_annotation_threshold: float = 0.5
@@ -1532,7 +1534,6 @@ class ExperimentConfig:
     )
     hmm_clustermap_length_layers: List[str] = field(
         default_factory=lambda: [
-            "all_accessible_features_merged",
             "all_footprint_features",
             "all_footprint_features_merged",
         ]
@@ -2531,7 +2532,7 @@ class ExperimentConfig:
         hmm_clustermap_length_layers = _parse_list(
             merged.get(
                 "hmm_clustermap_length_layers",
-                "all_accessible_features_merged,all_footprint_features,all_footprint_features_merged",
+                "all_footprint_features,all_footprint_features_merged",
             )
         )
 
@@ -2873,6 +2874,9 @@ class ExperimentConfig:
             hmm_clustermap_posterior_panel=_parse_bool(
                 merged.get("hmm_clustermap_posterior_panel", False)
             ),
+            hmm_clustermap_max_reads_per_plot=_parse_numeric(
+                merged.get("hmm_clustermap_max_reads_per_plot", 2500), None
+            ),
             hmm_posterior_cmap=str(merged.get("hmm_posterior_cmap") or "RdBu_r"),
             hmm_fit_reads_per_sample=int(merged.get("hmm_fit_reads_per_sample", 200) or 200),
             hmm_emission_groupby=[
@@ -2885,7 +2889,8 @@ class ExperimentConfig:
                 str(v) for v in _parse_list(merged.get("hmm_efficiency_covariates", []))
             ],
             hmm_efficiency_prior_sd=float(merged.get("hmm_efficiency_prior_sd", 1.0)),
-            hmm_tied_rounds=int(merged.get("hmm_tied_rounds", 8)),
+            hmm_tied_rounds=int(merged.get("hmm_tied_rounds", 50)),
+            hmm_tied_tol=float(merged.get("hmm_tied_tol", 1e-5)),
             hmm_tied_transition_iters=int(merged.get("hmm_tied_transition_iters", 3)),
             hmm_fit_strategy=hmm_fit_strategy,
             hmm_shared_scope=hmm_shared_scope,

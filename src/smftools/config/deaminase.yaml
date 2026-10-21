@@ -81,7 +81,7 @@ hmm_clustermap_feature_layers:
   - all_accessible_features
   - all_accessible_features_merged
   - all_footprint_features_merged
+# Length figures show footprints only; accessibility is in the feature figures.
 hmm_clustermap_length_layers:
-  - all_accessible_features_merged
   - all_footprint_features
   - all_footprint_features_merged

@@ -92,6 +92,7 @@ _DISPLAY_ONLY_CONFIG_KEYS = {
     "hmm_clustermap_length_layers",
     "hmm_posterior_cmap",
     "hmm_clustermap_posterior_panel",
+    "hmm_clustermap_max_reads_per_plot",
 }
 
 #: Stage order, used to keep a stage from being invalidated by settings that
@@ -182,7 +183,8 @@ _OMIT_AT_DEFAULT_CONFIG_KEYS = {
     "hmm_efficiency_groupby": [],
     "hmm_efficiency_covariates": [],
     "hmm_efficiency_prior_sd": 1.0,
-    "hmm_tied_rounds": 8,
+    "hmm_tied_rounds": 50,
+    "hmm_tied_tol": 1e-5,
     "hmm_tied_transition_iters": 3,
 }
 

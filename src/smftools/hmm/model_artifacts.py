@@ -199,7 +199,8 @@ def hmm_fit_config(cfg: Any) -> dict[str, Any]:
                 "hmm_efficiency_groupby": list(values.get("hmm_efficiency_groupby") or []),
                 "hmm_efficiency_covariates": list(values.get("hmm_efficiency_covariates") or []),
                 "hmm_efficiency_prior_sd": float(values.get("hmm_efficiency_prior_sd", 1.0)),
-                "hmm_tied_rounds": int(values.get("hmm_tied_rounds", 8)),
+                "hmm_tied_rounds": int(values.get("hmm_tied_rounds", 50)),
+                "hmm_tied_tol": float(values.get("hmm_tied_tol", 1e-5)),
                 "hmm_tied_transition_iters": int(values.get("hmm_tied_transition_iters", 3)),
                 "sample_sheet_sha256": file_sha256_or_missing(
                     values.get("sample_sheet_path") or ""

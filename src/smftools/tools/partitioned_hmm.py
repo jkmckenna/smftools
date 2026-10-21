@@ -247,6 +247,7 @@ VARIANT_PLAN_SETTINGS = frozenset(
         "hmm_efficiency_covariates",
         "hmm_efficiency_prior_sd",
         "hmm_tied_rounds",
+        "hmm_tied_tol",
         "hmm_tied_transition_iters",
         "hmm_reference_groups",
         "hmm_transition_scope",
@@ -1039,7 +1040,8 @@ def execute_tied_fit_task(
                     categories=[p.efficiency_key or None for p in member_plans],
                     free_w=free_w,
                     fixed_w=fixed_w,
-                    rounds=int(getattr(cfg, "hmm_tied_rounds", 8)),
+                    rounds=int(getattr(cfg, "hmm_tied_rounds", 50)),
+                    tol=float(getattr(cfg, "hmm_tied_tol", 1e-5)),
                     transition_iters=int(getattr(cfg, "hmm_tied_transition_iters", 3)),
                     shrinkage=float(getattr(variant_cfg, "hmm_context_shrinkage", 50.0)),
                     bound=float(np.log(float(bounds[1]))),
@@ -1100,6 +1102,8 @@ def execute_tied_fit_task(
                         result.groups[plan.emission_group]["constant_covariates"]
                     ),
                     "transition_scope": "pooled" if pooled else "fit_group",
+                    "tied_converged": bool(result.converged),
+                    "tied_rounds_run": int(result.rounds_run),
                 }
             )
         artifacts[plan.fit_id] = artifact
@@ -2399,7 +2403,7 @@ def _plot_feature_clustermaps(
     raw_layer = str(getattr(cfg, "layer_for_clustermap_plotting", "nan0_0minus1"))
     # `HPS-18`: the posterior beside each feature panel.
     posterior_of = (
-        _posterior_layers(feature_layers, _configured_model_specs(cfg), cfg)
+        _posterior_layers([*feature_layers, *length_layers], _configured_model_specs(cfg), cfg)
         if bool(getattr(cfg, "hmm_clustermap_posterior_panel", False))
         else {}
     )
@@ -2414,7 +2418,9 @@ def _plot_feature_clustermaps(
         allow_gaps=bool(getattr(cfg, "plot_allow_unanalyzed_gaps", False)),
     )
     read_index = output_dir / "read_index"
-    max_reads_per_plot = getattr(
+    # HMM figures draw at most this many reads per sample (`hmm_` key, so the
+    # shared clustermap cap -- and earlier stages' fingerprints -- stay as they are).
+    max_reads_per_plot = getattr(cfg, "hmm_clustermap_max_reads_per_plot", None) or getattr(
         cfg, "clustermap_max_reads_per_plot", DEFAULT_CLUSTERMAP_MAX_READS_PER_PLOT
     )
     selection_seed = int(getattr(cfg, "plot_subsample_seed", 0))
@@ -2521,9 +2527,7 @@ def _plot_feature_clustermaps(
             # previously hardcoded to 1, leaving that dispatch unused.
             n_jobs=max(1, int(getattr(cfg, "threads", 1) or 1)),
             restrict_to_read_span=bool(getattr(cfg, "hmm_clustermap_restrict_to_read_span", False)),
-            max_reads_per_plot=getattr(
-                cfg, "clustermap_max_reads_per_plot", DEFAULT_CLUSTERMAP_MAX_READS_PER_PLOT
-            ),
+            max_reads_per_plot=max_reads_per_plot,
             cfg=cfg,
         )
         specs = _configured_model_specs(cfg)
@@ -2559,11 +2563,14 @@ def _plot_feature_clustermaps(
                 )
         for _, members in variant_layer_groups(length_layers, specs):
             layer, extras = members[0][1], [name for _, name in members[1:]]
+            if posterior_of.get(layer):
+                extras = [*extras, posterior_of[layer]]
             plot_dir = base_dir / "lengths" / _component(layer)
             combined_hmm_length_clustermap(
                 adata,
                 length_layer=layer,
                 extra_length_layers=extras,
+                posterior_cmap=str(getattr(cfg, "hmm_posterior_cmap", None) or "RdBu_r"),
                 cmap_lengths=_resolve_feature_colormap(layer, cfg, "Greens"),
                 length_feature_ranges=_resolve_length_feature_ranges(layer, cfg, "Greens"),
                 save_path=plot_dir,

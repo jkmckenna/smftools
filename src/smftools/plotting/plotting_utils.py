@@ -332,6 +332,67 @@ def _methylation_fraction_for_layer(
     return methylation_fraction(matrix, ignore_nan=ignore_nan, zero_is_valid=zero_is_valid)
 
 
+def fast_heatmap(
+    data,
+    *,
+    ax,
+    cmap=None,
+    vmin=None,
+    vmax=None,
+    center=None,
+    norm=None,
+    cbar: bool = False,
+    cbar_ax=None,
+    cbar_kws: dict | None = None,
+    yticklabels=False,
+    xticklabels=False,
+    **_ignored,
+):
+    """A ``seaborn.heatmap`` stand-in drawn as one image (``imshow``) rather
+    than a mesh of cells, on the same cell coordinates (column ``j`` spans
+    ``[j, j + 1)``, row 0 at the top) -- ticks, row lines and overlays land
+    where they did. Missing values take the colour map's "bad" colour.
+
+    ``center`` re-centres the colour range symmetrically about it, as seaborn
+    does."""
+    import matplotlib.colors as mcolors
+
+    matrix = np.ma.masked_invalid(np.asarray(data, dtype=float))
+    n_rows, n_cols = matrix.shape if matrix.ndim == 2 else (0, 0)
+    if norm is None:
+        finite = matrix.compressed()
+        lo = float(np.min(finite)) if vmin is None and finite.size else vmin
+        hi = float(np.max(finite)) if vmax is None and finite.size else vmax
+        if center is not None and lo is not None and hi is not None:
+            half = max(abs(hi - center), abs(center - lo))
+            lo, hi = center - half, center + half
+        norm = mcolors.Normalize(vmin=lo, vmax=hi)
+    image = ax.imshow(
+        matrix,
+        cmap=cmap,
+        norm=norm,
+        aspect="auto",
+        interpolation="nearest",
+        extent=(0, n_cols, n_rows, 0),
+    )
+    ax.set_xlim(0, n_cols)
+    ax.set_ylim(n_rows, 0)
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+    if yticklabels is False:
+        ax.set_yticks([])
+    if xticklabels is False:
+        ax.set_xticks([])
+    if cbar:
+        kws = dict(cbar_kws or {})
+        label = kws.pop("label", None)
+        colorbar = ax.figure.colorbar(image, cax=cbar_ax, ax=None if cbar_ax else ax, **kws)
+        if label:
+            colorbar.set_label(label)
+        colorbar.outline.set_visible(False)
+    return ax
+
+
 def clean_barplot(
     ax,
     mean_values,
@@ -352,8 +413,10 @@ def clean_barplot(
         y_ticks: Optional y-axis ticks.
     """
     logger.debug("Formatting barplot '%s' with %s values.", title, len(mean_values))
-    x = np.arange(len(mean_values))
-    ax.bar(x, mean_values, color="gray", width=1.0, align="edge")
+    # One filled step patch, not a bar per position: the same picture, but
+    # thousands of Rectangle patches made a figure take seconds to draw.
+    values = np.nan_to_num(np.asarray(mean_values, dtype=float), nan=0.0)
+    ax.stairs(values, np.arange(len(values) + 1), fill=True, color="gray", linewidth=0)
     ax.set_xlim(0, len(mean_values))
     if y_ticks is None and y_max == 1.0:
         y_ticks = [0.0, 0.5, 1.0]

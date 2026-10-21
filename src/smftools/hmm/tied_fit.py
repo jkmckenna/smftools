@@ -62,6 +62,10 @@ class TiedResult:
     groups: dict = field(default_factory=dict)
     #: Per transition group (pooled transitions only): start, trans.
     transitions: dict = field(default_factory=dict)
+    #: Whether the relative log-likelihood gain fell below ``tol`` before
+    #: the round cap, and the rounds run.
+    converged: bool = False
+    rounds_run: int = 0
 
 
 def _sigmoid(x):
@@ -463,6 +467,7 @@ def tied_em(
     bound: float,
     prior_sd: float,
     device="cpu",
+    tol: float = 1e-5,
 ) -> TiedResult:
     """Fit the members' shared emissions, offsets and own transitions (in
     this process; the members' models are updated in place)."""
@@ -480,6 +485,7 @@ def tied_em(
         bound=bound,
         prior_sd=prior_sd,
         device=device,
+        tol=tol,
     )
     return result
 
@@ -500,6 +506,7 @@ def tied_em_backend(
     label: str = "",
     emission_groups: Sequence[str] | None = None,
     transition_groups: Sequence[str] | None = None,
+    tol: float = 1e-5,
 ) -> tuple[TiedResult, list[Any]]:
     """Tied EM over a members backend (:class:`LocalMembers` or
     :class:`ShardedMembers`); returns the result and the fitted models in
@@ -510,7 +517,11 @@ def tied_em_backend(
     ``transition_groups`` (one key per member; default ``None``: every member
     re-estimates its own transitions) share one start / transition model each,
     pooled over its members' expected counts every round -- across emission
-    groups too (`HPS-16`)."""
+    groups too (`HPS-16`).
+
+    ``rounds`` is a cap: the fit stops early once a round's log-likelihood gain
+    is below ``tol * max(|log-likelihood|, 1)`` -- the relative rule of
+    :meth:`BaseHMM.fit`."""
     import time
 
     n = len(covariates)
@@ -573,6 +584,7 @@ def tied_em_backend(
             )
         return loglik
 
+    converged = False
     for round_ in range(rounds + 1):
         thetas, ws = member_params()
         if tgroups is None:
@@ -627,6 +639,17 @@ def tied_em_backend(
             time.monotonic() - started,
             f"; log-likelihood {history[-1]:.1f}" if round_ > 0 else "",
         )
+        if len(history) > 1 and abs(history[-1] - history[-2]) < float(tol) * max(
+            abs(history[-1]), 1.0
+        ):
+            converged = True
+            break
+    logger.info(
+        "%s%s after %d round(s)",
+        tag,
+        "converged" if converged else f"stopped at the {rounds}-round cap (not converged)",
+        len(history),
+    )
     thetas, ws = member_params()
     models = backend.finalize(thetas, ws, offsets)
     first = groups[egroups[0]]
@@ -638,6 +661,8 @@ def tied_em_backend(
             gamma={name: float(first["gamma"][i]) for i, name in enumerate(first["names"])},
             offsets=offsets,
             history=history,
+            converged=converged,
+            rounds_run=len(history),
             constant_covariates=first["constant"],
             groups={
                 key: {
