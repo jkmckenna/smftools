@@ -300,3 +300,21 @@ def test_materialize_ragged_streaming_raises_on_missing_read():
         materialize_ragged_streaming(
             [frame.iloc[[0, 1]]], obs=obs, reference_lengths={"chr1_top": 12}
         )
+
+
+def test_cigar_aligned_arrays_match_the_per_base_walk():
+    """The array form of a CIGAR's aligned pairs is exactly the per-base walk
+    (soft clips, insertions, deletions, skips, =/X), including no aligned base."""
+    from smftools.informatics.ragged_store import cigar_aligned_arrays, iter_cigar_aligned_pairs
+
+    rng = np.random.default_rng(0)
+    cigars = ["5S", "10M", "3S4M2I3D5=1X2N4M7S", "2D3I"]
+    for _ in range(200):
+        ops = rng.choice(list("MIDNS=XH"), size=rng.integers(1, 12))
+        cigars.append("".join(f"{rng.integers(1, 30)}{op}" for op in ops))
+    for cigar in cigars:
+        start = int(rng.integers(0, 500))
+        query, reference = cigar_aligned_arrays(cigar, start)
+        pairs = list(iter_cigar_aligned_pairs(cigar, start))
+        assert query.dtype == reference.dtype == np.int64
+        assert list(zip(query.tolist(), reference.tolist())) == pairs, cigar

@@ -37,6 +37,7 @@ from .partition_query import (
     query_derived_index,
     query_molecule_index,
     query_segment_index,
+    read_zarr_layers,
     read_zarr_subset,
 )
 
@@ -818,12 +819,12 @@ def _overlay_preprocess_layers(
                 if index_active and index_rows is None:
                     continue
                 path = catalog_path.parent / group_path
-                part = read_zarr_subset(
+                # Indexes and requested layers only, not each store's obs table.
+                part = read_zarr_layers(
                     path,
                     row_indices=(
                         index_rows["group_row"].astype(int) if index_rows is not None else None
                     ),
-                    read_ids=None,
                     start=int(positions.min()),
                     end=int(positions.max()) + 1,
                     layers=requested_layers,
