@@ -109,3 +109,29 @@ def test_settings_record_round_trips_to_json():
     assert record["version"] == 2
     assert record["merges"] == [["all_accessible_features", 60]]
     assert record["feature_sets"]["footprint"]["state"] == "Non-Modified"
+
+
+@pytest.mark.parametrize("layers", [None, ["C_all_accessible_features_merged", "C_short_bound"]])
+def test_chunked_derivation_is_identical_to_all_at_once(layers):
+    """Features are per read, so computing them a block of reads at a time
+    (to bound the intermediates' memory) gives exactly the same layers."""
+    rng = np.random.default_rng(0)
+    n_reads, n_cols = 23, 60
+    posterior = rng.random((n_reads, n_cols)).astype(np.float32)
+    posterior[rng.random((n_reads, n_cols)) < 0.1] = np.nan  # undecoded columns
+    starts = rng.integers(0, 20, n_reads)
+    spans = np.column_stack([starts, starts + rng.integers(10, 40, n_reads)])
+    covered = rng.random((n_reads, n_cols)) > 0.05
+    kwargs = dict(
+        prefix="C",
+        settings=_settings(merges=(("all_accessible_features", 3),)),
+        covered=covered,
+        layers=layers,
+    )
+    whole = call_hmm_features(posterior, np.arange(n_cols), spans, chunk_reads=None, **kwargs)
+    for chunk in (1, 4, 10, 23, 100):
+        blocks = call_hmm_features(posterior, np.arange(n_cols), spans, chunk_reads=chunk, **kwargs)
+        assert blocks.keys() == whole.keys()
+        for name in whole:
+            assert blocks[name].dtype == whole[name].dtype, name
+            np.testing.assert_array_equal(blocks[name], whole[name], err_msg=name)

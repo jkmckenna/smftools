@@ -247,6 +247,75 @@ def _decode_layers(adata, path: str | Path):
     return adata
 
 
+def read_zarr_layers(
+    path: str | Path,
+    *,
+    row_indices: Iterable[int] | None = None,
+    start: int | None = None,
+    end: int | None = None,
+    layers: Iterable[str],
+    **fallback_kwargs,
+):
+    """Rows' layers over ``[start, end)`` with only the obs / var indexes --
+    what a layer overlay needs -- read straight from the zarr arrays.
+
+    :func:`read_zarr_subset` builds each store's whole obs table (every
+    QC column, as a dataframe) to answer the same request; with hundreds of
+    task stores per region that dominated loading. Dense layers only: a store
+    this does not recognise (e.g. sparse layers) is read by
+    :func:`read_zarr_subset` instead, with ``fallback_kwargs``.
+    """
+    import anndata as ad
+    import zarr
+
+    requested = [str(name) for name in layers]
+    try:
+        group = zarr.open_group(str(path), mode="r")
+        obs_group, var_group = group["obs"], group["var"]
+        obs_names = np.asarray(obs_group[obs_group.attrs["_index"]][...]).astype(str)
+        var_names = np.asarray(var_group[var_group.attrs["_index"]][...]).astype(str)
+        stored = group["layers"] if "layers" in group else {}
+        arrays = {}
+        for name in requested:
+            if name not in stored:
+                continue
+            array = stored[name]
+            if not isinstance(array, zarr.Array) or dict(array.attrs).get("encoding-type") != (
+                "array"
+            ):
+                raise TypeError(f"{name}: not a dense array")
+            arrays[name] = array
+    except (KeyError, TypeError, ValueError, FileNotFoundError):
+        return read_zarr_subset(
+            path, row_indices=row_indices, start=start, end=end, layers=requested, **fallback_kwargs
+        )
+    rows = (
+        np.asarray(list(row_indices), dtype=np.int64)
+        if row_indices is not None
+        else np.arange(obs_names.size)
+    )
+    columns = _position_selector(var_names, start, end)
+    columns = np.arange(var_names.size) if isinstance(columns, slice) else columns
+    out = {}
+    for name, array in arrays.items():
+        values = (
+            array.oindex[rows, columns]
+            if rows.size and columns.size
+            else np.empty((rows.size, columns.size), dtype=array.dtype)
+        )
+        encoding = dict(array.attrs).get(LAYER_ENCODING_ATTR)
+        if encoding:
+            if encoding != PROBABILITY_U8:
+                raise ValueError(f"{path}: layer {name!r} has unknown encoding {encoding!r}")
+            values = decode_probability_u8(values)
+        out[name] = np.asarray(values)
+    return ad.AnnData(
+        obs=pd.DataFrame(index=pd.Index(obs_names[rows], dtype=str)),
+        var=pd.DataFrame(index=pd.Index(var_names[columns], dtype=str)),
+        layers=out,
+    )
+
+
 def read_zarr_subset(
     path: str | Path,
     **kwargs,
