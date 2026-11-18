@@ -51,6 +51,34 @@ arguments, so project impact reports cost as unknown rather than guessing from
 artifact size or treating a cache as a generic compatible result. The JSON
 report is schema-versioned independently from the source semantic plan.
 
+## Project HMMs
+
+A project HMM is fitted once and then decodes every experiment unchanged, so
+features from different experiments are called by the same model (`HPS-06`):
+
+```shell
+smftools project hmm-fit PROJECT_DIR cseda01.yaml        # fit and store
+smftools project hmm-apply PROJECT_DIR cseda01_pe         # decode registered experiments
+smftools project hmm-models PROJECT_DIR                   # list stored models
+```
+
+The spec names a registered training experiment, the sample-sheet values that
+select its training samples (`samples`) and the samples a decode applies to
+(`apply_samples`), and `reference_groups` to pool per strand; `settings`
+overrides the experiment's HMM settings for the fit. One model is fitted per
+reference group and strand, transitions and emissions both on the selected
+reads, and stored under `PROJECT_DIR/hmm_models/<name>/` with a manifest of the
+training samples, read ids, settings and source generation.
+
+`hmm-apply` decodes each experiment's current spatial spine with the stored
+models and the model's HMM settings, no fit and no adaptation, into the layer
+set `hmm_adata_outputs/layer_sets/project-<name>/`. Only the matching samples
+are decoded and kept; a reference uses the model of the group that lists it or
+whose name is its strand suffix (`6B6_enh_del_top` by the `top` model). A
+layer set stays current until the model or the experiment's spatial generation
+changes; `--force` decodes again. An experiment's config is
+`--config ID=PATH`, or the `experiment_config.csv` in or beside its run directory.
+
 ## Selective re-basecall planning
 
 This plans a *new* basecall of an experiment already ingested -- a different

@@ -917,9 +917,17 @@ def hmm_sample_attributes(spine, cfg) -> dict[str, dict[str, str]] | None:
 
     if emission_scope(cfg) == "fit_group":
         return None
+    if not getattr(cfg, "sample_sheet_path", None):
+        raise ValueError("a shared hmm_emission_scope needs sample_sheet_path")
+    return sample_sheet_attributes(spine, cfg)
+
+
+def sample_sheet_attributes(spine, cfg) -> dict[str, dict[str, str]]:
+    """Barcode -> sample-sheet columns (as strings), matched to the spine's reads
+    by ``sample_sheet_mapping_column``; whatever the emission scope."""
     path = getattr(cfg, "sample_sheet_path", None)
     if not path:
-        raise ValueError("a shared hmm_emission_scope needs sample_sheet_path")
+        raise ValueError("no sample_sheet_path configured")
     mapping = str(getattr(cfg, "sample_sheet_mapping_column", None) or SAMPLE_COL)
     sheet = pd.read_csv(path, dtype=str)
     if mapping not in sheet.columns:
@@ -2670,68 +2678,17 @@ def _fit_selection_frame(plans) -> pd.DataFrame:
     )
 
 
-def execute_partitioned_hmm(spine_path, cfg, output_dir) -> dict[str, Path]:
-    """Run bounded HMM tasks and publish a linked thin spine."""
-    spine_path = Path(spine_path)
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    from ..informatics.derived_read_index import prepare_derived_read_index
-
-    prepare_derived_read_index(output_dir)
-    spine = load_spine(spine_path)
-    filter_mask = next(
-        (column for column in ("passes_dedup", "passes_qc") if column in spine.obs),
-        None,
-    )
-    tasks = plan_preprocess_tasks(
-        spine,
-        target_task_memory_mb=int(getattr(cfg, "target_task_memory_mb", 512)),
-        partition_by_barcode=True,
-        filter_mask=filter_mask,
-        spine_path=spine_path,
-        bytes_per_position=hmm_bytes_per_position(cfg, _configured_model_specs(cfg)),
-    )
-    if not tasks:
-        raise RuntimeError("partitioned HMM has no non-empty tasks")
-    # `DLS-03b`: feature layers are derived from the posterior over each read's
-    # whole span, which equals the stage's own calls only when a reference is
-    # decoded as one window. If any reference is tiled, every task stores its
-    # feature layers (one rule per generation: a catalog never mixes).
-    tiled = tiled_references(spine, tasks)
-    if tiled:
-        cfg = copy.copy(cfg)
-        cfg._hmm_tiled_references = sorted(tiled)
-        logger.info("HMM feature layers stored (tiled references: %s)", ", ".join(sorted(tiled)))
-    models_dir = output_dir / HMM_MODEL_SUBDIR
-    if bool(getattr(cfg, "force_redo_hmm_fit", False)):
-        # One revision per stage invocation: every worker resolves the same new
-        # immutable IDs, while a later forced invocation receives fresh IDs.
-        setattr(cfg, "_hmm_fit_revision", uuid.uuid4().hex)
-    from ..memory_guard import (
-        require_memory_headroom,
-        resource_envelope_for_config,
-        run_tasks_parallel,
-    )
-
-    # A GPU device (MPS on Apple Silicon, confirmed via real-data testing;
-    # CUDA not verified here but not assumed safe either) isn't something
-    # multiple worker *processes* can safely initialize/use concurrently --
-    # several processes racing to grab the same GPU context reliably crashed
-    # the whole pool (BrokenProcessPool). Force sequential execution
-    # whenever a non-CPU device is in play; CPU-only runs still get the
-    # normal memory/thread-aware parallel dispatch.
-    # hmm_device (default "cpu") overrides the general device setting for HMM
-    # specifically -- see its definition in config/experiment_config.py for why.
-    device = resolve_torch_device(
-        getattr(cfg, "hmm_device", None) or getattr(cfg, "device", "auto")
-    )
+def _fit_planned_models(
+    spine, spine_path, tasks, cfg, models_dir, device, fit_catalog_path, fit_selection_path
+) -> dict[str, dict[str, dict[str, object]]]:
+    """Plan and fit the configured models on this spine's own reads; return
+    task id -> model label -> artifact for the apply workers."""
+    from ..memory_guard import resource_envelope_for_config, run_tasks_parallel
 
     model_specs = _configured_model_specs(cfg)
     # Each fitting plan resolves its own `auto` emission scope (`HPS-05`).
     model_specs, sample_attributes = _resolve_spec_scopes(spine, model_specs, cfg)
     fit_planning = build_hmm_fit_plan(tasks, model_specs, cfg, sample_attributes=sample_attributes)
-    fit_catalog_path = output_dir / HMM_FIT_CATALOG
-    fit_selection_path = output_dir / HMM_FIT_SELECTION_CATALOG
     _fit_catalog_frame(fit_planning.all_plans).to_parquet(fit_catalog_path, index=False)
     _fit_selection_frame(fit_planning.all_plans).to_parquet(fit_selection_path, index=False)
 
@@ -2835,10 +2792,82 @@ def execute_partitioned_hmm(spine_path, cfg, output_dir) -> dict[str, Path]:
         _fit_catalog_frame(fit_planning.all_plans, artifacts_by_fit), model_specs, cfg
     ).to_parquet(fit_catalog_path, index=False)
 
-    apply_artifacts = {
+    return {
         task_id: {label: artifacts_by_fit[fit_id] for label, fit_id in assignments.items()}
         for task_id, assignments in fit_planning.apply_assignments.items()
     }
+
+
+def execute_partitioned_hmm(spine_path, cfg, output_dir) -> dict[str, Path]:
+    """Run bounded HMM tasks and publish a linked thin spine."""
+    spine_path = Path(spine_path)
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    from ..informatics.derived_read_index import prepare_derived_read_index
+
+    prepare_derived_read_index(output_dir)
+    spine = load_spine(spine_path)
+    filter_mask = next(
+        (column for column in ("passes_dedup", "passes_qc") if column in spine.obs),
+        None,
+    )
+    tasks = plan_preprocess_tasks(
+        spine,
+        target_task_memory_mb=int(getattr(cfg, "target_task_memory_mb", 512)),
+        partition_by_barcode=True,
+        filter_mask=filter_mask,
+        spine_path=spine_path,
+        bytes_per_position=hmm_bytes_per_position(cfg, _configured_model_specs(cfg)),
+    )
+    if not tasks:
+        raise RuntimeError("partitioned HMM has no non-empty tasks")
+    # `DLS-03b`: feature layers are derived from the posterior over each read's
+    # whole span, which equals the stage's own calls only when a reference is
+    # decoded as one window. If any reference is tiled, every task stores its
+    # feature layers (one rule per generation: a catalog never mixes).
+    tiled = tiled_references(spine, tasks)
+    if tiled:
+        cfg = copy.copy(cfg)
+        cfg._hmm_tiled_references = sorted(tiled)
+        logger.info("HMM feature layers stored (tiled references: %s)", ", ".join(sorted(tiled)))
+    models_dir = output_dir / HMM_MODEL_SUBDIR
+    if bool(getattr(cfg, "force_redo_hmm_fit", False)):
+        # One revision per stage invocation: every worker resolves the same new
+        # immutable IDs, while a later forced invocation receives fresh IDs.
+        setattr(cfg, "_hmm_fit_revision", uuid.uuid4().hex)
+    from ..memory_guard import (
+        require_memory_headroom,
+        resource_envelope_for_config,
+        run_tasks_parallel,
+    )
+
+    # A GPU device (MPS on Apple Silicon, confirmed via real-data testing;
+    # CUDA not verified here but not assumed safe either) isn't something
+    # multiple worker *processes* can safely initialize/use concurrently --
+    # several processes racing to grab the same GPU context reliably crashed
+    # the whole pool (BrokenProcessPool). Force sequential execution
+    # whenever a non-CPU device is in play; CPU-only runs still get the
+    # normal memory/thread-aware parallel dispatch.
+    # hmm_device (default "cpu") overrides the general device setting for HMM
+    # specifically -- see its definition in config/experiment_config.py for why.
+    device = resolve_torch_device(
+        getattr(cfg, "hmm_device", None) or getattr(cfg, "device", "auto")
+    )
+
+    fit_catalog_path = output_dir / HMM_FIT_CATALOG
+    fit_selection_path = output_dir / HMM_FIT_SELECTION_CATALOG
+    frozen = getattr(cfg, "_hmm_frozen_models", None)
+    if frozen is not None:
+        # `HPS-06`: decode with stored project models; nothing is fitted here.
+        from ..hmm.project_models import frozen_apply_plan
+
+        tasks, apply_artifacts = frozen_apply_plan(
+            tasks, frozen, models_dir, fit_catalog_path, fit_selection_path
+        )
+    else:
+        apply_artifacts = _fit_planned_models(
+            spine, spine_path, tasks, cfg, models_dir, device, fit_catalog_path, fit_selection_path
+        )
     records = run_tasks_parallel(
         execute_hmm_task,
         [
@@ -2889,6 +2918,16 @@ def execute_partitioned_hmm(spine_path, cfg, output_dir) -> dict[str, Path]:
 
     output_spine = output_dir / HMM_SPINE_FILENAME
     hmm_spine = spine.copy()
+    if frozen is not None:
+        # Only the reads a project model decoded: reads of other samples would
+        # otherwise materialize the absent-layer fill (0) as if decoded.
+        decoded = {str(read_id) for task in tasks for read_id in task.read_ids}
+        keep = (
+            hmm_spine.obs["read_id"].astype(str)
+            if "read_id" in hmm_spine.obs
+            else pd.Series(hmm_spine.obs_names.astype(str), index=hmm_spine.obs_names)
+        ).isin(decoded)
+        hmm_spine = hmm_spine[keep.to_numpy()].copy()
     # Relative to the run's output_directory, not output_dir -- see
     # informatics.partition_read._run_root_from_spine_path. Resolved via
     # run_root_from_stage_dir because output_dir may be a generation or staging

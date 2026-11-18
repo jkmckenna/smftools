@@ -1510,6 +1510,69 @@ def project_list_cmd(project_dir: Path):
         click.echo(f"{n_canon} canonical reference(s) across the project.")
 
 
+@project_group.command("hmm-fit")
+@click.argument("project_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.argument("spec", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option(
+    "--config",
+    "configs",
+    multiple=True,
+    help="EXPERIMENT_ID=PATH: the training experiment's config (default: the "
+    "experiment_config.csv in or beside its run directory).",
+)
+@click.option("--force", is_flag=True, help="Refit even when the stored model is current.")
+def project_hmm_fit_cmd(project_dir: Path, spec: Path, configs, force: bool):
+    """Fit one project HMM from SPEC and store it (`HPS-06`)."""
+    from .cli.project_cmd import project_hmm_fit
+
+    result = project_hmm_fit(project_dir, spec, configs=configs, force=force)
+    state = "reused" if result["reused"] else "stored"
+    click.echo(f"{result['name']}: {state} generation {result['generation_id']} ({result['path']})")
+
+
+@project_group.command("hmm-apply")
+@click.argument("project_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.argument("name")
+@click.option(
+    "--experiment",
+    "experiments",
+    multiple=True,
+    help="Registered experiment to decode (repeatable; default: every active experiment).",
+)
+@click.option("--config", "configs", multiple=True, help="EXPERIMENT_ID=PATH config override.")
+@click.option("--force", is_flag=True, help="Decode again even when the layer set is current.")
+def project_hmm_apply_cmd(project_dir: Path, name: str, experiments, configs, force: bool):
+    """Decode experiments with the stored project HMM NAME into the layer set
+    ``project-NAME`` (`HPS-06`)."""
+    from .cli.project_cmd import project_hmm_apply
+
+    for row in project_hmm_apply(
+        project_dir, name, experiments=experiments, configs=configs, force=force
+    ):
+        if row["status"] == "decoded":
+            state = "reused" if row["reused"] else "published"
+            click.echo(f"  {row['experiment']}: {state} {row['plan']} {row['generation_id']}")
+        else:
+            click.echo(f"  {row['experiment']}: skipped ({row['reason']})")
+
+
+@project_group.command("hmm-models")
+@click.argument("project_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+def project_hmm_models_cmd(project_dir: Path):
+    """List the stored project HMMs (`HPS-06`)."""
+    from .cli.project_cmd import project_hmm_models
+
+    rows = project_hmm_models(project_dir)
+    if not rows:
+        click.echo("No project HMMs. Fit one with `smftools project hmm-fit`.")
+        return
+    for row in rows:
+        click.echo(
+            f"  {row['name']}  {row['generation_id']}  trained on {row['experiment']} "
+            f"[{row['barcodes']}]  groups: {row['groups']}  signals: {row['labels']}"
+        )
+
+
 @project_group.group("rebasecall")
 def project_rebasecall_group():
     """Plan selective POD5 re-basecalling across a project's experiments."""
