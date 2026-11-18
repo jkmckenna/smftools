@@ -653,3 +653,45 @@ def project_sample_store_list(
     from ..project.sample_store import list_per_sample_partitions
 
     return list_per_sample_partitions(project_dir, experiment_id)
+
+
+def _config_pairs(pairs) -> dict[str, str]:
+    """``ID=PATH`` options as a mapping."""
+    mapping = {}
+    for pair in pairs or ():
+        experiment, sep, path = str(pair).partition("=")
+        if not sep or not experiment or not path:
+            raise ValueError(f"--config takes EXPERIMENT_ID=PATH, got {pair!r}")
+        mapping[experiment] = path
+    return mapping
+
+
+def project_hmm_fit(project_dir, spec_path, *, configs=(), force: bool = False) -> dict:
+    """Fit and store a project HMM (`HPS-06`)."""
+    from ..project.hmm_models import fit_project_model
+
+    return fit_project_model(
+        project_dir, spec_path, config_paths=_config_pairs(configs), force=force
+    )
+
+
+def project_hmm_apply(
+    project_dir, name, *, experiments=(), configs=(), force: bool = False
+) -> list[dict]:
+    """Decode experiments with a stored project HMM into ``project-<name>`` layer sets."""
+    from ..project.hmm_models import apply_project_model
+
+    return apply_project_model(
+        project_dir,
+        name,
+        experiments=list(experiments) or None,
+        config_paths=_config_pairs(configs),
+        force=force,
+    )
+
+
+def project_hmm_models(project_dir) -> list[dict]:
+    """The stored project HMMs."""
+    from ..project.hmm_models import list_project_models
+
+    return list_project_models(project_dir)

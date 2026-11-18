@@ -99,9 +99,14 @@ def publish_layer_set(
     *,
     source_generation: str | None = None,
     force: bool = False,
+    project_model: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Fit and decode one plan into a new layer-set generation (or reuse the
-    current one when its settings and input are unchanged)."""
+    current one when its settings and input are unchanged).
+
+    ``project_model`` (`HPS-06`): ``cfg`` carries stored models to decode with
+    (``_hmm_frozen_models``) and is used as given; the layer set is current while
+    the model generation, its samples and the input are."""
     from ..informatics.generation import (
         rebind_staged_spine_pointers,
         staged_generation,
@@ -109,8 +114,15 @@ def publish_layer_set(
     from ..tools.partitioned_hmm import execute_partitioned_hmm
 
     run_root = Path(run_root)
-    cfg_plan = plan_config(cfg, plan)
-    hashes = plan_fit_hashes(cfg_plan)
+    if project_model is not None:
+        cfg_plan = cfg
+        hashes = {
+            "project_model": "{name}@{generation_id}".format(**project_model),
+            "samples": ",".join(project_model.get("barcodes", [])),
+        }
+    else:
+        cfg_plan = plan_config(cfg, plan)
+        hashes = plan_fit_hashes(cfg_plan)
     if not hashes:
         raise LayerSetError(f"HMM plan {plan!r} has no models for the configured signals")
     container = layer_set_container(run_root, plan)
@@ -144,6 +156,7 @@ def publish_layer_set(
                 "stage": LAYER_SET_STAGE,
                 "plan": plan,
                 "fit_config_hashes": hashes,
+                "project_model": project_model,
                 "source_generation": {"kind": "spatial", "generation_id": source_generation},
                 "rebound_spine_pointers": rebound,
                 "created_at": datetime.now(timezone.utc).isoformat(),
