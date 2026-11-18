@@ -332,3 +332,25 @@ def test_a_project_sample_sheet_matches_barcodes_by_number(tmp_path):
     assert rows["SQK-NBD114-24_barcode12"]["enzyme"] == "M.CviPI"
     assert "enzyme" not in rows["SQK-NBD114-24_barcode11"]  # blank, not "nan"
     assert hmm_models.matching_barcodes(rows, {"enzyme": "M.CviPI"}) == {"SQK-NBD114-24_barcode12"}
+
+
+def test_fit_references_reads_tiled_and_pooled_fits_from_their_members():
+    from types import SimpleNamespace
+
+    tiled = SimpleNamespace(
+        reference="genome",
+        members=(
+            SimpleNamespace(reference="6B6_top"),
+            SimpleNamespace(reference="6BALB_cJ_top"),
+            SimpleNamespace(reference="6B6_top"),
+        ),
+    )
+    assert hmm_models.fit_references(tiled) == (["6B6_top", "6BALB_cJ_top"], "top")
+    single = SimpleNamespace(reference="6B6_bottom", members=())
+    assert hmm_models.fit_references(single) == (["6B6_bottom"], "bottom")
+    mixed = SimpleNamespace(
+        reference="genome",
+        members=(SimpleNamespace(reference="6B6_top"), SimpleNamespace(reference="6B6_bottom")),
+    )
+    with pytest.raises(hmm_models.ProjectModelError, match="spans strands"):
+        hmm_models.fit_references(mixed)
