@@ -257,6 +257,22 @@ def _strand_group(reference: str) -> str:
     return str(_strand_of(str(reference))[1] or reference)
 
 
+def fit_references(plan) -> tuple[list[str], str]:
+    """A fit's references and their strand group. A fit pooled across references
+    or tiled over windows (the planner's genome mode) names its references on its
+    members, not in ``plan.reference``."""
+    members = getattr(plan, "members", ()) or ()
+    references = (
+        sorted({str(member.reference) for member in members})
+        if members
+        else str(plan.reference).split("+")
+    )
+    strands = {_strand_group(reference) for reference in references}
+    if len(strands) != 1:
+        raise ProjectModelError(f"one fit spans strands {sorted(strands)}: {references}")
+    return references, strands.pop()
+
+
 def _container(project_dir: Path, name: str) -> Path:
     return Path(project_dir) / MODELS_SUBDIR / name
 
@@ -357,8 +373,7 @@ def fit_project_model(
     plans, training = [], []
     for plan in planning.base_plans:
         artifact = execute_hmm_fit_task(source, plan, fit_cfg, models_dir, None)
-        references = str(plan.reference).split("+")
-        strand = _strand_group(references[0])
+        references, strand = fit_references(plan)
         if bool(artifact.get("skipped", False)):
             raise ProjectModelError(
                 f"{name}: fit of {plan.model_spec.label} on {plan.reference} failed: "
