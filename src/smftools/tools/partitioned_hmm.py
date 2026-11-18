@@ -38,7 +38,12 @@ from ..cli.stage_artifacts import (
     write_plot_source_manifest,
 )
 from ..hmm.features import FeatureSettings
-from ..hmm.fit_plan import HMMFitPlan, HMMModelSpec, build_hmm_fit_plan
+from ..hmm.fit_plan import (
+    HMMFitPlan,
+    HMMModelSpec,
+    build_hmm_fit_plan,
+    is_unassigned_emission_group,
+)
 from ..hmm.HMM import mask_layers_outside_read_span, normalize_hmm_feature_sets
 from ..informatics.partition_read import (
     load_spine,
@@ -252,6 +257,7 @@ VARIANT_PLAN_SETTINGS = frozenset(
         "hmm_reference_groups",
         "hmm_transition_scope",
         "hmm_fit_reads_per_sample",
+        "hmm_min_fit_reads",
         "hmm_fit_strategy",
         "hmm_groupby",
         "hmm_shared_scope",
@@ -968,7 +974,7 @@ def build_tied_member(spine_path, plan: HMMFitPlan, cfg, variant_cfg, device):
 
 
 def execute_tied_fit_task(
-    spine_path, plans, cfg, models_dir, workers: int = 1
+    spine_path, plans, cfg, models_dir, workers: int = 1, pooled: bool | None = None
 ) -> list[dict[str, object]]:
     """Fit one emission group jointly (`HPS-03`): shared emissions and
     efficiency offsets, each member's own transitions; publish one ordinary
@@ -976,12 +982,19 @@ def execute_tied_fit_task(
 
     With ``workers > 1`` (CPU) the members are built and fitted by that many
     persistent worker processes, each holding its share; only the pooled
-    emission solve runs here. Results match the in-process fit."""
+    emission solve runs here. Results match the in-process fit.
+
+    ``pooled`` overrides the model's transition scope (an unassigned emission
+    group is fitted on its own, not pooled). Members with fewer than
+    ``hmm_min_fit_reads`` fit reads take the shared parameters without
+    shaping them."""
     from ..hmm.model_artifacts import checkpoint_path, metadata_path
     from ..hmm.tied_fit import LocalMembers, ShardedMembers, tied_em_backend
 
     variant_cfg = plans[0].model_spec.config(cfg)
-    pooled = str(getattr(variant_cfg, "hmm_transition_scope", "fit_group")) == "pooled"
+    if pooled is None:
+        pooled = str(getattr(variant_cfg, "hmm_transition_scope", "fit_group")) == "pooled"
+    min_reads = int(getattr(cfg, "hmm_min_fit_reads", 20) or 0)
     device = resolve_torch_device(
         getattr(cfg, "hmm_device", None) or getattr(cfg, "device", "auto")
     )
@@ -1068,6 +1081,7 @@ def execute_tied_fit_task(
                     transition_groups=(
                         [str(p.reference) for p in member_plans] if pooled else None
                     ),
+                    contributes=[len(p.selected_read_ids) >= min_reads for p in member_plans],
                 )
         finally:
             backend.close()
@@ -2086,189 +2100,149 @@ def _grouped_bar_plot(axis, group_labels, series: dict, *, ylabel: str, title: s
     axis.set(ylabel=ylabel, title=title, ylim=(0, 1.02))
 
 
-def _plot_hmm_parameters_across_barcodes(records, models_dir: Path, cfg, layout) -> None:
-    """Compare fitted HMM emission/transition parameters across barcodes, for
-    each reference/window/signal-label combination that used a per-barcode
-    fit.
+def _series_label(barcodes: list[str], n_window: int) -> str:
+    """Legend label for one distinct model: the barcodes it serves."""
+    if len(barcodes) == n_window and n_window > 1:
+        return f"all {n_window} barcodes"
+    shown = ", ".join(barcodes[:4])
+    return shown + (f" +{len(barcodes) - 4}" if len(barcodes) > 4 else "")
 
-    Diagnostic for whether ``cfg.hmm_fit_scope="per_sample"`` (the default: a
-    separate model fit per barcode) is buying anything over a shared
-    ``"global"`` fit -- if parameters converge to similar values across
-    barcodes, that's direct evidence a global fit would work just as well, at
-    a fraction of the per-task fitting cost (each per-sample fit is a fresh,
-    uncached EM run -- see dev/plans/audits/pipeline_scaling_audit.md's HMM cost
-    discussion). No-op when ``hmm_fit_scope="global"``: every barcode already
-    shares the exact same fitted model in that case, so there's nothing to
-    compare.
+
+def _checkpoint_parameters(path: Path) -> tuple[np.ndarray, np.ndarray] | None:
+    """(emission (n_states, n_channels), transition (n_states, n_states)) as
+    saved in a checkpoint -- read from its state dict, so no model has to be
+    rebuilt from a config that may not be the one it was fitted with."""
+    import torch
+
+    payload = torch.load(path, map_location="cpu", weights_only=False)
+    state = payload.get("state_dict", payload) if isinstance(payload, dict) else {}
+    emission = next((v for k, v in state.items() if k.split(".")[-1] == "emission"), None)
+    trans = next((v for k, v in state.items() if k.split(".")[-1] == "trans"), None)
+    if emission is None or trans is None:
+        return None
+    trans = np.asarray(trans.detach().cpu().numpy(), dtype=float)
+    n_states = trans.shape[0]
+    emission = np.asarray(emission.detach().cpu().numpy(), dtype=float).reshape(n_states, -1)
+    return emission, trans
+
+
+def _plot_hmm_parameters_across_barcodes(records, models_dir: Path, cfg, layout) -> None:
+    """Fitted HMM emission and transition parameters, one figure per
+    reference window and model label, one bar series per *distinct* model.
+
+    Driven by the models the tasks actually used (their artifact records),
+    so every fit strategy plots: a per-sample fit shows a series per barcode,
+    a shared or pooled fit one series per distinct model, labelled with the
+    barcodes it serves ("all N barcodes" when it is everyone's). Distinct
+    means distinct checkpoint content, so identical members of a tied fit
+    are drawn once.
     """
     import matplotlib.pyplot as plt
 
-    trainer = HMMTrainer(cfg=cfg, models_dir=Path(models_dir))
-    scope = trainer._fit_scope()
-    if scope == "global":
-        return
-    kind = "ADAPT" if scope == "global_then_adapt" else "PER"
-
-    # hmm_device (default "cpu") overrides the general device setting for HMM
-    # specifically -- see its definition in config/experiment_config.py for why.
-    device = resolve_torch_device(
-        getattr(cfg, "hmm_device", None) or getattr(cfg, "device", "auto")
-    )
-    hmm_tasks = build_hmm_tasks(cfg)
-    if not hmm_tasks:
-        return
-    feature_sets_all = normalize_hmm_feature_sets(getattr(cfg, "hmm_feature_sets", None))
-
-    windows: dict[tuple[str, int, int], set[str]] = {}
+    models_dir = Path(models_dir)
+    # (reference, start, end, label) -> content sha -> (checkpoint, [barcodes])
+    windows: dict[tuple, dict[str, tuple[Path, list[str]]]] = {}
+    window_barcodes: dict[tuple, set[str]] = {}
     for record in records:
-        key = (str(record["reference"]), int(record["core_start"]), int(record["core_end"]))
-        windows.setdefault(key, set()).add(str(record["barcode"]))
+        raw = record.get("hmm_model_artifacts_json", "[]")
+        artifacts = json.loads(raw) if isinstance(raw, str) else []
+        barcode = str(record.get("barcode"))
+        for item in artifacts:
+            key = item.get("model_key", {}) or {}
+            window = (
+                str(record["reference"]),
+                int(record["core_start"]),
+                int(record["core_end"]),
+                str(key.get("label") or ""),
+            )
+            window_barcodes.setdefault(window, set()).add(barcode)
+            identity = str(
+                item.get("checkpoint_content_sha256")
+                or item.get("model_checksum")
+                or item.get("checkpoint")
+            )
+            entry = windows.setdefault(window, {}).setdefault(
+                identity, (models_dir.parent / str(item["checkpoint"]), [])
+            )
+            if barcode not in entry[1]:
+                entry[1].append(barcode)
 
-    for (reference, core_start, core_end), barcodes in sorted(windows.items()):
-        model_reference = f"{reference}__{core_start}_{core_end}"
-        for hmm_task in hmm_tasks:
-            feature_sets = {
-                name: feature_sets_all[name]
-                for name in hmm_task.feature_groups
-                if name in feature_sets_all
-            }
-            if not feature_sets:
+    for window, models in sorted(windows.items()):
+        reference, core_start, core_end, label = window
+        n_window = len(window_barcodes[window])
+        loaded = {}
+        for path, barcodes in models.values():
+            if not path.exists():
                 continue
-            multichannel = len(hmm_task.signals) != 1
-            label = str(
-                hmm_task.output_prefix or ("Combined" if multichannel else hmm_task.signals[0])
-            )
-            arch = trainer.choose_arch(multichannel=multichannel)
-
-            loaded = {}
-            for barcode in sorted(barcodes):
-                path = None
-                model_arch = arch
-                for record in records:
-                    if (
-                        str(record.get("reference")) != reference
-                        or str(record.get("barcode")) != barcode
-                        or int(record.get("core_start", -1)) != core_start
-                        or int(record.get("core_end", -1)) != core_end
-                    ):
-                        continue
-                    raw_artifacts = record.get("hmm_model_artifacts_json", "[]")
-                    artifacts = json.loads(raw_artifacts) if isinstance(raw_artifacts, str) else []
-                    matching = [
-                        item
-                        for item in artifacts
-                        if item.get("model_key", {}).get("fit_kind") == kind
-                        and item.get("model_key", {}).get("label") == label
-                    ]
-                    if matching:
-                        path = models_dir.parent / str(matching[0]["checkpoint"])
-                        # The artifact's own architecture: a context model is
-                        # not what ``choose_arch`` would pick.
-                        model_arch = str(
-                            matching[0].get("model_key", {}).get("architecture") or arch
-                        )
-                        break
-                if path is None:
-                    # Backward-compatible discovery for checkpoints written before
-                    # immutable model artifacts were introduced.
-                    path = trainer._path(kind, barcode, model_reference, label)
-                if not path.exists():
-                    continue
-                try:
-                    loaded[barcode] = trainer._load(path, arch=model_arch, device=device)
-                except Exception:
-                    logger.warning(
-                        "Could not load HMM model %s for parameter comparison plot",
-                        path,
-                        exc_info=True,
-                    )
-            if len(loaded) < 2:
-                # Nothing to compare -- only one barcode fit a model for this
-                # window/label, or the rest failed to load.
+            try:
+                parameters = _checkpoint_parameters(path)
+            except Exception:
+                logger.warning("Could not read HMM checkpoint %s for the parameter plot", path)
                 continue
+            if parameters is not None:
+                loaded[_series_label(sorted(barcodes), n_window)] = parameters
+        if not loaded:
+            continue
+        n_states, n_channels = next(iter(loaded.values()))[0].shape
+        state_labels = [f"State {i}" for i in range(n_states)]
+        emission_labels = (
+            state_labels
+            if n_channels == 1
+            else [f"{state}-ch{c}" for state in state_labels for c in range(n_channels)]
+        )
+        emission_series = {name: e.reshape(-1).tolist() for name, (e, _) in loaded.items()}
+        trans_labels = [f"{i}→{j}" for i in range(n_states) for j in range(n_states)]
+        trans_series = {name: t.reshape(-1).tolist() for name, (_, t) in loaded.items()}
 
-            n_states = int(next(iter(loaded.values())).n_states)
-            state_labels = [f"State {i}" for i in range(n_states)]
-
-            emission_by_barcode = {}
-            n_channels = 1
-            for barcode, model in loaded.items():
-                arr = np.asarray(model.emission.detach().cpu().numpy()).reshape(n_states, -1)
-                n_channels = max(n_channels, arr.shape[1])
-                emission_by_barcode[barcode] = arr
-            if n_channels == 1:
-                emission_group_labels = state_labels
-                emission_series = {
-                    barcode: arr[:, 0].tolist() for barcode, arr in emission_by_barcode.items()
-                }
-            else:
-                emission_group_labels = [
-                    f"{state}-ch{channel}"
-                    for state in state_labels
-                    for channel in range(n_channels)
-                ]
-                emission_series = {
-                    barcode: arr.reshape(-1).tolist()
-                    for barcode, arr in emission_by_barcode.items()
-                }
-
-            trans_group_labels = [f"{i}→{j}" for i in range(n_states) for j in range(n_states)]
-            trans_series = {
-                barcode: np.asarray(model.trans.detach().cpu().numpy()).reshape(-1).tolist()
-                for barcode, model in loaded.items()
-            }
-
-            figure, (emission_axis, trans_axis) = plt.subplots(
-                1,
-                2,
-                figsize=(max(10, 0.6 * len(loaded) + 6), 5),
-            )
-            _grouped_bar_plot(
-                emission_axis,
-                emission_group_labels,
-                emission_series,
-                ylabel="P(obs=1 | state)",
-                title="Emission",
-            )
-            _grouped_bar_plot(
-                trans_axis,
-                trans_group_labels,
-                trans_series,
-                ylabel="Transition probability",
-                title="Transition",
-            )
-            handles, plot_labels = emission_axis.get_legend_handles_labels()
-            figure.legend(
-                handles,
-                plot_labels,
-                title="Barcode",
-                loc="lower center",
-                bbox_to_anchor=(0.5, -0.05),
-                ncol=min(6, len(loaded)),
-                fontsize=8,
-            )
-            figure.suptitle(f"{reference}:{core_start}-{core_end} [{label}] ({kind.lower()} fit)")
-            figure.tight_layout(rect=(0, 0.1, 1, 0.96))
-            path = layout.categories["emissions"] / (
-                f"{_component(reference)}__{core_start}_{core_end}__{_component(label)}"
-                "__hmm_params_by_barcode.png"
-            )
-            # bbox_inches="tight": the figure-level legend sits below the
-            # tight_layout'd axes area, outside the rect reserved for them --
-            # without this, savefig can clip it regardless of exact anchor
-            # coordinates.
-            figure.savefig(path, dpi=160, bbox_inches="tight")
-            plt.close(figure)
-            register_plot_artifact(
-                layout,
-                path,
-                stage="hmm",
-                category="emissions",
-                plot_type="hmm_parameters_across_barcodes",
-                reference=str(reference),
-                core_start=int(core_start),
-                core_end=int(core_end),
-            )
+        figure, (emission_axis, trans_axis) = plt.subplots(
+            1, 2, figsize=(max(10, 0.6 * len(loaded) + 6), 5)
+        )
+        _grouped_bar_plot(
+            emission_axis,
+            emission_labels,
+            emission_series,
+            ylabel="P(obs=1 | state)",
+            title="Emission",
+        )
+        _grouped_bar_plot(
+            trans_axis,
+            trans_labels,
+            trans_series,
+            ylabel="Transition probability",
+            title="Transition",
+        )
+        handles, plot_labels = emission_axis.get_legend_handles_labels()
+        figure.legend(
+            handles,
+            plot_labels,
+            title="Model (barcodes)",
+            loc="lower center",
+            bbox_to_anchor=(0.5, -0.05),
+            ncol=min(4, len(loaded)),
+            fontsize=8,
+        )
+        figure.suptitle(
+            f"{reference}:{core_start}-{core_end} [{label}] -- "
+            f"{len(loaded)} distinct model(s) for {n_window} barcode(s)"
+        )
+        figure.tight_layout(rect=(0, 0.1, 1, 0.96))
+        path = layout.categories["emissions"] / (
+            f"{_component(reference)}__{core_start}_{core_end}__{_component(label)}"
+            "__hmm_params_by_barcode.png"
+        )
+        # bbox_inches="tight": the figure-level legend sits below the axes.
+        figure.savefig(path, dpi=160, bbox_inches="tight")
+        plt.close(figure)
+        register_plot_artifact(
+            layout,
+            path,
+            stage="hmm",
+            category="emissions",
+            plot_type="hmm_parameters_across_barcodes",
+            reference=str(reference),
+            core_start=int(core_start),
+            core_end=int(core_end),
+        )
 
 
 def _plot_hmm_fit_history(models_dir: Path, layout) -> None:
@@ -2726,23 +2700,31 @@ def _fit_planned_models(
     # Shared emission scopes (`HPS-03`): one tied fit per model x emission group.
     # One tied fit per model x emission group -- or, with pooled transitions
     # (`HPS-16`), one per model across its emission groups.
+    # A sample with no real emission group (no enzyme on the sheet) is fitted
+    # on its own rather than shaping a pooled model.
     tied_groups: dict[tuple[str, str], list[HMMFitPlan]] = {}
     for plan in fit_planning.base_plans:
         if plan.emission_group:
-            pooled_spec = (
-                str(getattr(plan.model_spec.config(cfg), "hmm_transition_scope", "fit_group"))
-                == "pooled"
-            )
+            pooled_spec = str(
+                getattr(plan.model_spec.config(cfg), "hmm_transition_scope", "fit_group")
+            ) == "pooled" and not is_unassigned_emission_group(plan.emission_group)
             key = (plan.model_spec.label, "" if pooled_spec else plan.emission_group)
             tied_groups.setdefault(key, []).append(plan)
     tied_jobs = [tied_groups[key] for key in sorted(tied_groups)]
+    tied_pooled = [
+        False if key[1] else None  # None: the model's own transition scope
+        for key in sorted(tied_groups)
+    ]
     # One group at a time, its members spread over every thread: a group's
     # rounds are synchronised, so one large group in one worker would leave
     # the others idle (and members of different groups never share work).
     tied_workers = max(1, int(resource_envelope_for_config(cfg).resolved_threads))
     tied_results = run_tasks_parallel(
         execute_tied_fit_task,
-        [(spine_path, group, cfg, models_dir, tied_workers) for group in tied_jobs],
+        [
+            (spine_path, group, cfg, models_dir, tied_workers, pooled)
+            for group, pooled in zip(tied_jobs, tied_pooled, strict=True)
+        ],
         cfg=cfg,
         force_sequential=True,
         pool_label=f"hmm tied fit pool ({len(tied_jobs)} emission groups, device={device})",

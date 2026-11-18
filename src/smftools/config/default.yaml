@@ -494,6 +494,11 @@ hmm_emission_scope: auto
 # (`HPS-17`), so large samples do not dominate the shared transitions.
 hmm_transition_scope: fit_group
 hmm_fit_reads_per_sample: 200
+# A tied fit's member (sample x reference) with fewer fit reads adds nothing to
+# the shared parameters; it takes them for decoding. Samples whose emission
+# group is unassigned (blank, "unassigned", "unclassified", "unassigned_*")
+# are fitted on their own, outside a pooled fit.
+hmm_min_fit_reads: 20
 hmm_emission_groupby: [enzyme]
 hmm_efficiency_groupby: []
 hmm_efficiency_covariates: [enzyme_per_cell]

@@ -366,6 +366,24 @@ def _emission_keys(
     return group, efficiency, covariates
 
 
+#: Sample-sheet values meaning "no group" (cf. barcode_contamination_qc).
+_UNASSIGNED_VALUES = frozenset(
+    {"", "unclassified", "unassigned", "unknown", "none", "nan", "null", "na"}
+)
+
+
+def is_unassigned_emission_group(group: str) -> bool:
+    """Whether an emission group (``label|col=value|...``) names no real
+    group: any value blank, an unassigned token, or ``unassigned_*``."""
+    parts = str(group).split("|")[1:]
+    values = [part.split("=", 1)[1] for part in parts if "=" in part]
+    return any(
+        value.strip().lower() in _UNASSIGNED_VALUES
+        or value.strip().lower().startswith("unassigned")
+        for value in values
+    )
+
+
 def efficiency_columns_of(cfg: Any) -> tuple[list[str], list[str]]:
     """(categorical, numeric) technical columns an efficiency offset may follow."""
     return (
